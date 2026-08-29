@@ -167,6 +167,17 @@ function pad(value: string, width: number): string {
 }
 
 /**
+ * Are we running inside a `display-popup` rather than a pane?
+ *
+ * tmux exports $TMUX to a popup but not $TMUX_PANE, because a popup is not a
+ * pane. Outside tmux neither is set, so the three cases stay distinguishable
+ * with no tmux call.
+ */
+export function isPopup(env: NodeJS.ProcessEnv): boolean {
+  return Boolean(env.TMUX) && !env.TMUX_PANE;
+}
+
+/**
  * One fzf row: a hidden key column, a hidden filter column, then the label.
  *
  * The key is `agent_id`, not a tmux target: a target only means something on
@@ -337,6 +348,7 @@ export async function runPick(store: Store, options: PickOptions = {}): Promise<
 
   const self = process.argv[1] ?? "murmur";
   const allFlag = options.all ? " --all" : "";
+  const inPopup = isPopup(process.env);
   // A preview beside the list needs room for both. Below ~150 columns the
   // 58% split squeezes the host and flags columns off the end, so start
   // stacked and let ctrl-p cycle from there.
@@ -374,7 +386,15 @@ export async function runPick(store: Store, options: PickOptions = {}): Promise<
       "begin,index",
       "--layout",
       "reverse",
+      // `display-popup` draws its own border, so fzf's is a second one a
+      // character inside the first. A popup is the normal way to run this, via
+      // the prefix+a binding, so the doubled frame was what you saw most.
+      //
+      // Detected by $TMUX set with $TMUX_PANE unset: tmux exports TMUX to a
+      // popup but not TMUX_PANE, since a popup is not a pane. Outside tmux
+      // neither is set, so the three cases stay distinguishable.
       "--border",
+      inPopup ? "none" : "rounded",
       "--info",
       "inline",
       "--prompt",

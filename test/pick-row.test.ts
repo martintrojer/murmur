@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 import type { Agent } from "../src/agents.js";
-import { headerRow, pickerRow } from "../src/cli/pick.js";
+import { headerRow, isPopup, pickerRow } from "../src/cli/pick.js";
 import { tmux } from "../src/mux.js";
 
 const base = {
@@ -165,4 +165,14 @@ test("an agent with neither leaves the column empty rather than printing null", 
   const text = label(pickerRow(neither, false, false, true));
   expect(text).not.toContain("null");
   expect(text).not.toContain("undefined");
+});
+
+test("a popup is tmux without a pane", () => {
+  // display-popup draws its own border, so fzf's is a second one just inside
+  // it — and the popup is the normal way to run the picker, via prefix+a, so
+  // the doubled frame was the common case. tmux exports TMUX to a popup but
+  // not TMUX_PANE, since a popup is not a pane.
+  expect(isPopup({ TMUX: "/tmp/tmux-501/default,123,0" })).toBe(true);
+  expect(isPopup({ TMUX: "/tmp/tmux-501/default,123,0", TMUX_PANE: "%1" })).toBe(false);
+  expect(isPopup({})).toBe(false);
 });
