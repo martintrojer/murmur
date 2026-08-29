@@ -9,9 +9,16 @@ import type { StoreModule } from "./store-api.js";
 // and this is the whole surface the extension touches. getSessionName is
 // optional because an older pi does not have it, and a missing method must
 // degrade to "no name" rather than break the extension.
+// The four events murmur needs, and no `reason` on any of them.
+//
+// pi puts a reason on session_shutdown ("quit" | "reload" | "new" | "resume" |
+// "fork"), but the correct response is the same for all five: clear the badge,
+// record the clear, drop the store handle. What differs is only whether
+// anything follows, and session_start answers that by firing -- so branching on
+// the reason would be a second, weaker way to learn the same thing.
 type ExtensionAPI = {
   on(
-    event: "agent_start" | "agent_end" | "session_shutdown",
+    event: "agent_start" | "agent_end" | "session_shutdown" | "session_start",
     handler: () => void | Promise<void>,
   ): void;
   getSessionName?(): string | undefined;
@@ -231,15 +238,35 @@ export default function murmurPi(pi: ExtensionAPI): void {
     });
   });
 
+  // `session_shutdown` does not mean "the process is exiting". pi fires it for
+  // `/reload`, and for session switch, resume and fork, then rebinds and keeps
+  // going -- its own docs say to clean up here and reestablish in
+  // `session_start`. Treating it as terminal killed reporting permanently on
+  // the first `/reload`: events kept firing, every one was dropped, and the
+  // tmux badge still painted, so the agent looked fine and recorded nothing.
+  // Observed live, twice.
   pi.on("session_shutdown", async () => {
     await enqueue(async () => {
       const location = here();
       tmux.setState(location.window, null);
       await append("cleared", null, location);
-      // Nothing follows a shutdown, so this handle is not coming back: mark it
-      // absent so a late event cannot reopen the store on the way out.
-      absent = true;
+      // Always let go of the handle: on a quit nothing follows, and on a
+      // reload the store must be reopened rather than reused across the
+      // rebind.
       dropStore();
+    });
+  });
+
+  // Reestablish, per pi's documented contract. A reload leaves this instance
+  // live but with its store dropped and its cached location possibly wrong --
+  // the pane can have moved while the session was being switched. Re-resolving
+  // here means the first event after a reload is already correct rather than
+  // being the one that discovers the move.
+  pi.on("session_start", () => {
+    void enqueue(async () => {
+      absent = false;
+      const location = here();
+      lastWindow = location.window;
     });
   });
 }

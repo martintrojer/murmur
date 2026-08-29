@@ -388,6 +388,30 @@ Each was considered and refused with reasons above:
 - configuration knobs beyond peers and theme
 - harnesses other than pi, multiplexers other than tmux, channels other than ssh
 
+## The extension's lifecycle assumptions
+
+The extension is the only part of murmur that lives inside another program's
+process, and every bug in it has come from assuming that process is simpler than
+it is. Three assumptions that were wrong, all of which failed silently because
+the tmux badge is set from the same handler that writes the event:
+
+- **`session_shutdown` is not "the process is exiting".** pi fires it for
+  `/reload`, session switch, resume and fork, then rebinds and continues with
+  the same instance. Cleanup belongs there; re-arming belongs in
+  `session_start`, which fires afterwards. Treating shutdown as terminal stopped
+  reporting permanently on the first `/reload`.
+- **`agent_end` is per turn, not per session.** An agent in active use
+  alternates `working` / `cleared` for its whole life, which is why an idle row
+  needs a liveness axis to be readable at all.
+- **The pane outlives the window.** A pane can move between windows, keeping its
+  id while the window id changes, so the location has to be re-read rather than
+  cached at startup.
+
+The general rule: nothing in the extension may be permanent except "murmur is
+not installed here". Every other giving-up must be recoverable by the next
+event, because the process it lives in can run for days and the user can fix the
+cause from outside without restarting it.
+
 ## Known gaps
 
 - **Liveness of a quiet agent degrades to `unknown` after an hour.** Pids

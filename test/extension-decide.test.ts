@@ -396,3 +396,122 @@ test("link warns when the node has no identity, since the extension would record
   });
   expect(linkPiWithState(home, stateDir)).not.toContain("murmur init");
 });
+
+test("session_shutdown does not permanently silence the extension, because /reload fires it", async () => {
+  // Observed live: reporting stopped the instant `/reload` ran and never came
+  // back. `session_shutdown` reads like "the process is exiting", and the
+  // handler marked the extension absent on that assumption -- but pi fires it
+  // for /reload, and for session switch, resume and fork, then keeps using the
+  // same extension instance. Every later event was dropped while the tmux badge
+  // still painted, so the agent looked fine and reported nothing.
+  const appended: string[] = [];
+
+  vi.doMock("@martintrojer/murmur/extension-store", () => ({
+    loadIdentity: () => ({ host_id: "H", display_name: "h" }),
+    openStore: () => ({
+      append: (event: { state: string }) => appended.push(event.state),
+      close: () => {},
+    }),
+  }));
+
+  vi.doMock("../src/mux.js", () => ({
+    tmux: {
+      currentWindow: () => ({
+        session: "$0",
+        window: "@1",
+        pane: "%1",
+        session_name: null,
+        window_name: null,
+      }),
+      setState: () => {},
+    },
+  }));
+
+  vi.resetModules();
+  const { default: murmurPi } = await import("../src/extension/murmur-pi.js");
+
+  const handlers = new Map<string, () => void | Promise<void>>();
+  murmurPi({ on: (event, handler) => handlers.set(event, handler) });
+
+  // The full documented cycle: pi fires session_shutdown for the old instance,
+  // rebinds, then fires session_start. Extensions clean up in the first and
+  // reestablish in the second.
+  await handlers.get("agent_start")?.();
+  await until(() => appended.length === 1, "first turn");
+  await handlers.get("session_shutdown")?.();
+  await until(() => appended.length === 2, "reload's own clear");
+  await handlers.get("session_start")?.();
+  await handlers.get("agent_start")?.();
+  await until(() => appended.length === 3, "turn after reload");
+
+  // The turn after the reload must be recorded. Before the fix this was
+  // ["working", "cleared"] -- the reload's own clear, and then silence.
+  expect(appended).toEqual(["working", "cleared", "working"]);
+
+  // And it must keep working across repeated reloads, not just the first.
+  await handlers.get("session_shutdown")?.();
+  await handlers.get("session_start")?.();
+  await handlers.get("agent_start")?.();
+  await until(() => appended.length === 5, "turn after a second reload");
+  expect(appended).toEqual(["working", "cleared", "working", "cleared", "working"]);
+
+  vi.doUnmock("@martintrojer/murmur/extension-store");
+  vi.doUnmock("../src/mux.js");
+  vi.resetModules();
+});
+
+test("session_start re-arms an extension that gave up, so a reload is a real recovery", async () => {
+  // The other half of handling /reload. `absent` is the extension's permanent
+  // "stop trying" -- set when the store import fails or the node has no
+  // identity. Both are fixable from outside while pi is running: install
+  // murmur, or run `murmur init`. Without re-arming, the fix would not take
+  // effect until the agent was restarted, and /reload would look like it did
+  // nothing.
+  let identity: { host_id: string } | null = null;
+  const appended: string[] = [];
+
+  vi.doMock("@martintrojer/murmur/extension-store", () => ({
+    loadIdentity: () => identity,
+    openStore: () => ({
+      append: (event: { state: string }) => appended.push(event.state),
+      close: () => {},
+    }),
+  }));
+
+  vi.doMock("../src/mux.js", () => ({
+    tmux: {
+      currentWindow: () => ({
+        session: "$0",
+        window: "@1",
+        pane: "%1",
+        session_name: null,
+        window_name: null,
+      }),
+      setState: () => {},
+    },
+  }));
+
+  vi.resetModules();
+  const { default: murmurPi } = await import("../src/extension/murmur-pi.js");
+
+  const handlers = new Map<string, () => void | Promise<void>>();
+  murmurPi({ on: (event, handler) => handlers.set(event, handler) });
+
+  // No identity: the extension gives up permanently, by design.
+  await handlers.get("agent_start")?.();
+  await until(() => appended.length > 0, "an append that should not happen");
+  expect(appended).toEqual([]);
+
+  // The user runs `murmur init` and reloads.
+  identity = { host_id: "H" };
+  await handlers.get("session_shutdown")?.();
+  await handlers.get("session_start")?.();
+  await handlers.get("agent_start")?.();
+  await until(() => appended.includes("working"), "append after init + reload");
+
+  expect(appended).toContain("working");
+
+  vi.doUnmock("@martintrojer/murmur/extension-store");
+  vi.doUnmock("../src/mux.js");
+  vi.resetModules();
+});

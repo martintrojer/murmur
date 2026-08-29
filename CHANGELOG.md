@@ -50,6 +50,20 @@ about three hours on this machine, so a day-old pid was being reported as alive
 when it may well have belonged to an unrelated process; past an hour the answer
 is `unknown`.
 
+**`/reload` no longer kills reporting.** pi fires `session_shutdown` for
+`/reload` -- and for session switch, resume and fork -- then rebinds and keeps
+using the same extension instance. The extension treated that event as "the
+process is exiting" and shut itself down permanently, so the first `/reload`
+stopped all reporting for the life of the agent. Silently: events kept firing,
+every one was dropped, and the tmux badge still painted, so the agent looked
+fine while recording nothing.
+
+It now follows pi's documented contract -- clean up in `session_shutdown`,
+reestablish in `session_start`. A reload also re-arms an extension that had
+given up because murmur was missing or the node had no identity, so installing
+murmur or running `murmur init` and reloading now takes effect without
+restarting the agent.
+
 **Upgrading murmur now upgrades the pi extension.** `link pi` used to copy the
 whole extension into `~/.pi/agent/extensions/`, which made it a snapshot of the
 version that wrote it: upgrading murmur left the old extension running, with no
@@ -68,7 +82,7 @@ does not create one -- an agent should not decide what a machine is called --
 but the consequence was invisible: it loaded, ran, and recorded nothing while
 the tmux badge still painted.
 
-Tests went 103 to 128, including a new file that drives a real tmux server on a
+Tests went 103 to 130, including a new file that drives a real tmux server on a
 private socket: every other test fakes the multiplexer, so two malformed tmux
 targets passed the whole suite. Every new test was verified by mutating the code
 it covers. One new test was itself flaky (a timer standing in for a barrier) and
