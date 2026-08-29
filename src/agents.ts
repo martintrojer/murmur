@@ -46,9 +46,42 @@ export function shellQuote(value: string): string {
   return `'${value.replaceAll("'", `'\\''`)}'`;
 }
 
+/**
+ * The one process call jump makes that is not a tmux command: the remote probe,
+ * and the direct ssh attach when we are not inside tmux. Injectable so the jump
+ * decision table can be tested without an ssh binary or a live peer -- without
+ * this seam, `jumpToAgent` had no behavioural coverage at all and replacing its
+ * body with `return { ok: true }` kept every jump test green.
+ */
+export type Runner = (
+  file: string,
+  args: string[],
+  inherit?: boolean,
+) => { status: number | null; stdout: string; failed: boolean };
+
+export const spawnRunner: Runner = (file, args, inherit = false) => {
+  const result = spawnSync(file, args, {
+    encoding: "utf8",
+    timeout: 10_000,
+    ...(inherit ? { stdio: "inherit" as const } : {}),
+  });
+  return {
+    status: result.status,
+    stdout: result.stdout ?? "",
+    // spawnSync reports a failure to even start the child in `error`, leaving
+    // status null. Collapsing both here keeps the decision table below reading
+    // as one question rather than two.
+    failed: result.error !== undefined,
+  };
+};
+
 export type JumpResult =
   | { ok: true }
-  | { ok: false; reason: "no_peer" | "unreachable" | "no_tmux" | "window_gone"; message: string };
+  | {
+      ok: false;
+      reason: "no_peer" | "unreachable" | "no_tmux" | "window_gone" | "attach_failed";
+      message: string;
+    };
 
 /**
  * Drop a dead agent's rows from the local replica.
@@ -160,10 +193,15 @@ export function forgetOneAgent(store: Store, agent: Agent, mux: Mux = tmux): voi
   forgetReplica(store, agent.agent_id, agent.host_id);
 }
 
-export function jumpToAgent(store: Store, agent: Agent): JumpResult {
+export function jumpToAgent(
+  store: Store,
+  agent: Agent,
+  mux: Mux = tmux,
+  run: Runner = spawnRunner,
+): JumpResult {
   const identity = loadIdentity();
   if (agent.host_id === identity?.host_id) {
-    const live = tmux.liveWindows();
+    const live = mux.liveWindows();
     if (live && !live.has(agent.window)) {
       forgetReplica(store, agent.agent_id, agent.host_id);
       return {
@@ -172,7 +210,16 @@ export function jumpToAgent(store: Store, agent: Agent): JumpResult {
         message: `${agentLabel(agent)} is gone -- its window no longer exists. Cleared.`,
       };
     }
-    tmux.attach(agent.session, agent.window);
+    // Reporting the attach rather than assuming it. A select-window that fails
+    // is the local twin of the remote symptom: the picker closes, nothing
+    // moves, and nothing says why.
+    if (!mux.attach(agent.session, agent.window)) {
+      return {
+        ok: false,
+        reason: "attach_failed",
+        message: `could not attach to ${agentLabel(agent)} (tmux select-window failed).`,
+      };
+    }
     return { ok: true };
   }
   const peer = store.peers().find((candidate) => candidate.host_id === agent.host_id);
@@ -200,18 +247,18 @@ export function jumpToAgent(store: Store, agent: Agent): JumpResult {
   // collector rides, and without ConnectTimeout it inherited the kernel's dial
   // -- 75s on macOS, bounded only by the timeout below, so a sleeping laptop
   // froze the picker for ten seconds before admitting it was unreachable.
-  const probe = spawnSync(
-    "ssh",
-    [...SSH_OPTIONS, target, `tmux list-windows -a -F ${shellQuote("#{window_id}")}`],
-    { encoding: "utf8", timeout: 10_000 },
-  );
+  const probe = run("ssh", [
+    ...SSH_OPTIONS,
+    target,
+    `tmux list-windows -a -F ${shellQuote("#{window_id}")}`,
+  ]);
   if (probe.status !== 0) {
     // 255 is ssh's own failure code; anything else came from the remote
     // command. Conflating them was wrong in the common case: with a warm
     // ControlMaster socket the host answers instantly and it is tmux that is
     // gone, so "unreachable" sent you looking at the network for a problem that
     // was not there.
-    const sshFailed = probe.status === 255 || probe.error !== undefined;
+    const sshFailed = probe.status === 255 || probe.failed;
     if (sshFailed) {
       // No mark: we learned nothing about the peer's tmux, only that we could
       // not ask. Its agents may be perfectly alive behind a cold socket or a
@@ -234,7 +281,7 @@ export function jumpToAgent(store: Store, agent: Agent): JumpResult {
       message: `${target} has no tmux server running, so its agents are gone. Removed them; they will come back when it reports again.`,
     };
   }
-  const remoteWindows = new Set((probe.stdout ?? "").split("\n").filter(Boolean));
+  const remoteWindows = new Set(probe.stdout.split("\n").filter(Boolean));
   if (!remoteWindows.has(agent.window)) {
     forgetReplica(store, agent.agent_id, agent.host_id);
     return {
@@ -274,17 +321,35 @@ export function jumpToAgent(store: Store, agent: Agent): JumpResult {
     //
     // Matched on window name, which is the only handle available: the ssh is
     // opaque from here, and the remote session id is not a local address.
-    const existing = tmux.windowNamed(name);
+    const existing = mux.windowNamed(name);
     if (existing) {
-      tmux.selectWindow(existing);
-      return { ok: true };
+      return mux.selectWindow(existing)
+        ? { ok: true }
+        : {
+            ok: false,
+            reason: "attach_failed",
+            message: `could not switch to the existing ${name} window.`,
+          };
     }
 
-    spawnSync("tmux", ["new-window", "-n", name, command], { stdio: "ignore" });
-    return { ok: true };
+    return mux.newWindow(name, command)
+      ? { ok: true }
+      : {
+          ok: false,
+          reason: "attach_failed",
+          message: `could not open a window to attach to ${target}.`,
+        };
   }
 
-  // Outside tmux there is no popup to escape, so run it directly.
-  spawnSync("ssh", ["-t", target, "tmux", "attach", "-t", attachTarget], { stdio: "inherit" });
-  return { ok: true };
+  // Outside tmux there is no popup to escape, so run it directly. stdio is
+  // inherited, so this blocks until the user leaves the remote session; a
+  // nonzero exit means the attach itself failed.
+  const attach = run("ssh", ["-t", target, "tmux", "attach", "-t", attachTarget], true);
+  return attach.status === 0 && !attach.failed
+    ? { ok: true }
+    : {
+        ok: false,
+        reason: "attach_failed",
+        message: `ssh attach to ${target} failed.`,
+      };
 }

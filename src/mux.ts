@@ -13,12 +13,17 @@ export interface Mux {
   currentWindow(): Location | null;
   liveWindows(): Set<string> | null;
   setState(window: string, state: AgentState | null): void;
-  attach(session: string, window: string): void;
+  // Reports whether the attach actually happened. runTmux swallows failures to
+  // return null, and a jump that silently failed looked exactly like "enter did
+  // nothing" -- the symptom the remote probe was added to prevent, reproduced
+  // on the local path.
+  attach(session: string, window: string): boolean;
   windowNames(): Map<string, string>;
   windowForPane(pane: string): string | null;
   panesInWindow(window: string): string[];
   windowNamed(name: string): string | null;
-  selectWindow(window: string): void;
+  selectWindow(window: string): boolean;
+  newWindow(name: string, command: string): boolean;
   capture(pane: string, lines?: number): string | null;
 }
 
@@ -106,8 +111,12 @@ export const tmux: Mux = {
     // for a local agent, and why "enter" appeared to do nothing.
     // switch-client moves the client between sessions; select-window moves
     // that session to the right window.
+    //
+    // Only select-window decides the result. switch-client legitimately fails
+    // when there is no client to switch (running outside tmux), and treating
+    // that as a failed jump would report an error for a working attach.
     runTmux(["switch-client", "-t", session]);
-    runTmux(["select-window", "-t", window]);
+    return runTmux(["select-window", "-t", window]) !== null;
   },
 
   // Window ids are what the log stores, because they are stable; names are
@@ -143,7 +152,11 @@ export const tmux: Mux = {
   },
 
   selectWindow(window) {
-    runTmux(["select-window", "-t", window]);
+    return runTmux(["select-window", "-t", window]) !== null;
+  },
+
+  newWindow(name, command) {
+    return runTmux(["new-window", "-n", name, command]) !== null;
   },
 
   // The window a pane belongs to, for a pane murmur has no event for. Clearing

@@ -37,13 +37,14 @@ test("clearing a sibling pane does not clear the agent in the same window", () =
   const mux: Mux = {
     currentWindow: () => null,
     setState: (window) => clearedWindows.push(window),
-    attach: () => {},
+    attach: () => true,
     capture: () => null,
     windowNames: () => new Map(),
     windowForPane: () => null,
     panesInWindow: () => [],
     windowNamed: () => null,
-    selectWindow: () => {},
+    selectWindow: () => true,
+    newWindow: () => true,
     liveWindows: () => new Set<string>(),
   };
 
@@ -80,13 +81,14 @@ test("a pane murmur does not own still gets its badge cleared", () => {
     setState: (window, state) => {
       cleared.push(state === null ? window : null);
     },
-    attach: () => {},
+    attach: () => true,
     capture: () => null,
     windowNames: () => new Map(),
     windowForPane: () => "@42",
     panesInWindow: () => [],
     windowNamed: () => null,
-    selectWindow: () => {},
+    selectWindow: () => true,
+    newWindow: () => true,
   };
   clearPane("%unknown", mux);
   expect(cleared).toEqual(["@42"]);
@@ -117,13 +119,14 @@ const NOOP_MUX: Mux = {
   currentWindow: () => null,
   liveWindows: () => new Set<string>(),
   setState: () => {},
-  attach: () => {},
+  attach: () => true,
   capture: () => null,
   windowNames: () => new Map(),
   windowForPane: () => null,
   panesInWindow: () => [],
   windowNamed: () => null,
-  selectWindow: () => {},
+  selectWindow: () => true,
+  newWindow: () => true,
 };
 
 test("a sibling shell pane does not clear the agent's badge", () => {

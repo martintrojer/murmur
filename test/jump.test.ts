@@ -9,11 +9,14 @@ import {
   forgetHostReplica,
   forgetOneAgent,
   forgetReplica,
+  jumpToAgent,
+  type Runner,
 } from "../src/agents.js";
 import { ensureIdentity } from "../src/identity.js";
 import { type Mux, tmux } from "../src/mux.js";
 import { status } from "../src/status.js";
 import { type NewEvent, openStore, type Store } from "../src/store.js";
+import type { Event } from "../src/types.js";
 
 let store: Store;
 let dir: string;
@@ -227,13 +230,14 @@ test("forgetting a local agent clears its tmux badge as well as the row", () => 
     currentWindow: () => null,
     liveWindows: () => new Set<string>(),
     setState: (window, state) => cleared.push(state === null ? window : state),
-    attach: () => {},
+    attach: () => true,
     capture: () => null,
     windowNames: () => new Map(),
     windowForPane: () => null,
     panesInWindow: () => [],
     windowNamed: () => null,
-    selectWindow: () => {},
+    selectWindow: () => true,
+    newWindow: () => true,
   };
   const agent = {
     agent_id: `${identity.host_id}:%1`,
@@ -244,4 +248,217 @@ test("forgetting a local agent clears its tmux badge as well as the row", () => 
   forgetOneAgent(store, agent, spy);
 
   expect(cleared).toEqual(["@7"]);
+});
+
+// --- jumpToAgent decision table -------------------------------------------
+//
+// These were the gap a test review found: every jump test exercised a helper
+// (forgetHostReplica, tmux.windowNamed) but none called jumpToAgent, so
+// replacing its whole body with `return { ok: true }` kept the file green. The
+// probe classification, the window check, window reuse and the attach paths had
+// no coverage at all.
+
+function fakeMux(over: Partial<Mux> = {}): Mux {
+  return {
+    currentWindow: () => null,
+    liveWindows: () => new Set<string>(),
+    setState: () => {},
+    attach: () => true,
+    capture: () => null,
+    windowNames: () => new Map(),
+    windowForPane: () => null,
+    panesInWindow: () => [],
+    windowNamed: () => null,
+    selectWindow: () => true,
+    newWindow: () => true,
+    ...over,
+  };
+}
+
+// `base` is a NewEvent; ingest wants a full Event, so fill the replica fields
+// the authoring node would have sent.
+function replica(over: Partial<Event> = {}): Event {
+  return {
+    ...base,
+    host_id: "remote-host",
+    seq: 1,
+    ts: 1,
+    session_name: null,
+    window_name: null,
+    agent_name: null,
+    pi_session: null,
+    ...over,
+  } as Event;
+}
+
+function ok(stdout = ""): ReturnType<Runner> {
+  return { status: 0, stdout, failed: false };
+}
+
+function remoteAgent(over: Partial<Agent> = {}): Agent {
+  return {
+    agent_id: "remote-host:%9",
+    host_id: "remote-host",
+    session: "$0",
+    window: "@9",
+    pane: "%9",
+    ...over,
+  } as unknown as Agent;
+}
+
+test("ssh's own failure is unreachable, and keeps the agents", () => {
+  store.ingest([replica()]);
+  store.upsertPeer({ name: "p", target: "p", host_id: "remote-host" });
+
+  const result = jumpToAgent(store, remoteAgent(), fakeMux(), () => ({
+    status: 255,
+    stdout: "",
+    failed: false,
+  }));
+
+  expect(result).toMatchObject({ ok: false, reason: "unreachable" });
+  // Proves nothing about the agents, so they stay.
+  expect(store.allEvents()).toHaveLength(1);
+});
+
+test("a spawn that never starts is also unreachable", () => {
+  store.upsertPeer({ name: "p", target: "p", host_id: "remote-host" });
+
+  const result = jumpToAgent(store, remoteAgent(), fakeMux(), () => ({
+    status: null,
+    stdout: "",
+    failed: true,
+  }));
+
+  expect(result).toMatchObject({ ok: false, reason: "unreachable" });
+});
+
+test("a dead remote tmux is no_tmux, and removes that host's agents", () => {
+  store.ingest([replica()]);
+  store.upsertPeer({ name: "p", target: "p", host_id: "remote-host" });
+
+  // Not 255: ssh worked, the remote tmux did not.
+  const result = jumpToAgent(store, remoteAgent(), fakeMux(), () => ({
+    status: 1,
+    stdout: "",
+    failed: false,
+  }));
+
+  expect(result).toMatchObject({ ok: false, reason: "no_tmux" });
+  expect(store.allEvents()).toHaveLength(0);
+});
+
+test("a window the peer no longer lists is window_gone, and drops one replica", () => {
+  store.ingest([replica(), replica({ agent_id: "remote-host:%8", seq: 2, ts: 2, pane: "%8" })]);
+  store.upsertPeer({ name: "p", target: "p", host_id: "remote-host" });
+
+  // Peer answers, but @9 is not among its windows.
+  const result = jumpToAgent(store, remoteAgent(), fakeMux(), () => ok("@1\n@2\n"));
+
+  expect(result).toMatchObject({ ok: false, reason: "window_gone" });
+  // Only the jumped-to agent goes; its sibling on the same host stays.
+  expect(store.allEvents().map((event) => event.agent_id)).toEqual(["remote-host:%8"]);
+});
+
+test("no configured peer for the host is no_peer", () => {
+  const result = jumpToAgent(store, remoteAgent(), fakeMux(), () => ok("@9\n"));
+
+  expect(result).toMatchObject({ ok: false, reason: "no_peer" });
+});
+
+test("an existing per-host window is selected, and no new one is opened", () => {
+  store.upsertPeer({ name: "p", target: "p", host_id: "remote-host" });
+  vi.stubEnv("TMUX", "/tmp/tmux-1000/default,123,0");
+  let opened = 0;
+
+  const result = jumpToAgent(
+    store,
+    remoteAgent(),
+    fakeMux({
+      windowNamed: () => "@42",
+      newWindow: () => {
+        opened += 1;
+        return true;
+      },
+    }),
+    () => ok("@9\n"),
+  );
+
+  expect(result).toEqual({ ok: true });
+  expect(opened).toBe(0);
+});
+
+test("with no existing window, exactly one is opened for the peer", () => {
+  store.upsertPeer({ name: "p", target: "p", host_id: "remote-host" });
+  vi.stubEnv("TMUX", "/tmp/tmux-1000/default,123,0");
+  const opened: string[] = [];
+
+  const result = jumpToAgent(
+    store,
+    remoteAgent(),
+    fakeMux({
+      newWindow: (name, command) => {
+        opened.push(`${name} :: ${command}`);
+        return true;
+      },
+    }),
+    () => ok("@9\n"),
+  );
+
+  expect(result).toEqual({ ok: true });
+  expect(opened).toHaveLength(1);
+  // Named after the configured peer, and the remote session:window is quoted
+  // against the LOCAL shell -- `$0:@9` would otherwise expand to `:@9`.
+  expect(opened[0]).toContain("@p ::");
+  expect(opened[0]).toContain("'$0:@9'");
+});
+
+test("a failed new-window is reported, not swallowed as success", () => {
+  store.upsertPeer({ name: "p", target: "p", host_id: "remote-host" });
+  vi.stubEnv("TMUX", "/tmp/tmux-1000/default,123,0");
+
+  const result = jumpToAgent(store, remoteAgent(), fakeMux({ newWindow: () => false }), () =>
+    ok("@9\n"),
+  );
+
+  expect(result).toMatchObject({ ok: false, reason: "attach_failed" });
+});
+
+test("outside tmux, a failed ssh attach is reported", () => {
+  store.upsertPeer({ name: "p", target: "p", host_id: "remote-host" });
+  vi.stubEnv("TMUX", "");
+
+  const result = jumpToAgent(store, remoteAgent(), fakeMux(), (_file, args) =>
+    // The probe succeeds; the attach that follows does not.
+    args.includes("attach") ? { status: 1, stdout: "", failed: false } : ok("@9\n"),
+  );
+
+  expect(result).toMatchObject({ ok: false, reason: "attach_failed" });
+});
+
+test("a local jump reports a failed select-window instead of claiming success", () => {
+  const identity = ensureIdentity();
+  const agent = remoteAgent({ agent_id: `${identity.host_id}:%1`, host_id: identity.host_id });
+
+  // The window must be live, or this hits window_gone first.
+  const result = jumpToAgent(
+    store,
+    agent,
+    fakeMux({ liveWindows: () => new Set(["@9"]), attach: () => false }),
+  );
+
+  expect(result).toMatchObject({ ok: false, reason: "attach_failed" });
+});
+
+test("a local jump to a live window succeeds", () => {
+  const identity = ensureIdentity();
+  const agent = remoteAgent({ agent_id: `${identity.host_id}:%1`, host_id: identity.host_id });
+
+  const result = jumpToAgent(
+    store,
+    agent,
+    fakeMux({ liveWindows: () => new Set(["@9"]), attach: () => true }),
+  );
+
+  expect(result).toEqual({ ok: true });
 });
