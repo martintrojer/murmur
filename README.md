@@ -126,7 +126,7 @@ session, and its host, as literal substrings rather than scattered characters.
 
 ## Status
 
-**0.1.1.** In daily use on one machine and verified across two over real ssh.
+**0.1.2.** In daily use on one machine and verified across two over real ssh.
 It is new and not battle-tested. The known gaps are listed at the end of
 [ARCHITECTURE.md](ARCHITECTURE.md#known-gaps); the one most likely to annoy you
 is that jumping to a remote agent nests tmux inside tmux, which every tool in
