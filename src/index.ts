@@ -22,6 +22,7 @@ export {
   COLLECT_INTERVAL_MS,
   type CollectResult,
   collect,
+  MAX_CONCURRENT_PEERS,
   STALENESS_MS,
 } from "./collector.js";
 export { eventFromWire, exportJsonl, SCHEMA_VERSION } from "./export.js";

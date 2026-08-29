@@ -223,11 +223,19 @@ latencies. Both are the reader pulling, and OpenSSH `ControlMaster` collapses
 them, because the persisted control socket *is* the tunnel. Push needs a
 listener, which is the thing this design does not have.
 
-**The collector never initiates authentication.** A machine that wants a
-hardware-token touch per connection makes a background collector intolerable, so
-the collector rides an existing warm control socket and fails fast otherwise.
-The consequence is correct: remote visibility is a side effect of having worked
-on that box, and a cold host shows stale until you connect for any reason.
+**The collector never prompts.** It reuses a warm `ControlMaster` socket when
+there is one and cold-connects when there is not, so with ordinary key auth a
+peer is visible whether or not you have ssh'd there recently — fleet visibility
+is not rationed by a daily chore. `BatchMode=yes` is what makes the cold path
+acceptable: no password, passphrase or host-key prompt, so a peer that cannot
+authenticate silently fails fast and shows stale instead of blocking on a
+human.
+
+The unhandled case is a host demanding a hardware-token touch per connection,
+where "cannot authenticate without a human" is not something `BatchMode` can
+detect before the token blinks. `hasWarmSocket` exists for that: gating collect
+on it per peer would restore the strict posture for those hosts only. Not wired
+up, because no peer in use needs it.
 
 **Membership is local and asymmetric.** No shared node list, no registry, no
 join protocol. Reachability is not symmetric: a laptop reaches a server, and

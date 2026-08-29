@@ -212,7 +212,7 @@ export function jumpToAgent(store: Store, agent: Agent): JumpResult {
       return {
         ok: false,
         reason: "unreachable",
-        message: `cannot reach ${target} over ssh. The collector never prompts for auth, so connect once by hand to warm the connection, then retry.`,
+        message: `cannot reach ${target} over ssh. Nothing here ever prompts for auth, so check the host is awake and reachable, or connect once by hand to see the real error.`,
       };
     }
 

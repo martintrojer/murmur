@@ -17,8 +17,10 @@ import type { Store } from "./store.js";
 
 const GLANCE_LINES = 40;
 
-// Same posture as the collector: ride a warm socket or fail fast, never
-// prompt. A preview pane must not trigger a yubikey touch on every keypress.
+// Same posture as the collector: reuse a warm control socket when there is one,
+// cold-connect when there is not, and never prompt. BatchMode is what matters
+// here — a preview pane redrawing on every keypress must never block on a
+// human. Kept in sync with SSH_OPTIONS in channel.ts by hand.
 const SSH_OPTIONS = [
   "-o",
   "BatchMode=yes",

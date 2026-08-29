@@ -17,6 +17,25 @@ const CONNECT_TIMEOUT_S = 2;
 // laptop behaves. Bounds the whole exchange rather than just the dial.
 const EXEC_TIMEOUT_MS = 10_000;
 
+// Warm if possible, cold if not, never interactive.
+//
+// ControlMaster=no attaches to a master socket left behind by an ordinary
+// `ssh <host>` (given ControlMaster auto + ControlPersist in ssh_config), so a
+// peer you have touched recently costs a new channel on an authenticated
+// connection rather than a handshake.
+//
+// When no socket is listening OpenSSH falls back to connecting normally, and we
+// want that: with plain key auth a cold peer collects fine, just slower
+// (~170ms against ~10ms measured on a LAN). Fleet visibility should not depend
+// on having ssh'd somewhere today.
+//
+// BatchMode=yes bounds what that fallback may do. It disables every
+// interactive prompt — password, passphrase, host key confirmation — so a
+// cold peer that cannot authenticate silently fails immediately instead of
+// blocking a background collect on a human. Note this is "never prompt", not
+// "never authenticate": a host demanding a hardware-token touch per connection
+// is the case this does not fully cover, and the reason `hasWarmSocket` exists
+// should that ever need gating.
 const SSH_OPTIONS = [
   "-o",
   "BatchMode=yes",
