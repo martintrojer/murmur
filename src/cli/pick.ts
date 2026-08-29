@@ -1,6 +1,13 @@
 import { spawnSync } from "node:child_process";
 import type { Command } from "commander";
-import { type Agent, agentLabel, agentLocation, jumpToAgent, terminalText } from "../agents.js";
+import {
+  type Agent,
+  agentLabel,
+  agentLocation,
+  forgetOneAgent,
+  jumpToAgent,
+  terminalText,
+} from "../agents.js";
 import { glance } from "../glance.js";
 import { loadIdentity } from "../identity.js";
 import { status, statusWithCollect } from "../status.js";
@@ -318,6 +325,7 @@ export async function runPick(store: Store, options: PickOptions = {}): Promise<
     .join(" ");
 
   const self = process.argv[1] ?? "murmur";
+  const allFlag = options.all ? " --all" : "";
   // A preview beside the list needs room for both. Below ~150 columns the
   // 58% split squeezes the host and flags columns off the end, so start
   // stacked and let ctrl-p cycle from there.
@@ -350,7 +358,7 @@ export async function runPick(store: Store, options: PickOptions = {}): Promise<
       `${prompt}${prompt ? "  " : ""}`,
       "--header",
       [
-        `enter jump   ctrl-r refresh   ctrl-p preview   filter: ${FILTER_KEYS.map(
+        `enter jump   ^r refresh   ^p preview   del forget   filter: ${FILTER_KEYS.map(
           ([key, state]) => `${key.replace("ctrl-", "^")} ${state || "all"}`,
         ).join(" ")}`,
         hidden ? `${hidden} crew hidden (--all)` : "",
@@ -369,7 +377,17 @@ export async function runPick(store: Store, options: PickOptions = {}): Promise<
       "--bind",
       "ctrl-p:change-preview-window(bottom:60%,border-top,wrap|hidden|right:58%,border-left,wrap)",
       "--bind",
-      `ctrl-r:reload(${process.execPath} ${self} pick --rows${options.all ? " --all" : ""})`,
+      `ctrl-r:reload(${process.execPath} ${self} pick --rows${allFlag})`,
+      // Manual dismissal for a row nothing else will clear.
+      //
+      // The delete key, not a ctrl chord. ctrl-shift-d does not exist -- a
+      // terminal sends the same bytes as ctrl-d -- and ctrl-alt-d, while it
+      // does dispatch distinctly, sits one modifier away from ctrl-d in a
+      // header that lists both. One is a filter and the other destroys a row,
+      // so a near-miss is a deleted agent. `delete` is the key that already
+      // means remove this, and it collides with no filter letter.
+      "--bind",
+      `delete:reload(${process.execPath} ${self} pick --forget {1}${allFlag})`,
       ...filterBinds,
       "--no-select-1",
       "--no-exit-0",
@@ -399,6 +417,24 @@ export async function runPick(store: Store, options: PickOptions = {}): Promise<
   }
 }
 
+/**
+ * Delete one agent, then print the remaining rows.
+ *
+ * One command rather than two because fzf's `reload` replaces the list with a
+ * command's stdout: doing the delete and the reprint separately would race the
+ * reload against the delete and redraw the row it had just removed.
+ */
+export async function runForget(
+  store: Store,
+  agentId: string,
+  options: PickOptions = {},
+): Promise<void> {
+  const view = status(store);
+  const agent = view.agents.find((candidate) => candidate.agent_id === agentId);
+  if (agent) forgetOneAgent(store, agent);
+  await runRows(store, options);
+}
+
 /** Print the row list only, for fzf's `reload` binding. */
 export async function runRows(store: Store, options: PickOptions = {}): Promise<void> {
   const identity = loadIdentity();
@@ -420,14 +456,18 @@ export function registerPick(program: Command): void {
     .option("--all", "include orchestrated agents")
     .option("--preview <agent-id>", "render the preview pane for one agent (internal)")
     .option("--rows", "print picker rows only (internal, for reload)")
-    .action(async (options: PickOptions & { preview?: string; rows?: boolean }) => {
-      const store = openStore();
-      try {
-        if (options.preview) runPreview(store, options.preview);
-        else if (options.rows) await runRows(store, options);
-        else await runPick(store, options);
-      } finally {
-        store.close();
-      }
-    });
+    .option("--forget <agent-id>", "drop one agent, then print rows (internal)")
+    .action(
+      async (options: PickOptions & { preview?: string; rows?: boolean; forget?: string }) => {
+        const store = openStore();
+        try {
+          if (options.preview) runPreview(store, options.preview);
+          else if (options.forget) await runForget(store, options.forget, options);
+          else if (options.rows) await runRows(store, options);
+          else await runPick(store, options);
+        } finally {
+          store.close();
+        }
+      },
+    );
 }

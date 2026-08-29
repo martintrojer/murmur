@@ -92,6 +92,9 @@ Bind it to a key and you have the whole interface:
 bind -N "agent state picker" a display-popup -E -w 80% -h 60% "murmur pick"
 ```
 
+In the picker: `^r` refreshes, `^p` cycles the preview, `del` drops a stuck
+row, and `^b` / `^w` / `^d` / `^x` filter by state.
+
 `murmur status` prints per-state counts for a status bar. Everything else is
 `--help`.
 

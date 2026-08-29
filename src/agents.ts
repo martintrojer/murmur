@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { loadIdentity } from "./identity.js";
-import { tmux } from "./mux.js";
+import { type Mux, tmux } from "./mux.js";
 import type { Status } from "./status.js";
 import type { Store } from "./store.js";
 
@@ -127,6 +127,36 @@ export function forgetReplica(store: Store, agentId: string, hostId: string): vo
   } catch {
     // Cosmetic only: the next collect reconciles either way.
   }
+}
+
+/**
+ * Drop one agent from the picker by hand.
+ *
+ * The escape hatch for a row that is stuck and that nothing else will clear: an
+ * agent whose pane died in a way that left no terminal event, or a replica from
+ * a peer that will never report again. Everything else here reconciles on its
+ * own, so this exists for the cases that do not.
+ *
+ * A local agent also gets its tmux badge cleared. Deleting only the row would
+ * leave `@agent_state` set, which the status bar and the tms session picker
+ * both read — so the glyph would survive the row it came from and nothing would
+ * ever clear it.
+ *
+ * Not authoritative, and cannot be: for a remote agent this deletes a replica,
+ * and the owning node still holds the truth. If that node reports again the
+ * agent comes back, which is correct — a row you dismissed while the agent was
+ * alive should return.
+ */
+export function forgetOneAgent(store: Store, agent: Agent, mux: Mux = tmux): void {
+  const identity = loadIdentity();
+  if (agent.host_id === identity?.host_id) {
+    try {
+      mux.setState(agent.window, null);
+    } catch {
+      // Best effort: the row still goes.
+    }
+  }
+  forgetReplica(store, agent.agent_id, agent.host_id);
 }
 
 export function jumpToAgent(store: Store, agent: Agent): JumpResult {

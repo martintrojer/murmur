@@ -2,8 +2,16 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { agentLabel, agentLocation, forgetHostReplica, forgetReplica } from "../src/agents.js";
-import { tmux } from "../src/mux.js";
+import {
+  type Agent,
+  agentLabel,
+  agentLocation,
+  forgetHostReplica,
+  forgetOneAgent,
+  forgetReplica,
+} from "../src/agents.js";
+import { ensureIdentity } from "../src/identity.js";
+import { type Mux, tmux } from "../src/mux.js";
 import { status } from "../src/status.js";
 import { type NewEvent, openStore, type Store } from "../src/store.js";
 
@@ -205,4 +213,34 @@ test("an ssh failure keeps the agents, a dead tmux server removes them", () => {
   // the dead agents reappeared looking healthy one second later.
   expect(store.peers()[0]?.watermark).toBe(4);
   expect(store.peers()[0]?.tmux_down_at).not.toBeNull();
+});
+
+test("forgetting a local agent clears its tmux badge as well as the row", () => {
+  // The manual escape hatch for a stuck row. Deleting only the row would leave
+  // @agent_state set, which the status bar and the tms session picker both read
+  // — so the glyph would outlive the row it came from, and nothing would ever
+  // clear it.
+  const store = openStore();
+  const identity = ensureIdentity();
+  const cleared: (string | null)[] = [];
+  const spy: Mux = {
+    currentWindow: () => null,
+    liveWindows: () => new Set<string>(),
+    setState: (window, state) => cleared.push(state === null ? window : state),
+    attach: () => {},
+    capture: () => null,
+    windowNames: () => new Map(),
+    windowForPane: () => null,
+    windowNamed: () => null,
+    selectWindow: () => {},
+  };
+  const agent = {
+    agent_id: `${identity.host_id}:%1`,
+    host_id: identity.host_id,
+    window: "@7",
+  } as unknown as Agent;
+
+  forgetOneAgent(store, agent, spy);
+
+  expect(cleared).toEqual(["@7"]);
 });
