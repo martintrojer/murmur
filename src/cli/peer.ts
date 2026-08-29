@@ -27,6 +27,29 @@ function sshHosts(): string[] {
   }
 }
 
+/**
+ * Column-aligned plain text. Rows are all-ASCII here (peer names, ssh targets
+ * and hostnames), so `length` is a fine width; trailing cells are not padded so
+ * the output stays clean for `cut` and friends.
+ */
+export function formatTable(rows: string[][]): string {
+  const widths: number[] = [];
+  for (const row of rows) {
+    row.forEach((cell, index) => {
+      widths[index] = Math.max(widths[index] ?? 0, cell.length);
+    });
+  }
+  return rows
+    .map((row) =>
+      row
+        .map((cell, index) => (index === row.length - 1 ? cell : cell.padEnd(widths[index] ?? 0)))
+        .join("  ")
+        .trimEnd(),
+    )
+    .map((line) => `${line}\n`)
+    .join("");
+}
+
 export function registerPeer(program: Command): void {
   const peer = program.command("peer").description("Manage peers");
 
@@ -116,14 +139,23 @@ export function registerPeer(program: Command): void {
       const store = openStore();
       try {
         const peers = store.peers();
-        if (options.json) process.stdout.write(`${JSON.stringify(peers)}\n`);
-        else {
-          for (const configured of peers) {
-            process.stdout.write(
-              `${configured.name}\t${configured.target}\t${configured.display_name ?? "unknown"}\n`,
-            );
-          }
+        if (options.json) {
+          process.stdout.write(`${JSON.stringify(peers)}\n`);
+          return;
         }
+        if (peers.length === 0) {
+          process.stdout.write("no peers configured\n");
+          return;
+        }
+        const rows = [
+          ["NAME", "TARGET", "HOST"],
+          ...peers.map((configured) => [
+            configured.name,
+            configured.target,
+            configured.display_name ?? "unknown",
+          ]),
+        ];
+        process.stdout.write(formatTable(rows));
       } finally {
         store.close();
       }

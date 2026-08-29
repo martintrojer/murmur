@@ -2,7 +2,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, expect, test } from "vitest";
-import { parseSshHosts } from "../src/cli/peer.js";
+import { formatTable, parseSshHosts } from "../src/cli/peer.js";
 import { openStore } from "../src/store.js";
 
 beforeEach(() => {
@@ -54,4 +54,20 @@ test("a peer keeps its identity when re-added under the same name", () => {
   store.upsertPeer({ name: "bubba", target: "bubba" });
   expect(store.peers()).toHaveLength(1);
   expect(store.peers()[0]?.host_id).toBe("H");
+});
+
+test("peer list output is column-aligned under a header", () => {
+  const table = formatTable([
+    ["NAME", "TARGET", "HOST"],
+    ["macmini", "macmini", "Martins-Mac-mini.local"],
+    ["pc", "linuxpc", "18c04d69b860"],
+  ]);
+  expect(table).toBe(
+    [
+      "NAME     TARGET   HOST",
+      "macmini  macmini  Martins-Mac-mini.local",
+      "pc       linuxpc  18c04d69b860",
+      "",
+    ].join("\n"),
+  );
 });
