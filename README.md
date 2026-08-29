@@ -85,23 +85,41 @@ murmur link pi   # install the agent-side extension
 `link pi` writes the extension into `~/.pi/agent/extensions/`, pinned to this
 installation. Re-run it after upgrading murmur.
 
-Then, on whichever machine you want to watch from:
+Also on every node, in `.tmux.conf`, so a finished agent stops asking for
+attention once you look at it:
+
+```tmux
+set-hook -g after-select-pane      "run-shell -b 'murmur clear --pane #{pane_id}'"
+set-hook -g after-select-window    "run-shell -b 'murmur clear --pane #{pane_id}'"
+set-hook -g client-session-changed "run-shell -b 'murmur clear --pane #{pane_id}'"
+```
+
+These are per node and not optional. The `cleared` event they write replicates,
+so a node without them leaves its agents marked `done` in *every* peer's picker,
+not only its own status bar. Verify with `tmux show-hooks -g`: `set-hook`
+accepts a hook name your tmux does not have and exits 0, so a wrong name fails
+silently.
+
+The pane id is passed explicitly because hooks run in the tmux server, where
+`$TMUX_PANE` is unset, and because the badge belongs to the window while "you
+looked at it" is true of one pane. Without it, a window holding an agent and a
+shell clears when you focus the shell.
+
+Then, on whichever machine you want to watch from, add the peers and bind the
+picker to a key:
 
 ```bash
 murmur peer add devbox   # an ssh target; identity is discovered
-murmur pick
 ```
-
-Bind it to a key and you have the whole interface:
 
 ```tmux
 bind -N "agent state picker" a display-popup -E -w 80% -h 60% "murmur pick"
 ```
 
-In the picker: `^r` refreshes, `^p` cycles the preview, `del` drops a stuck
-row, and `^b` / `^w` / `^d` / `^x` filter by state. Typing filters on the agent
-name, its workstream or tmux session, and its host, matching literal substrings
-rather than scattered characters.
+In the picker: `^r` refreshes, `^p` cycles the preview, and `del` drops a stuck
+row. `^b` / `^w` / `^d` / `^x` filter to blocked, working, done or crashed, and
+`^a` clears the filter. Typing matches the agent name, its workstream or tmux
+session, and its host, as literal substrings rather than scattered characters.
 
 `murmur status` prints per-state counts for a status bar. Everything else is
 `--help`.

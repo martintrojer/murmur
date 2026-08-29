@@ -81,6 +81,14 @@ attach`. tmux must be running on the far side, which is why a dead remote tmux
 server gets its own diagnosis rather than being reported as an unreachable
 host.
 
+The badge also has to be cleared from outside, which is why `murmur clear
+--pane <id>` exists and why tmux hooks have to call it. A window option is what
+the status bar and the `tms` session picker read, so it outlives the agent
+unless something clears it, and the agent itself cannot: "you looked at it" is
+an event only the multiplexer sees. Hooks run in the tmux server with no
+`$TMUX_PANE`, so the pane id is passed explicitly — and it must be, because the
+badge belongs to the window while the looking belongs to one pane.
+
 ## The six units
 
 | Unit | Does | Depends on |
