@@ -36,7 +36,12 @@ const EXEC_TIMEOUT_MS = 10_000;
 // "never authenticate": a host demanding a hardware-token touch per connection
 // is the case this does not fully cover, and the reason `hasWarmSocket` exists
 // should that ever need gating.
-const SSH_OPTIONS = [
+//
+// Exported because every ssh murmur runs wants exactly this posture -- the
+// collector, the picker's preview, the jump probe. Three hand-rolled copies is
+// how one of them ends up without BatchMode and starts prompting for auth on
+// every keypress.
+export const SSH_OPTIONS = [
   "-o",
   "BatchMode=yes",
   "-o",

@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { SSH_OPTIONS } from "./channel.js";
 import { loadIdentity } from "./identity.js";
 import { type Mux, tmux } from "./mux.js";
 import type { Status } from "./status.js";
@@ -193,9 +194,15 @@ export function jumpToAgent(store: Store, agent: Agent): JumpResult {
   // and tmux answers `-F expects an argument`, which looked exactly like an
   // unreachable host. One quoted string, so the remote shell passes the format
   // through untouched.
+  //
+  // Shares the collector's SSH_OPTIONS rather than passing BatchMode alone.
+  // Without ControlPath the probe could not use the warm master socket the
+  // collector rides, and without ConnectTimeout it inherited the kernel's dial
+  // -- 75s on macOS, bounded only by the timeout below, so a sleeping laptop
+  // froze the picker for ten seconds before admitting it was unreachable.
   const probe = spawnSync(
     "ssh",
-    ["-o", "BatchMode=yes", target, `tmux list-windows -a -F ${shellQuote("#{window_id}")}`],
+    [...SSH_OPTIONS, target, `tmux list-windows -a -F ${shellQuote("#{window_id}")}`],
     { encoding: "utf8", timeout: 10_000 },
   );
   if (probe.status !== 0) {

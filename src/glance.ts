@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import type { Agent } from "./agents.js";
+import { SSH_OPTIONS } from "./channel.js";
 import { loadIdentity } from "./identity.js";
 import { tmux } from "./mux.js";
 import type { Store } from "./store.js";
@@ -16,21 +17,6 @@ import type { Store } from "./store.js";
  */
 
 const GLANCE_LINES = 40;
-
-// Same posture as the collector: reuse a warm control socket when there is one,
-// cold-connect when there is not, and never prompt. BatchMode is what matters
-// here — a preview pane redrawing on every keypress must never block on a
-// human. Kept in sync with SSH_OPTIONS in channel.ts by hand.
-const SSH_OPTIONS = [
-  "-o",
-  "BatchMode=yes",
-  "-o",
-  "ControlMaster=no",
-  "-o",
-  "ControlPath=~/.ssh/control/%r@%h:%p",
-  "-o",
-  "ConnectTimeout=2",
-];
 
 export function glance(store: Store, agent: Agent, lines = GLANCE_LINES): string | null {
   if (agent.host_id === loadIdentity()?.host_id) return tmux.capture(agent.pane, lines);
