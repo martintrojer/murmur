@@ -16,6 +16,7 @@ export interface Mux {
   attach(session: string, window: string): void;
   windowNames(): Map<string, string>;
   windowForPane(pane: string): string | null;
+  panesInWindow(window: string): string[];
   windowNamed(name: string): string | null;
   selectWindow(window: string): void;
   capture(pane: string, lines?: number): string | null;
@@ -124,6 +125,14 @@ export const tmux: Mux = {
 
   // First window carrying this exact name, or null. Used to reuse a per-host
   // ssh window instead of opening another one.
+  // Sibling panes, for deciding whether an unowned pane may clear the window's
+  // badge. A window holding an agent and a shell must not lose the badge when
+  // you focus the shell.
+  panesInWindow(window) {
+    const out = runTmux(["list-panes", "-t", window, "-F", "#{pane_id}"]);
+    return out?.split("\n").filter(Boolean) ?? [];
+  },
+
   windowNamed(name) {
     const out = runTmux(["list-windows", "-a", "-F", "#{window_id}\t#{window_name}"]);
     for (const line of out?.split("\n") ?? []) {

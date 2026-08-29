@@ -231,6 +231,7 @@ test("forgetting a local agent clears its tmux badge as well as the row", () => 
     capture: () => null,
     windowNames: () => new Map(),
     windowForPane: () => null,
+    panesInWindow: () => [],
     windowNamed: () => null,
     selectWindow: () => {},
   };
