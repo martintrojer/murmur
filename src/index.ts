@@ -1,7 +1,13 @@
 // SDK entry. package.json advertises this as the "." export, so anything a
 // consumer needs to drive murmur without shelling out to the CLI belongs here.
 // The CLI is a thin layer over exactly these units.
-export const VERSION = "0.1.0";
+// Read from the manifest rather than restated here: the version lived in
+// package.json and in this file, and two copies of one fact drift. npm bumps
+// the manifest, so the manifest is the source.
+import { createRequire } from "node:module";
+
+const manifest = createRequire(import.meta.url)("../package.json") as { version: string };
+export const VERSION: string = manifest.version;
 
 export {
   type Agent,
