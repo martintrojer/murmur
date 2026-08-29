@@ -11,12 +11,14 @@ import {
   forgetReplica,
   jumpToAgent,
   type Runner,
+  remoteSessionName,
 } from "../src/agents.js";
 import { ensureIdentity } from "../src/identity.js";
-import { type Mux, tmux } from "../src/mux.js";
+import { tmux } from "../src/mux.js";
 import { status } from "../src/status.js";
 import { type NewEvent, openStore, type Store } from "../src/store.js";
 import type { Event } from "../src/types.js";
+import { fakeMux } from "./helpers/fake-mux.js";
 
 let store: Store;
 let dir: string;
@@ -171,13 +173,17 @@ test("a no-tmux jump forgets every agent on that host", () => {
   expect(peer?.tmux_down_at).not.toBeNull();
 });
 
-test("windowNamed finds an existing per-host window", () => {
+test("the real tmux reports a missing per-host wrapper as absent", () => {
   // The seam behind the reported bug: selecting a remote agent opened a NEW
-  // tmux window every time. The window itself is legitimate — a remote attach
-  // needs a terminal that outlives the popup — but one per host is the whole
-  // requirement, so the jump looks for an existing @<host> window first.
-  // Exercised here against a real tmux via the mux seam; the reuse itself is
-  // verified by hand, since it ends in spawnSync.
+  // tmux window every time. The extra terminal is legitimate — a remote attach
+  // needs one that outlives the popup — but one per host is the whole
+  // requirement, so the jump looks for an existing wrapper first.
+  //
+  // Against a real tmux, unlike the fakes above: sessionNamed does exact
+  // matching over `list-sessions`, and a bare `has-session -t name` would have
+  // matched by PREFIX, so a wrapper for `bub` would be found by a session
+  // called `bubba`. The reuse itself ends in spawnSync and is verified by hand.
+  expect(tmux.sessionNamed("murmur-test-no-such-session~")).toBe(false);
   expect(tmux.windowNamed("murmur-test-no-such-window")).toBeNull();
 });
 
@@ -226,19 +232,9 @@ test("forgetting a local agent clears its tmux badge as well as the row", () => 
   const store = openStore();
   const identity = ensureIdentity();
   const cleared: (string | null)[] = [];
-  const spy: Mux = {
-    currentWindow: () => null,
-    liveWindows: () => new Set<string>(),
-    setState: (window, state) => cleared.push(state === null ? window : state),
-    attach: () => true,
-    capture: () => null,
-    windowNames: () => new Map(),
-    windowForPane: () => null,
-    panesInWindow: () => [],
-    windowNamed: () => null,
-    selectWindow: () => true,
-    newWindow: () => true,
-  };
+  const spy = fakeMux({
+    setState: (window, state) => void cleared.push(state === null ? window : state),
+  });
   const agent = {
     agent_id: `${identity.host_id}:%1`,
     host_id: identity.host_id,
@@ -257,23 +253,6 @@ test("forgetting a local agent clears its tmux badge as well as the row", () => 
 // replacing its whole body with `return { ok: true }` kept the file green. The
 // probe classification, the window check, window reuse and the attach paths had
 // no coverage at all.
-
-function fakeMux(over: Partial<Mux> = {}): Mux {
-  return {
-    currentWindow: () => null,
-    liveWindows: () => new Set<string>(),
-    setState: () => {},
-    attach: () => true,
-    capture: () => null,
-    windowNames: () => new Map(),
-    windowForPane: () => null,
-    panesInWindow: () => [],
-    windowNamed: () => null,
-    selectWindow: () => true,
-    newWindow: () => true,
-    ...over,
-  };
-}
 
 // `base` is a NewEvent; ingest wants a full Event, so fill the replica fields
 // the authoring node would have sent.
@@ -366,18 +345,23 @@ test("no configured peer for the host is no_peer", () => {
   expect(result).toMatchObject({ ok: false, reason: "no_peer" });
 });
 
-test("an existing per-host window is selected, and no new one is opened", () => {
+test("an existing per-host session is switched to, and no new one is opened", () => {
   store.upsertPeer({ name: "p", target: "p", host_id: "remote-host" });
   vi.stubEnv("TMUX", "/tmp/tmux-1000/default,123,0");
   let opened = 0;
+  const switched: string[] = [];
 
   const result = jumpToAgent(
     store,
     remoteAgent(),
     fakeMux({
-      windowNamed: () => "@42",
-      newWindow: () => {
+      sessionNamed: () => true,
+      newSession: () => {
         opened += 1;
+        return true;
+      },
+      switchClient: (_client, session) => {
+        switched.push(session);
         return true;
       },
     }),
@@ -386,9 +370,10 @@ test("an existing per-host window is selected, and no new one is opened", () => 
 
   expect(result).toEqual({ ok: true });
   expect(opened).toBe(0);
+  expect(switched).toEqual(["p~"]);
 });
 
-test("with no existing window, exactly one is opened for the peer", () => {
+test("with no existing session, exactly one is opened for the peer", () => {
   store.upsertPeer({ name: "p", target: "p", host_id: "remote-host" });
   vi.stubEnv("TMUX", "/tmp/tmux-1000/default,123,0");
   const opened: string[] = [];
@@ -397,7 +382,7 @@ test("with no existing window, exactly one is opened for the peer", () => {
     store,
     remoteAgent(),
     fakeMux({
-      newWindow: (name, command) => {
+      newSession: (name, command) => {
         opened.push(`${name} :: ${command}`);
         return true;
       },
@@ -409,19 +394,144 @@ test("with no existing window, exactly one is opened for the peer", () => {
   expect(opened).toHaveLength(1);
   // Named after the configured peer, and the remote session:window is quoted
   // against the LOCAL shell -- `$0:@9` would otherwise expand to `:@9`.
-  expect(opened[0]).toContain("@p ::");
+  expect(opened[0]).toContain("p~ ::");
   expect(opened[0]).toContain("'$0:@9'");
 });
 
-test("a failed new-window is reported, not swallowed as success", () => {
+test("the wrapper session hides the local status bar and disables the local prefix", () => {
+  // The whole point of a session rather than a window. Without `prefix None`
+  // the local tmux eats ^b and you need ^b b to reach the remote; without
+  // `status off` two status bars stack and the jump does not read as full
+  // screen. Both options are per-session, which is what makes this safe -- as a
+  // window they would have been global and broken every local session.
+  store.upsertPeer({ name: "p", target: "p", host_id: "remote-host" });
+  vi.stubEnv("TMUX", "/tmp/tmux-1000/default,123,0");
+  const options: string[] = [];
+
+  jumpToAgent(
+    store,
+    remoteAgent(),
+    fakeMux({
+      setSessionOption: (session, option, value) => options.push(`${session} ${option}=${value}`),
+    }),
+    () => ok("@9\n"),
+  );
+
+  expect(options).toEqual(["p~ status=off", "p~ prefix=None", "p~ detach-on-destroy=previous"]);
+});
+
+test("the wrapper returns the originating client to where the jump started", () => {
+  // The return is part of the wrapper's own command, so leaving the remote --
+  // by any means -- lands you back where you were. It must name the client
+  // explicitly: `murmur pick` runs in a popup, which is a client of its own
+  // that dies with the picker, so a bare switch-client would move the wrong
+  // one. The origin must also be read BEFORE the wrapper exists, or it would
+  // record the wrapper as home and the return would be a no-op.
+  store.upsertPeer({ name: "p", target: "p", host_id: "remote-host" });
+  vi.stubEnv("TMUX", "/tmp/tmux-1000/default,123,0");
+  let command = "";
+
+  jumpToAgent(
+    store,
+    remoteAgent(),
+    fakeMux({
+      clientName: () => "/dev/ttys004",
+      currentTarget: () => "work:@3",
+      newSession: (_name, cmd) => {
+        command = cmd;
+        return true;
+      },
+    }),
+    () => ok("@9\n"),
+  );
+
+  // Ordered: attach first, return only once it exits.
+  //
+  // The remote target is quoted TWICE, and both layers are load-bearing. This
+  // string is a wrapper command, so a local shell strips the outer layer to
+  // `'$0:@9'`, ssh joins its arguments and a remote shell strips the inner one
+  // to `$0:@9`. With one layer the local shell expanded `$0` and the remote
+  // attach failed with "can't find session"; verified by hand through `sh -c`.
+  expect(command).toBe(
+    `ssh -t 'p' tmux attach -t ''\\''$0:@9'\\'''; ` +
+      `tmux switch-client -c '/dev/ttys004' -t '=work:@3'`,
+  );
+});
+
+test("a wrapper name never starts with a tmux id sigil", () => {
+  // The trap this design walked into: the old per-host WINDOW was named
+  // `@<host>`, which is harmless for a window name but fatal for a session
+  // name. `-t @bubba` parses as a window id, so every set-option and
+  // switch-client against it failed with `can't find window` -- verified
+  // against a real tmux while designing this.
+  expect(remoteSessionName("bubba")).toBe("bubba~");
+  expect(remoteSessionName("@bubba")).toBe("bubba~");
+  expect(remoteSessionName("$0")).toBe("0~");
+  expect(remoteSessionName("%1")).toBe("1~");
+});
+
+test("a failed new-session is reported, not swallowed as success", () => {
   store.upsertPeer({ name: "p", target: "p", host_id: "remote-host" });
   vi.stubEnv("TMUX", "/tmp/tmux-1000/default,123,0");
 
-  const result = jumpToAgent(store, remoteAgent(), fakeMux({ newWindow: () => false }), () =>
+  const result = jumpToAgent(store, remoteAgent(), fakeMux({ newSession: () => false }), () =>
     ok("@9\n"),
   );
 
   expect(result).toMatchObject({ ok: false, reason: "attach_failed" });
+});
+
+test("a wrapper that opens but cannot be switched to is reported", () => {
+  // Distinct from the above: the ssh IS running, so the message must not claim
+  // nothing happened. Silently returning ok here would leave an invisible
+  // session holding a live remote attach.
+  store.upsertPeer({ name: "p", target: "p", host_id: "remote-host" });
+  vi.stubEnv("TMUX", "/tmp/tmux-1000/default,123,0");
+
+  const result = jumpToAgent(store, remoteAgent(), fakeMux({ switchClient: () => false }), () =>
+    ok("@9\n"),
+  );
+
+  expect(result).toMatchObject({ ok: false, reason: "attach_failed" });
+  if (!result.ok) expect(result.message).toContain("p~");
+});
+
+test("outside tmux, no local wrapper session is created", () => {
+  // The case the wrapper must not touch. There is no local client to switch,
+  // nothing to return to but the invoking shell, and no local status bar or
+  // prefix to suppress -- a direct ssh is already full-screen and prefix-clean.
+  // Creating a session here would attach a client to a server the user never
+  // asked for, and leave them inside tmux on exit rather than at their prompt.
+  store.upsertPeer({ name: "p", target: "p", host_id: "remote-host" });
+  vi.stubEnv("TMUX", "");
+  let sessions = 0;
+  const attached: string[][] = [];
+
+  const result = jumpToAgent(
+    store,
+    remoteAgent(),
+    fakeMux({
+      newSession: () => {
+        sessions += 1;
+        return true;
+      },
+    }),
+    (_file, args) => {
+      if (args.includes("attach")) {
+        attached.push(args);
+        return ok();
+      }
+      return ok("@9\n");
+    },
+  );
+
+  expect(result).toEqual({ ok: true });
+  expect(sessions).toBe(0);
+  // Attached directly as argv, so there is no LOCAL shell to protect against
+  // and only one layer of quoting -- unlike the wrapper command above. ssh
+  // still joins argv and hands it to a remote shell, which is what this layer
+  // is for.
+  expect(attached).toEqual([["-t", "p", "tmux", "attach", "-t", "'$0:@9'"]]);
 });
 
 test("outside tmux, a failed ssh attach is reported", () => {

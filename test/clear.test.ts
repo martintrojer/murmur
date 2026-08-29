@@ -6,6 +6,7 @@ import { clearPane } from "../src/cli/clear.js";
 import { ensureIdentity } from "../src/identity.js";
 import type { Mux } from "../src/mux.js";
 import { openStore } from "../src/store.js";
+import { fakeMux } from "./helpers/fake-mux.js";
 
 beforeEach(() => {
   process.env.MURMUR_STATE_DIR = mkdtempSync(join(tmpdir(), "murmur-clear-"));
@@ -34,19 +35,7 @@ test("clearing a sibling pane does not clear the agent in the same window", () =
   store.close();
 
   const clearedWindows: string[] = [];
-  const mux: Mux = {
-    currentWindow: () => null,
-    setState: (window) => clearedWindows.push(window),
-    attach: () => true,
-    capture: () => null,
-    windowNames: () => new Map(),
-    windowForPane: () => null,
-    panesInWindow: () => [],
-    windowNamed: () => null,
-    selectWindow: () => true,
-    newWindow: () => true,
-    liveWindows: () => new Set<string>(),
-  };
+  const mux = fakeMux({ setState: (window) => void clearedWindows.push(window) });
 
   clearPane("%2", mux);
 
@@ -75,21 +64,12 @@ test("a pane murmur does not own still gets its badge cleared", () => {
   // when it found no event, so the glyph sat in the picker forever because
   // nothing else would ever come along to clear it. The badge is tmux's.
   const cleared: (string | null)[] = [];
-  const mux: Mux = {
-    currentWindow: () => null,
-    liveWindows: () => new Set<string>(),
+  const mux = fakeMux({
     setState: (window, state) => {
       cleared.push(state === null ? window : null);
     },
-    attach: () => true,
-    capture: () => null,
-    windowNames: () => new Map(),
     windowForPane: () => "@42",
-    panesInWindow: () => [],
-    windowNamed: () => null,
-    selectWindow: () => true,
-    newWindow: () => true,
-  };
+  });
   clearPane("%unknown", mux);
   expect(cleared).toEqual(["@42"]);
 });
@@ -115,19 +95,7 @@ const NEW_EVENT = {
   extra: {},
 };
 
-const NOOP_MUX: Mux = {
-  currentWindow: () => null,
-  liveWindows: () => new Set<string>(),
-  setState: () => {},
-  attach: () => true,
-  capture: () => null,
-  windowNames: () => new Map(),
-  windowForPane: () => null,
-  panesInWindow: () => [],
-  windowNamed: () => null,
-  selectWindow: () => true,
-  newWindow: () => true,
-};
+const NOOP_MUX: Mux = fakeMux();
 
 test("a sibling shell pane does not clear the agent's badge", () => {
   // The badge is a window option, but "the user looked" is only true of one

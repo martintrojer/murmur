@@ -124,13 +124,39 @@ session, and its host, as literal substrings rather than scattered characters.
 `murmur status` prints per-state counts for a status bar. Everything else is
 `--help`.
 
+## Jumping to a remote agent
+
+A remote jump opens the `ssh -t <host> tmux attach` in a local tmux session of
+its own, named after the peer with a trailing `~`. That session sets two options
+on itself, and both are why the jump does not feel like nested tmux:
+
+- `status off` — no local status bar, so the remote's own bar is the only one on
+  screen and the jump reads as a full-screen ssh.
+- `prefix None` — no local prefix at all, so `^b` goes straight to the remote.
+  No `^b b`, and no second prefix to learn.
+
+Both are per-session, so your other sessions keep their prefix and status bar.
+When you leave the remote — inner `^b d`, the remote session ending, or the ssh
+dropping — the wrapper returns you to the exact window you jumped from and
+disappears. Jumping to the same host twice reuses the one session.
+
+The tradeoff: while you are inside the wrapper, the local tmux has no prefix, so
+you cannot reach it. If you want an escape hatch that does not involve the
+remote, bind one key in the root table:
+
+```tmux
+# Alt-b detaches out of a murmur wrapper session, and does nothing elsewhere.
+bind -n M-b if-shell -F '#{m:*~,#{session_name}}' detach-client
+```
+
+Outside tmux none of this applies: `murmur pick` runs the ssh directly, which is
+already full-screen, and you land back at your shell prompt on exit.
+
 ## Status
 
 **0.1.3.** In daily use on one machine and verified across two over real ssh.
 It is new and not battle-tested. The known gaps are listed at the end of
-[ARCHITECTURE.md](ARCHITECTURE.md#known-gaps); the one most likely to annoy you
-is that jumping to a remote agent nests tmux inside tmux, which every tool in
-this space punts on.
+[ARCHITECTURE.md](ARCHITECTURE.md#known-gaps).
 
 The event schema is versioned on the wire and preserves fields it does not
 recognise, so a newer node and an older one can already talk to each other.

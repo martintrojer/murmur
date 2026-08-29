@@ -387,9 +387,27 @@ Each was considered and refused with reasons above:
 
 ## Known gaps
 
-- **Nested tmux.** Jumping to a remote agent runs `ssh -t host tmux attach`
-  inside a local tmux window, which nests. Needs a distinct inner prefix or
-  `send-prefix`. Everyone in this space punts on it; herdr bans nesting outright.
+- **A working agent reads as idle between turns, by construction.** `agent_end`
+  fires at the end of every *turn*, not at the end of the session, and for an
+  unfocused human-driven agent `endState` reports `done` -- or `cleared` when
+  the pane is focused, on the theory that you have already seen it. So a pi that
+  is very much still in use alternates `working` / `cleared` once per turn, and
+  anything sampling between turns sees an idle agent with a live pid.
+
+  This is right for the question the picker asks ("who needs me?") and wrong for
+  "is this agent alive?". Worth knowing before trusting a single sample: two
+  observations minutes apart can both say `cleared` while the process never
+  stopped. The pid on the event plus `pidAlive()` is what distinguishes "turn
+  finished" from "agent gone", and no reader currently makes that distinction.
+- **Nested tmux is solved for the jump, unverified for the session.** Jumping to
+  a remote agent now runs the `ssh -t host tmux attach` in its own local session
+  with `status off` and `prefix None`, so it is full-screen and `^b` reaches the
+  remote directly -- no `^b b`, no second prefix. Verified against real tmux
+  servers: options apply, the client switches in, and it returns home when the
+  attach exits. Returning to the exact origin *window* rather than the session
+  is implemented but not yet verified end to end. The local server is
+  unreachable from inside the wrapper by design; the README documents the
+  root-table key that detaches out.
 - **Interactive attach is unverified.** Federation, staleness and the jump
   target are verified across two machines over real ssh; sitting in a remote
   pane and working in it is not.

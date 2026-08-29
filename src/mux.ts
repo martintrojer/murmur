@@ -25,6 +25,16 @@ export interface Mux {
   selectWindow(window: string): boolean;
   newWindow(name: string, command: string): boolean;
   capture(pane: string, lines?: number): string | null;
+  // --- remote-jump session seam -------------------------------------------
+  // A remote attach lives in its own local session rather than a window, so it
+  // can be full-screen (no local status bar) and prefix-free (no nested ^b).
+  // See jumpToAgent for why that is worth five extra methods.
+  clientName(): string | null;
+  currentTarget(): string | null;
+  sessionNamed(name: string): boolean;
+  newSession(name: string, command: string): boolean;
+  setSessionOption(session: string, option: string, value: string): void;
+  switchClient(client: string | null, session: string): boolean;
 }
 
 function runTmux(args: string[]): string | null {
@@ -37,6 +47,31 @@ function runTmux(args: string[]): string | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * A session name as an exact target, in the two spellings tmux needs.
+ *
+ * Bare names match by PREFIX, so a wrapper for host `bub` silently retargets a
+ * session called `bubba` once one exists -- verified, and it sets options on
+ * the wrong session rather than failing. A leading `=` demands an exact match.
+ * (`name=` is not the syntax; it reads as part of the name and matches nothing.)
+ *
+ * The trailing colon is the part that is easy to get wrong. `switch-client -t`
+ * takes a target-SESSION, where `=name` is right, but `set-option -t` and
+ * `show-options -t` take a target-PANE, where `=name` fails outright with `no
+ * such session` and the exact form is `=name:` -- the empty window/pane part
+ * resolving to the session's current pane.
+ *
+ * Neither rescues a name starting with `@`, `$` or `%`: those introduce tmux's
+ * window, session and pane id syntax. remoteSessionName keeps them out.
+ */
+export function exactSession(session: string): string {
+  return `=${session}`;
+}
+
+export function exactPane(session: string): string {
+  return `=${session}:`;
 }
 
 export const tmux: Mux = {
@@ -157,6 +192,51 @@ export const tmux: Mux = {
 
   newWindow(name, command) {
     return runTmux(["new-window", "-n", name, command]) !== null;
+  },
+
+  // Which client to send home when the remote attach exits. `switch-client`
+  // with no -c moves whichever client tmux considers current, and `murmur pick`
+  // usually runs in a popup -- a client of its own, which dies with the popup.
+  // Naming the real client is what lets the return outlive the picker.
+  clientName() {
+    return runTmux(["display-message", "-p", "#{client_name}"]) || null;
+  },
+
+  // Where the jump started, as a switch-client target. Window-level, not just
+  // the session: coming back to the right session but the wrong window is
+  // still the wrong place. The window id is stable where its index is not,
+  // since renumber-windows renumbers on every close.
+  currentTarget() {
+    return runTmux(["display-message", "-p", "#{session_name}:#{window_id}"]) || null;
+  },
+
+  // Whether a wrapper session for this host already exists. Deliberately not
+  // returning an id: a session is addressed by name, so a `#{session_id}` would
+  // only have to be turned back into one.
+  sessionNamed(name) {
+    const out = runTmux(["list-sessions", "-F", "#{session_name}"]);
+    if (out === null) return false;
+    return out.split("\n").includes(name);
+  },
+
+  newSession(name, command) {
+    // Detached, because the caller sets the per-session options before showing
+    // it. Creating it attached would paint one frame with the local status bar
+    // up and the local prefix live, which is the flicker this design exists to
+    // remove.
+    return runTmux(["new-session", "-d", "-s", name, command]) !== null;
+  },
+
+  setSessionOption(session, option, value) {
+    runTmux(["set-option", "-t", exactPane(session), option, value]);
+  },
+
+  switchClient(client, session) {
+    const target = exactSession(session);
+    const args = client
+      ? ["switch-client", "-c", client, "-t", target]
+      : ["switch-client", "-t", target];
+    return runTmux(args) !== null;
   },
 
   // The window a pane belongs to, for a pane murmur has no event for. Clearing

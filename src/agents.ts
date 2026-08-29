@@ -47,6 +47,22 @@ export function shellQuote(value: string): string {
 }
 
 /**
+ * The local session name that wraps a remote attach.
+ *
+ * The trailing `~` marks it as murmur's, both for a human reading a session
+ * list and for the `#{m:*~,...}` match in the suggested escape-hatch binding.
+ *
+ * The leading character is the part that matters. A tmux `-t` target starting
+ * with `@`, `$` or `%` is parsed as a window, session or pane id, so a session
+ * named `@bubba` -- which is exactly what the old per-host WINDOW was called --
+ * cannot be addressed at all: every `-t @bubba` fails with `can't find window`.
+ * Window names were never targets, so the old name was safe; session names are.
+ */
+export function remoteSessionName(peerName: string): string {
+  return `${peerName.replace(/^[@$%=]+/, "")}~`;
+}
+
+/**
  * The one process call jump makes that is not a tmux command: the remote probe,
  * and the direct ssh attach when we are not inside tmux. Injectable so the jump
  * decision table can be tested without an ssh binary or a live peer -- without
@@ -293,57 +309,102 @@ export function jumpToAgent(
 
   const attachTarget = shellQuote(`${agent.session}:${agent.window}`);
 
-  // Hand the ssh to tmux as its own window rather than running it here.
-  // `murmur pick` is usually a display-popup, and a popup is modal: an ssh
-  // session started inside it is killed the moment the picker exits, so the
-  // remote pane flashed and vanished. A new window outlives the popup and
-  // gives the remote tmux a real terminal to attach to.
+  // Hand the ssh to tmux as its own detached SESSION rather than running it
+  // here. `murmur pick` is usually a display-popup, and a popup is modal: an
+  // ssh started inside it is killed the moment the picker exits, so the remote
+  // pane flashed and vanished. A session outlives the popup and gives the
+  // remote tmux a real terminal to attach to.
   //
-  // Nested tmux is the known cost here (see the spec's open question on inner
-  // prefixes); a window at least makes it visible and closable.
+  // A session, not a window, because session options are per-session and that
+  // is what makes the nesting stop being felt:
+  //
+  //   status off   -- no local status bar, so the remote's own bar is the only
+  //                   one on screen and the jump reads as a full-screen ssh.
+  //   prefix None  -- no local prefix at all, so ^b reaches the remote
+  //                   directly. No ^b b, and no second prefix to learn.
+  //
+  // Both would be global if this were a window, and would break every local
+  // session. The cost is that the local server is unreachable from inside the
+  // wrapper; the README documents a root-table key that detaches out.
   if (process.env.TMUX) {
-    // `tmux new-window <command>` runs the command through a shell, so the
-    // string is expanded LOCALLY before ssh sees it. A tmux session id is
-    // always `$N`, so `$0:@6` arrived as `:@6` and the remote attach failed
-    // with "can't find session". shellQuote alone is not enough: it protects
-    // the remote shell, this protects the local one.
-    const command = `ssh -t ${shellQuote(target)} tmux attach -t ${shellQuote(attachTarget)}`;
-    // Named after the peer as configured, matching what the picker's host
-    // column shows. The machine's self-reported display_name can be something
-    // like a container id, which makes the window unrecognisable.
-    const name = `@${peer?.name ?? target}`;
+    // Read BEFORE the wrapper exists, or we would record the wrapper itself as
+    // the place to come back to and the return would be a no-op.
+    const client = mux.clientName();
+    const origin = mux.currentTarget();
 
-    // Reuse an existing window for this host rather than stacking a new one on
-    // every jump. murmur navigates to agents; the window is only here because a
-    // remote attach needs a terminal that outlives the popup, so one per host is
-    // the whole requirement. Jumping to bubba three times used to leave three
-    // identical @bubba windows behind.
-    //
-    // Matched on window name, which is the only handle available: the ssh is
-    // opaque from here, and the remote session id is not a local address.
-    const existing = mux.windowNamed(name);
-    if (existing) {
-      return mux.selectWindow(existing)
+    // Named after the peer as configured, matching the picker's host column.
+    // The machine's self-reported display_name can be a container id, which
+    // makes the session unrecognisable in a session list.
+    const name = remoteSessionName(peer?.name ?? target);
+
+    // Reuse an existing wrapper for this host rather than stacking a new one on
+    // every jump. Jumping to bubba three times used to leave three identical
+    // windows behind. Matched on name, the only handle available: the ssh is
+    // opaque from here and the remote session id is not a local address.
+    if (mux.sessionNamed(name)) {
+      return mux.switchClient(client, name)
         ? { ok: true }
         : {
             ok: false,
             reason: "attach_failed",
-            message: `could not switch to the existing ${name} window.`,
+            message: `could not switch to the existing ${name} session.`,
           };
     }
 
-    return mux.newWindow(name, command)
+    // `tmux new-session <command>` runs the command through a shell, so the
+    // string is expanded LOCALLY before ssh sees it. A tmux session id is
+    // always `$N`, so `$0:@6` arrived as `:@6` and the remote attach failed
+    // with "can't find session". shellQuote alone is not enough: it protects
+    // the remote shell, this protects the local one.
+    const attach = `ssh -t ${shellQuote(target)} tmux attach -t ${shellQuote(attachTarget)}`;
+
+    // The return home, as part of the wrapper's own command. When the attach
+    // exits -- inner detach, remote session killed, ssh dropped -- this runs,
+    // then the wrapper has no command left and tmux destroys it.
+    //
+    // Explicit, rather than relying on detach-on-destroy: `previous` picks
+    // tmux's idea of the previous session, which in testing was a stray
+    // unrelated session rather than the one the jump started from. It is still
+    // set below as a fallback for when this command cannot run (SIGKILL).
+    const restore = origin
+      ? `; tmux switch-client ${client ? `-c ${shellQuote(client)} ` : ""}-t ${shellQuote(`=${origin}`)}`
+      : "";
+
+    if (!mux.newSession(name, `${attach}${restore}`)) {
+      return {
+        ok: false,
+        reason: "attach_failed",
+        message: `could not open a session to attach to ${target}.`,
+      };
+    }
+
+    mux.setSessionOption(name, "status", "off");
+    mux.setSessionOption(name, "prefix", "None");
+    mux.setSessionOption(name, "detach-on-destroy", "previous");
+
+    return mux.switchClient(client, name)
       ? { ok: true }
       : {
           ok: false,
           reason: "attach_failed",
-          message: `could not open a window to attach to ${target}.`,
+          message: `attached to ${target} in session ${name}, but could not switch to it.`,
         };
   }
 
   // Outside tmux there is no popup to escape, so run it directly. stdio is
   // inherited, so this blocks until the user leaves the remote session; a
   // nonzero exit means the attach itself failed.
+  //
+  // None of the wrapper-session machinery above applies here, and it must not:
+  // there is no local client to switch, nothing to return to but the shell that
+  // invoked us, and no local status bar or prefix to suppress. This path is
+  // already full-screen and already prefix-clean -- the whole problem is an
+  // artifact of being inside tmux. Creating a local session here would attach a
+  // client to a server the user never asked for, and leave them inside tmux on
+  // exit rather than back at their prompt.
+  //
+  // The tradeoff is no reuse of an existing attach, since there is no local
+  // server holding one. That is correct rather than missing.
   const attach = run("ssh", ["-t", target, "tmux", "attach", "-t", attachTarget], true);
   return attach.status === 0 && !attach.failed
     ? { ok: true }
