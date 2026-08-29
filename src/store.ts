@@ -120,6 +120,17 @@ export interface Store {
   ingest(events: Event[]): number;
   eventsSince(hostId: string, seq: number): Event[];
   allEvents(): Event[];
+  /**
+   * The most recent event for one agent, or null.
+   *
+   * Exists so the `clear` hook does not have to open its own SQLite handle and
+   * write its own `ORDER BY seq DESC LIMIT 1`, which is what it used to do --
+   * making "store is the only module touching SQL" false, and putting knowledge
+   * of agent_id construction and event ordering in a CLI file where a schema
+   * change would miss it. That path swallows its own errors, so the miss would
+   * have been silent.
+   */
+  latestForAgent(hostId: string, agentId: string): Event | null;
   maxSeq(hostId: string): number;
   prune(horizonMs?: number): number;
   peers(): Peer[];
@@ -255,6 +266,16 @@ export function openStore(): Store {
         .prepare("SELECT * FROM events ORDER BY ts, host_id, seq")
         .all() as EventRow[];
       return rows.map(toEvent);
+    },
+    latestForAgent(hostId, agentId) {
+      const row = database
+        .prepare(
+          `SELECT * FROM events
+            WHERE host_id = ? AND agent_id = ?
+            ORDER BY seq DESC LIMIT 1`,
+        )
+        .get(hostId, agentId) as EventRow | undefined;
+      return row ? toEvent(row) : null;
     },
     maxSeq(hostId) {
       return (selectMaxSeq.get(hostId) as { seq: number }).seq;

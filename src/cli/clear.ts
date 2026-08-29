@@ -1,9 +1,7 @@
-import Database from "better-sqlite3";
 import type { Command } from "commander";
 import { loadIdentity } from "../identity.js";
 import { type Mux, tmux } from "../mux.js";
-import { dbPath } from "../paths.js";
-import { openStore } from "../store.js";
+import { openStore, type Store } from "../store.js";
 import type { Driver } from "../types.js";
 
 type OwnedPane = {
@@ -34,6 +32,7 @@ function windowHasAgent(
   focused: string,
   hostId: string | undefined,
   mux: Mux,
+  store: Store | undefined,
 ): boolean {
   // No identity means this node has authored nothing, so no sibling can own an
   // agent and there is nothing to protect. Returning true here blocked the
@@ -45,21 +44,12 @@ function windowHasAgent(
   // missing database as "a sibling might own an agent" left every stale badge
   // in place on a fresh install.
   if (siblings.length === 0) return false;
+  // No database yet: nothing is recorded, so no sibling owns an agent.
+  if (!store) return false;
   try {
-    const database = new Database(dbPath(), { readonly: true, fileMustExist: true });
-    try {
-      for (const sibling of siblings) {
-        const row = database
-          .prepare(
-            `SELECT state FROM events
-              WHERE host_id = ? AND agent_id = ?
-              ORDER BY seq DESC LIMIT 1`,
-          )
-          .get(hostId, `${hostId}:${sibling}`) as { state?: string } | undefined;
-        if (row && row.state !== "cleared") return true;
-      }
-    } finally {
-      database.close();
+    for (const sibling of siblings) {
+      const latest = store.latestForAgent(hostId, `${hostId}:${sibling}`);
+      if (latest && latest.state !== "cleared") return true;
     }
     return false;
   } catch {
@@ -68,6 +58,7 @@ function windowHasAgent(
 }
 
 export function clearPane(pane: string, mux: Mux = tmux): void {
+  let store: Store | undefined;
   try {
     if (!pane) return;
 
@@ -81,21 +72,11 @@ export function clearPane(pane: string, mux: Mux = tmux): void {
     let owner: OwnedPane | undefined;
     if (identity) {
       try {
-        const database = new Database(dbPath(), { readonly: true, fileMustExist: true });
-        try {
-          owner = database
-            .prepare(
-              `SELECT agent_id, session, window, pane, session_name, window_name,
-                      agent_name, pi_session, workstream, role, cli, driver, state
-                 FROM events
-                WHERE host_id = ? AND agent_id = ?
-                ORDER BY seq DESC
-                LIMIT 1`,
-            )
-            .get(identity.host_id, `${identity.host_id}:${pane}`) as OwnedPane | undefined;
-        } finally {
-          database.close();
-        }
+        store = openStore();
+        owner =
+          (store.latestForAgent(identity.host_id, `${identity.host_id}:${pane}`) as
+            | OwnedPane
+            | undefined) ?? undefined;
       } catch {
         // No database yet. Nothing is owned; the badge still clears below.
       }
@@ -111,7 +92,11 @@ export function clearPane(pane: string, mux: Mux = tmux): void {
     // any pane in the window let a shell pane wipe the agent's badge next to
     // it -- which is the exact case --pane exists to distinguish.
     if (!owner) {
-      if (window && !windowHasAgent(window, pane, identity?.host_id, mux)) {
+      // No store means no database, so no sibling can own an agent and the
+      // orphan badge must still clear. Gating this on `store` left every stale
+      // badge in place on a fresh install -- which is what the comment above
+      // was already warning about.
+      if (window && !windowHasAgent(window, pane, identity?.host_id, mux, store)) {
         mux.setState(window, null);
       }
       return;
@@ -125,9 +110,9 @@ export function clearPane(pane: string, mux: Mux = tmux): void {
       return;
     }
 
-    const store = openStore();
+    // `owner` came from this store, so it is open; the check is for the type.
     try {
-      store.append({
+      store?.append({
         agent_id: owner.agent_id,
         session: owner.session,
         window: owner.window,
@@ -150,12 +135,21 @@ export function clearPane(pane: string, mux: Mux = tmux): void {
         reason: "",
         extra: {},
       });
-    } finally {
-      store.close();
+    } catch {
+      // An append that fails must not stop the badge clearing below: the badge
+      // is tmux state, and leaving it set is the visible failure.
     }
     mux.setState(owner.window, null);
   } catch {
     // Focus hooks run inside the tmux server: they must always be silent and total.
+  } finally {
+    // One handle for the whole hook, closed once. Two opens raced each other on
+    // the same WAL for no benefit.
+    try {
+      store?.close();
+    } catch {
+      // Silent and total.
+    }
   }
 }
 
