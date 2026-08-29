@@ -4,18 +4,30 @@ import { promisify } from "node:util";
 const execFileAsync = promisify(execFile);
 const CONTROL_PATH = "~/.ssh/control/%r@%h:%p";
 
-// A peer that is merely unreachable — asleep, off the VPN, a stale address —
-// must not hold up a command. OpenSSH's default TCP connect timeout is the
-// kernel's, which is 75s on macOS; at that point `murmur pick` is unusable and
-// the HUD tick overlaps itself. Two seconds is far above any real handshake on
-// a LAN or a VPN, and a peer that misses it simply shows stale, which is the
+// Both timeouts are sized against the tmux status bar, because that is what
+// actually drives collection: `murmur status` collects, and tmux re-runs it
+// every `status-interval` — 5s on the author's setup, 15s by default. A collect
+// that outlives its tick is a collect overlapping itself, and tmux offers no
+// way to cancel the last one.
+//
+// So the budget for the whole exchange is under 5s, and these are deliberately
+// aggressive: a really slow node is rejected rather than allowed to hold up the
+// HUD. That is cheap because the cost of losing the race is one tick of
+// staleness, and the next tick is five seconds away.
+
+// OpenSSH's default TCP connect timeout is the kernel's, 75s on macOS, which
+// made `murmur pick` unusable against a sleeping laptop. One second is still
+// ~6x a real cold handshake on a LAN or VPN (measured: 168ms cold, 42ms on a
+// warm control socket), and a peer that misses it simply shows stale — the
 // designed outcome for a host you cannot reach.
-const CONNECT_TIMEOUT_S = 2;
+const CONNECT_TIMEOUT_S = 1;
 
 // Belt and braces for a host that completes the TCP connect and then stops
 // responding — ConnectTimeout does not cover that, and it is how a sleeping
-// laptop behaves. Bounds the whole exchange rather than just the dial.
-const EXEC_TIMEOUT_MS = 10_000;
+// laptop behaves. Bounds the whole exchange rather than just the dial, so it
+// has to leave room for the dial plus an export: three seconds is the tick
+// budget minus headroom for the rest of `status`.
+const EXEC_TIMEOUT_MS = 3_000;
 
 // Warm if possible, cold if not, never interactive.
 //
