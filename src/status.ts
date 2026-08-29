@@ -1,4 +1,4 @@
-import { ssh } from "./channel.js";
+import { type Channel, ssh } from "./channel.js";
 import { collect, STALENESS_MS } from "./collector.js";
 import { type AgentView, attentionSort, foldAll, isStale } from "./fold.js";
 import { loadIdentity } from "./identity.js";
@@ -124,9 +124,13 @@ export function status(store: Store, now = Date.now()): Status {
  * this is a loop over an empty array: no network, no added latency, which is
  * the everyday single-machine path.
  */
-export async function statusWithCollect(store: Store, now = Date.now()): Promise<Status> {
+export async function statusWithCollect(
+  store: Store,
+  now = Date.now(),
+  channel: Channel = ssh,
+): Promise<Status> {
   try {
-    await collect(store, ssh, now);
+    await collect(store, channel, now);
   } catch (error) {
     process.stderr.write(
       `murmur: status: collect: ${error instanceof Error ? error.message : String(error)}\n`,

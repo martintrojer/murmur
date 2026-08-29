@@ -277,9 +277,25 @@ test("a failing prune warns and does not fail the collect", async () => {
   });
   const channel: Channel = { exec: async () => jsonl([event(1)]) };
 
-  await expect(collect(spy, channel, 5_000)).resolves.toEqual([
-    { peer: "dev", ok: true, ingested: 1 },
-  ]);
+  // Capture stderr, or the assertion only proves the collect resolved -- the
+  // warning could vanish entirely and this test would stay green, which is
+  // what it was doing before.
+  const written: string[] = [];
+  const original = process.stderr.write.bind(process.stderr);
+  process.stderr.write = ((chunk: string | Uint8Array) => {
+    written.push(String(chunk));
+    return true;
+  }) as typeof process.stderr.write;
+
+  try {
+    await expect(collect(spy, channel, 5_000)).resolves.toEqual([
+      { peer: "dev", ok: true, ingested: 1 },
+    ]);
+  } finally {
+    process.stderr.write = original;
+  }
+
+  expect(written.join("")).toContain("collect: prune: database is locked");
 });
 
 test("an empty peer list touches no channel", async () => {

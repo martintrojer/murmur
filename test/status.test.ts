@@ -2,7 +2,9 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import type { Channel } from "../src/channel.js";
 import { ssh } from "../src/channel.js";
+import { SCHEMA_VERSION } from "../src/export.js";
 import { status, statusWithCollect, tmuxStatus } from "../src/status.js";
 import { type NewEvent, openStore, type Store } from "../src/store.js";
 import type { AgentState, Driver, Event } from "../src/types.js";
@@ -184,11 +186,49 @@ test("statusWithCollect awaits the collect before folding", async () => {
   // store.close() in a finally raced the in-flight write —
   // "The database connection is not open", which reads as corruption rather
   // than a race. Awaiting fixes both: fresh data, and no write after close.
-  // No peers: the collect is a no-op loop, so this never touches the network.
-  // The race it guards is between the collect finishing and store.close().
+  //
+  // This needs a real peer and a channel we control. The earlier version ran
+  // with no peers, which made collect a no-op loop -- so deleting the `await`,
+  // or the whole collect call, left it green. It asserted nothing.
   const store = openStore();
-  const view = await statusWithCollect(store);
-  expect(view.peers).toEqual([]);
+  store.upsertPeer({ name: "dev", target: "dev" });
+
+  let release: (() => void) | undefined;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const channel: Channel = {
+    exec: async () => {
+      await held;
+      return [
+        JSON.stringify({
+          schema_version: SCHEMA_VERSION,
+          host_id: "remote",
+          display_name: "Remote",
+          exported_at: 1,
+        }),
+        JSON.stringify({ ...remoteEvent(1, "far", "working"), host_id: "remote" }),
+      ].join("\n");
+    },
+  };
+
+  let settled = false;
+  const pending = statusWithCollect(store, Date.now(), channel).then((view) => {
+    settled = true;
+    return view;
+  });
+
+  // Still in flight while the export is held: proof the collect is awaited
+  // rather than fired and forgotten.
+  await new Promise((resolve) => setImmediate(resolve));
+  expect(settled).toBe(false);
+
+  release?.();
+  const view = await pending;
+
+  // And the returned view reflects the sync that just ran, not the one before.
+  expect(view.agents.map((agent) => agent.agent_id)).toContain("far");
+  expect(view.peers[0]?.fetched_at).not.toBeNull();
   expect(() => store.close()).not.toThrow();
 });
 
