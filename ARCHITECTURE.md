@@ -1,0 +1,357 @@
+# murmur architecture
+
+How it works, why it is built this way, and why it exists rather than a
+configuration of something else.
+
+## The problem
+
+Coding agents run on more than one machine: a laptop, a desktop, a remote box.
+Each machine knows what its own agents are doing. No machine knows what the
+others are doing. So "is anything blocked on me right now" means visiting each
+one in turn, and jumping to an agent means first remembering which host it lives
+on.
+
+That is the whole problem. Everything below is in service of it, and the design
+spends most of its effort refusing to solve harder problems nearby.
+
+## The shape
+
+```
+pi agent ──in-process── murmur store ── events.db   (one per node)
+                                            │
+                              ssh murmur export --since N
+                                            │
+                                   collector ── fold ── picker
+                                                          │
+                                        jump: local switch, or ssh -t
+```
+
+Each node keeps an append-only SQLite log describing only its own agents. Any
+node pulls its peers' logs over ssh and folds the union into one
+attention-sorted picker. No daemon, no listening socket, no master node.
+
+murmur observes and connects. It does not place work. That is an orchestrator's
+job, and mixing the two is how you end up owning scheduling, credentials and
+artifact movement.
+
+## Why this is not a distributed system
+
+It is single-writer-per-partition replication. Each node authors only events
+about its own agents, so no two nodes ever write about the same thing. Merging
+is a UNION.
+
+Calling it "distributed" invites machinery the problem does not have: consensus,
+conflict resolution, vector clocks, leader election. If a change starts to need
+conflict resolution, that is the signal the single-writer invariant has been
+broken somewhere.
+
+Two consequences worth stating, because both are easy to violate by accident:
+
+- **A node may not author events about another node's agents.** Not even
+  corrections. A reader that learns something (a jump proving a window is gone)
+  records it as *reader state*, or deletes its replica. It does not write an
+  event.
+- **`host_id` is the origin, watermarks are keyed by peer.** These are the same
+  thing today, and differ the moment anything gossips. Free to preserve now,
+  expensive to retrofit.
+
+## The six units
+
+| Unit | Does | Depends on |
+| ---- | ---- | ---------- |
+| `identity` | Read/create this node's `{host_id, display_name}` | state dir |
+| `store` | Append, query, ingest, prune. **The only module touching SQL** | `identity` |
+| `fold` | **Pure.** Events in, agent states out | nothing |
+| `channel` | Seam: `exec(target, argv) -> stdout`. One impl: ssh | OS |
+| `collector` | Pull each peer, ingest, advance watermark | `channel`, `store` |
+| `mux` | Seam: window/pane queries, set state, attach. One impl: tmux | OS |
+
+`fold` being pure and `store` being the only SQL is the boundary that carries
+the design. Four heuristics live in one of those two modules: attention
+ordering, staleness, crash synthesis, and retention. Both modules are testable
+without a machine, a network or a multiplexer.
+
+Three seams exist with exactly one implementation each: `channel` (ssh),
+`harness` (pi, in-process), and `mux` (tmux). Defined so a second
+backend is possible; not designed for one that does not exist.
+
+## The data model
+
+One append-only table. Sole author per `host_id`. Primary key `(host_id, seq)`,
+which is what makes ingest idempotent. A re-read after a partial failure is
+free.
+
+| Column | Notes |
+| ------ | ----- |
+| `host_id` | UUID of the **origin** node, not the node we fetched from |
+| `seq` | Monotonic per `host_id`. The watermark unit |
+| `ts` | Wall clock. Display ordering only |
+| `agent_id` | Stable for the agent's life. Identity, distinct from location |
+| `session`, `window`, `pane` | Current **location**. May change |
+| `session_name`, `window_name` | Recorded by the author; ids are machine-local |
+| `agent_name`, `pi_session` | Richer than tmux, and not derivable from it |
+| `workstream`, `role`, `cli` | Nullable. Grouping and display |
+| `driver` | `human \| orchestrated`. **Per agent, not per node** |
+| `kind` | `state` today. Discriminator for future kinds |
+| `state` | `working \| blocked \| done \| crashed \| cleared` |
+| `message`, `pid`, `synthetic`, `reason` | Detail |
+| `extra` | JSON. Unknown fields, preserved verbatim |
+
+**Unknown data round-trips.** A node ingesting an unknown `kind` or unknown
+fields stores them in `extra` and re-exports them unchanged. Without this, an
+old node sitting in a future replication path silently truncates data. That
+failure is invisible from both ends, and only reachable against a version you
+do not control.
+
+Deliberately absent: a generic `put`/`del` op-log (that needs conflict
+resolution, which single-writer partitioning lets us skip, and it would simply
+*be* `mu`), task/DAG structure (observing a task graph means owning it), and any
+hybrid logical clock (nothing depends on cross-node causality; clock skew
+affects display order only).
+
+**An event log, not a state snapshot.** Current state is a fold over the log,
+which buys three things: there is no state table that can disagree with the log,
+incremental sync is a watermark ("everything after N", idempotent), and history
+is not optional, because the picker's preview shows recent events, so the
+protocol has to ship events rather than derived state.
+
+**TypeScript, on install-story grounds.** pi is itself an npm package, so every
+node that runs agents necessarily has Node and npm, so npm is not a new
+dependency on exactly the machines that matter. Python would mean inventing a cross-machine
+install story for the ecosystem that handles it worst, on machines where the
+system interpreter is least yours to touch. The "keep the working script"
+argument is weaker than it looks: those lines worked because dotfiles symlinked
+them, so the moment a second machine needs them they must be packaged from
+scratch either way.
+
+## Three ideas to understand before changing anything
+
+Everything else is mechanical. These three are the ones to understand before
+changing anything.
+
+### 1. State and freshness are different axes, and freshness is two
+
+`stale` is not an agent state. The enum stays `working | blocked | done |
+crashed | cleared`.
+
+- **state** — what the agent is doing. Authored by the agent, in the log.
+- **freshness** — how current our replica is. Known only by the reader.
+
+Putting `stale` in the enum produces unanswerable questions: is a crashed agent
+on an unreachable host `crashed` or `stale`? Both, on different axes.
+
+Freshness then splits again, and missing this shipped a bug:
+
+| | asks | answers |
+| --- | --- | --- |
+| `fetched_at` | how current is my copy | is the host reachable |
+| event `ts` | how old is this agent's news | is the row worth believing |
+
+A peer polled one second ago can be serving three-hour-old events. Collapsing
+these made a dead host's agents render as live, because the replica really was
+current.
+
+### 2. Facts only the author can know are recorded by the author
+
+Pids, window liveness and window names mean something only on the machine that
+owns them. So crash synthesis runs on the authoring node during export, not on
+the reader.
+
+Do it on the reader and every remote `working` agent is marked `crashed`, which
+looks exactly like a real crash, so it does not get investigated. This is the
+single easiest thing in the codebase to get backwards.
+
+The same rule gave names their home: window ids are machine-local, so resolving
+a remote id against the local tmux labels an agent with whatever *this* machine
+has at that id. Names travel on the event instead.
+
+### 3. The single-machine case is the same code path
+
+murmur replaced a 1500-line script that was the daily local tool. Zero peers is
+therefore the common case:
+
+- the pi extension appends events and sets the tmux window option
+- the status bar and picker read the fold
+- the collector iterates the peer list, finds nothing, and does nothing
+
+No network, no ssh, no daemon, no added latency. Federation is strictly
+additive: a `host_id` on rows that all say "me", and a loop over an empty array.
+
+This is a constraint, not an observation. A tool that only pays for itself at
+three nodes charges rent daily for fleet capability used occasionally, which is
+one of the things herdr was rejected for. Measured first paint with zero peers:
+48 ms against 250 ms for the picker it replaces.
+
+## Design choices, and what they cost
+
+**Pull, not push.** "Adhoc ssh" and "an open tunnel" are one model at two
+latencies. Both are the reader pulling, and OpenSSH `ControlMaster` collapses
+them, because the persisted control socket *is* the tunnel. Push needs a
+listener, which is the thing this design does not have.
+
+**The collector never initiates authentication.** A machine that wants a
+hardware-token touch per connection makes a background collector intolerable, so
+the collector rides an existing warm control socket and fails fast otherwise.
+The consequence is correct: remote visibility is a side effect of having worked
+on that box, and a cold host shows stale until you connect for any reason.
+
+**Membership is local and asymmetric.** No shared node list, no registry, no
+join protocol. Reachability is not symmetric: a laptop reaches a server, and
+the server does not reach a laptop behind NAT that sleeps. A global list would
+advertise peers half the fleet cannot use. And nothing needs one: only a node
+rendering a picker needs targets, and only ones it can reach. Identity is
+*discovered*. Config holds an ssh target, and the first export returns the
+node's UUID and display name.
+
+**Zero knobs.** Every setting exported to the user is one they can get wrong
+invisibly. Only two are irreducible: `peers` (only the operator knows their
+fleet) and `theme`. Retention horizon, collection interval and the staleness
+threshold are constants or derived. The trade is real: a wrong constant needs a
+release rather than an edit. Since heuristics replace knobs, the heuristics are
+where the tests go.
+
+**`driver` distinguishes who is waiting.** An agent you are talking to and an
+agent an orchestrator placed want opposite treatment: when the orchestrated one
+finishes, its supervisor consumes the result and nobody needs to acknowledge
+anything. Same state, opposite attention. It is per *agent*, not per node,
+because the normal case is one machine running your session and six spawned
+workers at once. Null reads as `human`, so an older node's events degrade toward
+visible.
+
+**Glance, not remote rendering.** "Render any pane from the master" hides two
+very different problems: a stateless `capture-pane` (cheap, and what the picker
+preview does) and continuous frame streaming with resize negotiation and input
+routing (most of herdr's codebase). Glance plus jump gets everything except
+never leaving the local frame. Since you are jumping there to work anyway, that
+may not be missed. This deferral is the main reason murmur is small.
+
+## Why not something else
+
+Investigated against herdr 0.8.2, a T3 Code checkout, and `mu`, all built and
+run locally rather than judged from their READMEs.
+
+| | multi-machine view | pi support | state source |
+| --- | --- | --- | --- |
+| herdr | no — 1:1, planned, blocked | yes | screen-scraped |
+| T3 Code | no — "unbuilt" by its own docs | no — 14-method adapter | driven |
+| mu | state sync yes, agents no | yes | reported |
+| **murmur** | **yes** | **yes, in-process** | **pushed** |
+
+### herdr
+
+A Rust terminal multiplexer built for coding agents: workspaces, tabs, panes, a
+per-pane `idle/working/blocked/done` sidebar, a socket API. Evaluated as a tmux
+replacement and rejected on its own terms.
+
+On multi-machine it is strictly 1:1. `--remote <target>` takes a single
+target, and no agent/pane/notification subcommand has a `--host` flag anywhere.
+`--remote` *replaces* the view rather than adding to it, so two machines means
+two sessions and a full switch between them. Multi-client is the maintainer's
+stated top priority but gated behind a server/client refactor that has been in
+progress for some time.
+
+Waiting would not help, for two structural reasons. The scope is one client
+attaching to multiple *herdr* servers, so every machine must run herdr,
+including machines where you cannot install a multiplexer of your choosing. And
+herdr detects state by matching terminal output, so adopting it means trading
+push-based state from inside the agent for screen-scraping.
+
+Taken from it: integration installs that write hooks into each agent's own
+config directory (`murmur link pi`), reusing one authenticated connection, and
+its own stated non-goals: no merged PTYs across machines, no moving work
+between hosts, host as a lightweight label. Rejected: the always-present
+sidebar, not for its ~4 columns but because it is fixed to one edge and cannot
+become a horizontal strip, while a status row is overhead already paid.
+
+### T3 Code
+
+An "agent harness control surface": a server owning agent sessions plus web,
+desktop and mobile clients over one RPC WebSocket.
+
+Its remote access is well ahead of herdr: direct ws/wss, bearer pairing, relay
+tunnels, mesh-VPN serve and desktop-managed SSH, all shipped. But the aggregated view is unbuilt, by its own internals docs: multiple
+live connections exist, a fused cross-machine agent overview does not.
+
+It also does not support pi, and adding it is expensive: a provider needs a
+driver plus an adapter implementing fourteen methods, and the reference
+implementation is over 1700 lines. murmur's adapter problem is smaller for a
+structural reason. T3 Code drives an agent it does not live inside, while
+murmur's extension runs *in process* and calls the store directly.
+
+Taken from it: the rule that *remoteness is expressed at the connection layer,
+never by splitting the runtime* (murmur's channel seam is exactly this),
+transport is not an identity, and environment identity as a stable UUID rather
+than a hostname.
+
+### mu
+
+An agent orchestrator: workstreams, a task DAG, agents in panes, isolated
+workspaces. It already solved the hard half of the replication problem: machine
+identity, per-peer watermarks, an op-log.
+
+Two ideas taken directly. Sync is ambient rather than a daemon: every invocation
+syncs before the verb, and no watcher outlives the command. And sync must never
+fail a command (every ambient entry point is total; a dead peer warns and returns).
+
+One idea deliberately not taken: mu's generic replicated KV. A generic op-log
+needs conflict resolution, which single-writer partitioning skips entirely, and
+a murmur with `put`/`del` over arbitrary entities would just *be* mu.
+
+**Relationship:** murmur observes, mu orchestrates. Merging is plausible later,
+since murmur would give mu global agent addressing and remote observation. But
+remote *orchestration* is much harder than remote observation, and none of it is
+murmur's problem.
+
+## Testing posture
+
+Bug-driven, not coverage-driven. A thing earns a test when it can fail *without
+you noticing*:
+
+| Target | Why it can fail silently |
+| ------ | ------------------------ |
+| Fold precedence | A wrong glyph gets rationalized, not investigated |
+| Staleness derivation | A dead peer keeps showing last-known state forever |
+| Ingest idempotency | Duplicate rows after a partial read |
+| Unknown-field preservation | Breaks against a future node you do not own |
+| Retention keeping newest-per-agent | Idle agents vanish; reads as "not there" |
+
+Not tested: ssh transport (OpenSSH's job), tmux wrappers (thin and loud), TUI
+rendering, packaging.
+
+New tests are verified by breaking the code they cover and watching them fail. A
+test that has never failed has not been shown to test anything. During
+development a test asserting a *wrong* behaviour was written twice, so this step
+is not ceremony.
+
+**The thing to know before adding a feature:** most bugs worth fixing here were
+invisible to unit tests and to reading the code. A silently no-opping extension,
+a remote jump broken by two independent shell-quoting layers, a 75-second hang
+on an unreachable peer, ages that measured the wrong clock. All of them surfaced
+by running the thing on two real machines. Unit tests protect the heuristics;
+they do not tell you the tool is usable.
+
+## Deliberate non-goals
+
+Each was considered and refused with reasons above:
+
+- a daemon or listening socket
+- interactive remote terminal rendering
+- orchestration or work placement
+- a generic put/del op-log
+- HLC or clock reconciliation
+- gossip replication (schema-compatible, not built)
+- configuration knobs beyond peers and theme
+- harnesses other than pi, multiplexers other than tmux, channels other than ssh
+
+## Known gaps
+
+- **Nested tmux.** Jumping to a remote agent runs `ssh -t host tmux attach`
+  inside a local tmux window, which nests. Needs a distinct inner prefix or
+  `send-prefix`. Everyone in this space punts on it; herdr bans nesting outright.
+- **Interactive attach is unverified.** Federation, staleness and the jump
+  target are verified across two machines over real ssh; sitting in a remote
+  pane and working in it is not.
+- **The hardware-token path is verified only in the cold-fail direction.** The
+  second test node authenticates by key, so it never needed a warm socket.
+- **Non-pi harnesses have no attention path.** Agents that cannot report from
+  inside themselves need an outside-in `notify` verb, which does not exist.

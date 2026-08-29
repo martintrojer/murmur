@@ -1,0 +1,22 @@
+#!/bin/sh
+# Typecheck + lint/format gate. Tests are NOT run here: they belong in the
+# task's own validation step, and a slow hook is a hook people bypass.
+#
+# Escape hatch: git commit --no-verify. Use it for WIP on a branch, not on main.
+set -e
+
+# Nothing staged in src/ or test/ means nothing this hook can judge.
+if ! git diff --cached --name-only --diff-filter=ACMR | grep -qE '^(src|test|scripts)/.*\.(ts|tsx|mjs|js)$'; then
+  exit 0
+fi
+
+if [ ! -d node_modules ]; then
+  echo "pre-commit: node_modules missing, skipping checks (run npm install)" >&2
+  exit 0
+fi
+
+echo "pre-commit: typecheck"
+npm run --silent typecheck
+
+echo "pre-commit: lint + format"
+npm run --silent lint

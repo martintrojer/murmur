@@ -1,0 +1,44 @@
+{
+  "name": "@martintrojer/murmur",
+  "version": "0.1.0",
+  "description": "Agent state across every machine you work on, in one view.",
+  "publishConfig": { "access": "public" },
+  "type": "module",
+  "license": "MIT",
+  "author": "Martin Trojer <martin.trojer@gmail.com>",
+  "homepage": "https://github.com/martintrojer/murmur",
+  "repository": { "type": "git", "url": "git+https://github.com/martintrojer/murmur.git" },
+  "keywords": ["tmux", "agents", "ai", "pi-coding-agent", "pi-package", "ssh"],
+  "engines": { "node": ">=20" },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
+    "./extension-store": "./dist/extension/store.js"
+  },
+  "bin": { "murmur": "./dist/cli.js" },
+  "files": ["dist", "README.md", "ARCHITECTURE.md"],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "lint": "biome check --error-on-warnings src test",
+    "lint:fix": "biome check --write src test",
+    "format": "biome format --write src test",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck && npm run lint && npm run test",
+    "prepare": "npm run build && node scripts/install-hooks.mjs"
+  },
+  "dependencies": {
+    "better-sqlite3": "^13.0.2",
+    "commander": "^15.0.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.6",
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/node": "^22.10.0",
+    "@typescript/native": "npm:typescript@^7.0.2",
+    "tsup": "^8.3.5",
+    "typescript": "npm:@typescript/typescript6@^6.0.2",
+    "vitest": "^4.1.10"
+  }
+}
