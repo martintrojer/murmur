@@ -17,7 +17,7 @@
     "./extension-store": "./dist/extension/store.js"
   },
   "bin": { "murmur": "./dist/cli.js" },
-  "files": ["dist", "README.md", "ARCHITECTURE.md"],
+  "files": ["dist", "README.md", "ARCHITECTURE.md", "CHANGELOG.md"],
   "scripts": {
     "build": "tsup",
     "test": "vitest run",
