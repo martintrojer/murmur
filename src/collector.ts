@@ -122,7 +122,6 @@ export async function collect(
           // look healthy for three hours.
           tmux_down_at: ingested > 0 ? null : peer.tmux_down_at,
         });
-        store.prune();
         results.push({ peer: peer.name, ok: true, ingested });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -133,6 +132,26 @@ export async function collect(
   } catch (error) {
     process.stderr.write(
       `murmur: collect: ${error instanceof Error ? error.message : String(error)}\n`,
+    );
+  }
+
+  // Once per collect, outside the peer loop and outside its try, for two
+  // reasons.
+  //
+  // It used to run per successful peer, so four peers meant four DELETEs with a
+  // window function over the whole table on every status-bar tick, to enforce a
+  // horizon measured in days. Idempotent work, repeated.
+  //
+  // And it ran only when a peer succeeded, so the single-machine case -- no
+  // peers at all, the everyday path -- pruned never and grew local events
+  // forever. The horizon is a property of the log, not of federation.
+  //
+  // Retention must not be able to fail a command, hence its own try.
+  try {
+    store.prune();
+  } catch (error) {
+    process.stderr.write(
+      `murmur: collect: prune: ${error instanceof Error ? error.message : String(error)}\n`,
     );
   }
   return results;

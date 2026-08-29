@@ -228,7 +228,61 @@ test("host_id on ingested rows is the origin, not the peer name", async () => {
   expect(store.allEvents()[0]?.host_id).toBe("H");
 });
 
-test("an empty peer list does nothing and touches no channel", async () => {
+test("a collect with no peers still prunes", async () => {
+  // The single-machine path: nobody to fetch from, but the retention horizon is
+  // a property of the log, not of federation. This used to prune only inside
+  // the per-peer loop, so a laptop with no peers grew events forever.
+  const stale = Date.now() - 30 * 86_400_000;
+  store.ingest([
+    { ...event(1, "local"), agent_id: "a", ts: stale },
+    { ...event(2, "local"), agent_id: "a", ts: stale + 1 },
+  ]);
+  expect(store.allEvents()).toHaveLength(2);
+
+  await collect(store, { exec: async () => "" });
+
+  // The newest event per agent is kept regardless of age, or the agent would
+  // vanish from the picker rather than reading as old.
+  expect(store.allEvents().map((item) => item.seq)).toEqual([2]);
+});
+
+test("prune runs once per collect, not once per peer", async () => {
+  for (const name of ["a", "b", "c"]) store.upsertPeer({ name, target: name });
+  let prunes = 0;
+  const spy = new Proxy(store, {
+    get: (target, prop, receiver) =>
+      prop === "prune"
+        ? () => {
+            prunes += 1;
+            return 0;
+          }
+        : Reflect.get(target, prop, receiver),
+  });
+  const channel: Channel = { exec: async () => jsonl([event(1)]) };
+
+  await collect(spy, channel, 5_000);
+
+  expect(prunes).toBe(1);
+});
+
+test("a failing prune warns and does not fail the collect", async () => {
+  store.upsertPeer({ name: "dev", target: "dev" });
+  const spy = new Proxy(store, {
+    get: (target, prop, receiver) =>
+      prop === "prune"
+        ? () => {
+            throw new Error("database is locked");
+          }
+        : Reflect.get(target, prop, receiver),
+  });
+  const channel: Channel = { exec: async () => jsonl([event(1)]) };
+
+  await expect(collect(spy, channel, 5_000)).resolves.toEqual([
+    { peer: "dev", ok: true, ingested: 1 },
+  ]);
+});
+
+test("an empty peer list touches no channel", async () => {
   let calls = 0;
   const spy: Channel = {
     exec: async () => {
