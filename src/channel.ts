@@ -68,11 +68,28 @@ export interface Channel {
   exec(target: string, argv: string[]): Promise<string>;
 }
 
+// Node's execFile defaults to a 1 MiB stdout ceiling and rejects with
+// ERR_CHILD_PROCESS_STDIO_MAXBUFFER past it, killing the child. An export is
+// the peer's whole delta, and at ~400 bytes an event (measured) 1 MiB is only
+// ~2,600 events -- reachable inside the 7-day horizon on a busy box, and
+// certain on a first sync from watermark 0.
+//
+// The failure would also be permanent, not transient: the watermark only
+// advances on a successful parse, so every subsequent collect would re-request
+// the same oversized range and fail identically. A reachable peer would sit
+// stale forever.
+//
+// 64 MiB is ~170k events, far above what the horizon can hold, and it is a
+// ceiling rather than an allocation. The timeout is the real bound on a
+// runaway peer.
+const MAX_EXPORT_BYTES = 64 * 1024 * 1024;
+
 export const ssh: Channel = {
   async exec(target, argv) {
     const { stdout } = await execFileAsync("ssh", [...SSH_OPTIONS, target, ...argv], {
       encoding: "utf8",
       timeout: EXEC_TIMEOUT_MS,
+      maxBuffer: MAX_EXPORT_BYTES,
     });
     return stdout;
   },

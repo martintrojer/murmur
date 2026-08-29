@@ -29,26 +29,50 @@ export const STALENESS_MS = 60_000;
 // them resident at once, which is process churn and file descriptors spent on
 // hosts that were never going to answer.
 //
-// Eight keeps the realistic fleet fully parallel while bounding that. Worst
-// case becomes ceil(peers / 8) ssh timeouts instead of one, still inside the
-// HUD tick for any plausible list.
+// Eight keeps the realistic fleet fully parallel while bounding that.
 export const MAX_CONCURRENT_PEERS = 8;
+
+// The cap alone does not bound the collect, which is what an earlier version of
+// this comment got wrong. The per-peer ssh timeout applies once per wave, so
+// nine unreachable peers cost two waves and seventeen cost three: the pool
+// serialises the timeouts it is there to limit. At a 5s status-interval that is
+// exactly the tick overlap the concurrency work set out to remove, just moved
+// to a longer peer list.
+//
+// So the whole collect gets its own deadline, independent of peer count. Peers
+// still in flight when it expires are abandoned and render stale, which is
+// already the designed outcome for a host that did not answer in time.
+//
+// Four seconds: under a 5s tick, and above one full wave (a 3s exec ceiling
+// plus overhead) so a single wave is never cut short by the deadline itself.
+export const COLLECT_DEADLINE_MS = 4_000;
 
 /**
  * Runs `task` over `items` with at most `limit` in flight, preserving input
  * order in the output. Workers pull from a shared cursor rather than running
  * fixed batches, so one slow peer occupies a single slot instead of holding a
  * batch boundary.
+ *
+ * `deadline` bounds the whole run, not each task. Once it passes, workers stop
+ * claiming new items and anything unstarted is left `undefined` for the caller
+ * to treat as "did not answer". Tasks already in flight are not cancelled --
+ * there is nothing to cancel a forked ssh with here -- but they no longer hold
+ * the collect open, because the deadline races the pool rather than joining it.
  */
 async function mapSettled<T, R>(
   items: readonly T[],
   limit: number,
   task: (item: T) => Promise<R>,
-): Promise<PromiseSettledResult<R>[]> {
-  const results = new Array<PromiseSettledResult<R>>(items.length);
+  deadline?: Promise<void>,
+): Promise<(PromiseSettledResult<R> | undefined)[]> {
+  const results = new Array<PromiseSettledResult<R> | undefined>(items.length);
   let cursor = 0;
+  let expired = false;
+  const stop = deadline?.then(() => {
+    expired = true;
+  });
   const worker = async () => {
-    while (cursor < items.length) {
+    while (cursor < items.length && !expired) {
       const index = cursor++;
       try {
         results[index] = { status: "fulfilled", value: await task(items[index] as T) };
@@ -57,7 +81,8 @@ async function mapSettled<T, R>(
       }
     }
   };
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  const pool = Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  await (stop ? Promise.race([pool, stop]) : pool);
   return results;
 }
 
@@ -89,7 +114,8 @@ function parseJsonl(output: string): { envelope: Envelope; events: Event[] } {
  * serial loop charged that to every other peer behind it: three asleep laptops
  * made `murmur status` hang for thirty seconds and let the HUD tick overlap
  * itself. Fanning out makes the whole collect cost the slowest peer, not the
- * sum — capped at MAX_CONCURRENT_PEERS in flight.
+ * sum — capped at MAX_CONCURRENT_PEERS in flight and bounded overall by
+ * COLLECT_DEADLINE_MS.
  *
  * Applied serially, in peer order, because better-sqlite3 is synchronous: there
  * is nothing to win by interleaving writes, and keeping the order stable keeps
@@ -99,29 +125,50 @@ export async function collect(
   store: Store,
   channel: Channel,
   now = Date.now(),
+  deadline?: Promise<void>,
 ): Promise<CollectResult[]> {
   const results: CollectResult[] = [];
+  let timer: NodeJS.Timeout | undefined;
   try {
     const peers = store.peers();
+    // Default deadline, injectable so tests do not have to wait out real time.
+    // Unref'd: a pending timer must not hold the process open after a CLI
+    // command has printed its output and finished.
+    const bounded =
+      deadline ??
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, COLLECT_DEADLINE_MS);
+        timer.unref?.();
+      });
     // Settled, not raw: a peer that fails while we are still applying an
     // earlier one would otherwise be an unhandled rejection for as long as it
     // sits in the queue, which Node reports and future Node kills the process
     // over.
-    const fetches = await mapSettled(peers, MAX_CONCURRENT_PEERS, async (peer) =>
-      parseJsonl(
-        await channel.exec(peer.target, ["murmur", "export", "--since", String(peer.watermark)]),
-      ),
+    const fetches = await mapSettled(
+      peers,
+      MAX_CONCURRENT_PEERS,
+      async (peer) =>
+        parseJsonl(
+          await channel.exec(peer.target, ["murmur", "export", "--since", String(peer.watermark)]),
+        ),
+      bounded,
     );
     for (const [index, peer] of peers.entries()) {
       const fetch = fetches[index];
       try {
-        if (!fetch) throw new Error("no result for peer");
+        // Undefined means the deadline passed before this peer was claimed or
+        // finished. Not an error about the peer, so it says so plainly and
+        // leaves fetched_at alone: the peer goes stale, which is the designed
+        // outcome for a host that did not answer in time.
+        if (!fetch) throw new Error("collect deadline passed before this peer answered");
         if (fetch.status === "rejected") throw fetch.reason;
         const { envelope, events } = fetch.value;
         const ingested = store.ingest(events);
-        const watermark = events
-          .filter((event) => event.host_id === envelope.host_id)
-          .reduce((highest, event) => Math.max(highest, event.seq), peer.watermark);
+        const origin = events.filter((event) => event.host_id === envelope.host_id);
+        const watermark = origin.reduce(
+          (highest, event) => Math.max(highest, event.seq),
+          peer.watermark,
+        );
         store.upsertPeer({
           name: peer.name,
           target: peer.target,
@@ -134,7 +181,15 @@ export async function collect(
           // events: an export that returns nothing proves the binary ran, not
           // that tmux is back, which is the distinction that let a dead host
           // look healthy for three hours.
-          tmux_down_at: ingested > 0 ? null : peer.tmux_down_at,
+          //
+          // Keyed on the watermark advancing, not on ingest's insert count.
+          // Two reasons the count was wrong. Ingest is INSERT OR IGNORE, so a
+          // retry after a partial apply re-sees the same events and reports
+          // zero -- leaving a recovered host marked down until it happened to
+          // author again. And the count includes rows from other origins that
+          // this peer merely relayed, which say nothing about whether this
+          // peer's tmux is back.
+          tmux_down_at: watermark > peer.watermark ? null : peer.tmux_down_at,
         });
         results.push({ peer: peer.name, ok: true, ingested });
       } catch (error) {
@@ -147,6 +202,8 @@ export async function collect(
     process.stderr.write(
       `murmur: collect: ${error instanceof Error ? error.message : String(error)}\n`,
     );
+  } finally {
+    clearTimeout(timer);
   }
 
   // Once per collect, outside the peer loop and outside its try, for two

@@ -295,6 +295,88 @@ test("an empty peer list touches no channel", async () => {
   expect(calls).toBe(0);
 });
 
+test("a re-seen event still clears tmux_down after a partial apply", async () => {
+  // The insert count was the wrong signal. ingest is INSERT OR IGNORE, so a
+  // collect that stored rows and then failed before upsertPeer leaves the old
+  // watermark; the retry re-fetches the same events, inserts nothing, and the
+  // count reads 0 even though the peer has demonstrably authored past its
+  // watermark. Keying on the watermark advancing fixes it.
+  store.upsertPeer({ name: "p", target: "p", host_id: "H", tmux_down_at: 1_000, watermark: 0 });
+  store.ingest([event(1, "H")]); // already stored by the run that then failed
+
+  const channel: Channel = { exec: async () => jsonl([event(1, "H")], "H") };
+  const result = await collect(store, channel, 5_000);
+
+  expect(result).toEqual([{ peer: "p", ok: true, ingested: 0 }]);
+  expect(store.peers()[0]?.watermark).toBe(1);
+  expect(store.peers()[0]?.tmux_down_at).toBeNull();
+});
+
+test("relayed events from another origin do not clear tmux_down", async () => {
+  // ingest counts every row, including ones this peer merely relayed from a
+  // third host. Those say nothing about whether this peer's own tmux is back.
+  store.upsertPeer({ name: "p", target: "p", host_id: "H", tmux_down_at: 1_000 });
+  const channel: Channel = { exec: async () => jsonl([event(7, "OTHER")], "H") };
+
+  const result = await collect(store, channel, 5_000);
+
+  expect(result).toEqual([{ peer: "p", ok: true, ingested: 1 }]);
+  expect(store.peers()[0]?.tmux_down_at).toBe(1_000);
+});
+
+test("the collect deadline abandons peers instead of waiting out every wave", async () => {
+  // The per-peer timeout applies once per wave, so MAX_CONCURRENT_PEERS + 1
+  // unreachable peers cost two waves and overrun the status tick. The deadline
+  // bounds the whole collect regardless of peer count.
+  // Zero-padded: peers come back ordered by name, and `p10` sorts before `p2`.
+  const names = Array.from(
+    { length: MAX_CONCURRENT_PEERS + 4 },
+    (_, i) => `p${String(i).padStart(2, "0")}`,
+  );
+  for (const name of names) store.upsertPeer({ name, target: name });
+  let started = 0;
+  const channel: Channel = {
+    exec: async () => {
+      started += 1;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      return jsonl([event(1)]);
+    },
+  };
+  // Fires after the first wave is in flight but before it completes.
+  const deadline = new Promise<void>((resolve) => setTimeout(resolve, 10));
+
+  const results = await collect(store, channel, 5_000, deadline);
+
+  // Every peer still gets a result, in order: the ones past the deadline are
+  // reported as failures rather than silently dropped.
+  expect(results.map((item) => item.peer)).toEqual(names);
+  expect(results.some((item) => !item.ok)).toBe(true);
+  expect(results.find((item) => !item.ok)?.error).toMatch(/deadline/);
+
+  // And the pool actually stopped, rather than the deadline merely returning
+  // early while workers kept dialling in the background. Measured after the
+  // first wave has had time to drain: without the expired guard the freed
+  // slots would pick up the remaining peers and spawn more ssh.
+  const duringCollect = started;
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  expect(started).toBe(duringCollect);
+  expect(started).toBeLessThanOrEqual(MAX_CONCURRENT_PEERS);
+});
+
+test("a peer abandoned by the deadline stays stale rather than looking fresh", async () => {
+  store.upsertPeer({ name: "slow", target: "slow", fetched_at: 111 });
+  const channel: Channel = {
+    exec: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      return jsonl([event(1)]);
+    },
+  };
+
+  await collect(store, channel, 5_000, Promise.resolve());
+
+  expect(store.peers()[0]?.fetched_at).toBe(111);
+});
+
 test("new events clear a tmux_down mark, an empty export does not", async () => {
   // The race: a jump proves the peer's tmux is down, then the host comes back.
   // The log settles it — but only a real event counts. A successful export
