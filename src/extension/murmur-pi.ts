@@ -87,6 +87,21 @@ export default function murmurPi(pi: ExtensionAPI): void {
     }
   };
 
+  // Drop the cached handle, closing it first. The catch in `append` used to
+  // just assign null, which left an open SQLite connection to garbage
+  // collection while the next event opened another one -- so a peer with a
+  // recurring transient write failure leaked a connection and its WAL read
+  // state per event, inside a pi process that can run for days. Shared with
+  // session_shutdown so there is one way to let go of the store.
+  const dropStore = (): void => {
+    try {
+      store?.close();
+    } catch {
+      // Best effort: extension failures must never reach pi.
+    }
+    store = null;
+  };
+
   const append = async (state: AgentState, pid: number | null): Promise<void> => {
     try {
       const currentStore = await getStore();
@@ -115,7 +130,7 @@ export default function murmurPi(pi: ExtensionAPI): void {
         extra: {},
       });
     } catch {
-      store = null;
+      dropStore();
     }
   };
 
@@ -138,12 +153,7 @@ export default function murmurPi(pi: ExtensionAPI): void {
     await enqueue(async () => {
       tmux.setState(location.window, null);
       await append("cleared", null);
-      try {
-        store?.close();
-      } catch {
-        // Best effort: extension failures must never reach pi.
-      }
-      store = null;
+      dropStore();
     });
   });
 }

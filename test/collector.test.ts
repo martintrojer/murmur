@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import type { Channel } from "../src/channel.js";
 import { collect, MAX_CONCURRENT_PEERS } from "../src/collector.js";
+import { SCHEMA_VERSION } from "../src/export.js";
 import { openStore, type Store } from "../src/store.js";
 import type { Event } from "../src/types.js";
 
@@ -47,10 +48,10 @@ function event(seq: number, hostId = "remote-host"): Event {
   };
 }
 
-function jsonl(events: Event[], hostId = "remote-host"): string {
+function jsonl(events: Event[], hostId = "remote-host", version = SCHEMA_VERSION): string {
   return [
     JSON.stringify({
-      schema_version: 1,
+      schema_version: version,
       host_id: hostId,
       display_name: "Remote",
       exported_at: 1_000,
@@ -409,4 +410,34 @@ test("new events clear a tmux_down mark, an empty export does not", async () => 
   const withEvent: Channel = { exec: async () => jsonl([event(1, "H")], "H") };
   await collect(store, withEvent);
   expect(store.peers()[0]?.tmux_down_at).toBeNull();
+});
+
+test("an older wire version is accepted, a newer one is refused", async () => {
+  // The version rules are asymmetric on purpose and only half of it was
+  // covered: every other test in this file used to hardcode version 1, so the
+  // current version was never exercised on ingest and the rejection branch had
+  // no test at all.
+  store.upsertPeer({ name: "old", target: "old" });
+  store.upsertPeer({ name: "new", target: "new", fetched_at: 42 });
+
+  const channel: Channel = {
+    exec: async (target) =>
+      target === "old"
+        ? // Older peer: forward compatible, so its events land.
+          jsonl([event(1, "OLD")], "OLD", SCHEMA_VERSION - 1)
+        : // Newer peer: we cannot know what its fields mean, so refuse rather
+          // than half-parse it.
+          jsonl([event(1, "NEW")], "NEW", SCHEMA_VERSION + 1),
+  };
+
+  const results = await collect(store, channel, 5_000);
+
+  expect(results).toEqual([
+    { peer: "new", ok: false, ingested: 0, error: expect.stringContaining("unsupported schema") },
+    { peer: "old", ok: true, ingested: 1 },
+  ]);
+  // The refused peer keeps its old fetched_at, so it renders stale rather than
+  // looking freshly synced.
+  expect(store.peers().find((peer) => peer.name === "new")?.fetched_at).toBe(42);
+  expect(store.allEvents().map((item) => item.host_id)).toEqual(["OLD"]);
 });
