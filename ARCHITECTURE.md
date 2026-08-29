@@ -57,14 +57,13 @@ Two consequences worth stating, because both are easy to violate by accident:
 
 ## A tmux pane is the agent's address
 
-Everything below assumes agents run inside tmux. That assumption does real work
-in one specific way: a pane is how murmur names an agent and how a jump reaches
-one.
+Everything below assumes agents run inside tmux. A pane is how murmur names an
+agent and how a jump reaches one.
 
-The extension resolves its pane from `$TMUX_PANE` and returns early if there is
-none, so a pi started in a plain terminal writes no events and never appears in
-the picker. That is the honest outcome rather than a gap: with no pane there is
-no address, and a row you cannot jump to is worse than no row.
+The extension resolves its pane from `$TMUX_PANE` and returns early without one,
+so a pi started in a plain terminal writes no events and never appears in the
+picker. That is the honest outcome rather than a gap: with no pane there is no
+address, and a row you cannot jump to is worse than no row.
 
 Two nearby calls look contradictory and are not:
 
@@ -81,13 +80,12 @@ attach`. tmux must be running on the far side, which is why a dead remote tmux
 server gets its own diagnosis rather than being reported as an unreachable
 host.
 
-The badge also has to be cleared from outside, which is why `murmur clear
---pane <id>` exists and why tmux hooks have to call it. A window option is what
-the status bar and the `tms` session picker read, so it outlives the agent
-unless something clears it, and the agent itself cannot: "you looked at it" is
-an event only the multiplexer sees. Hooks run in the tmux server with no
-`$TMUX_PANE`, so the pane id is passed explicitly — and it must be, because the
-badge belongs to the window while the looking belongs to one pane.
+The badge also has to be cleared from outside, which is why `murmur clear --pane
+<id>` exists and why tmux hooks call it. The status bar and the `tms` picker read
+a window option, so it outlives the agent unless something clears it — and the
+agent cannot, because "you looked at it" is an event only the multiplexer sees.
+Hooks run in the tmux server with no `$TMUX_PANE`, so the pane id is passed
+explicitly: the badge belongs to the window, the looking belongs to one pane.
 
 ## The six units
 
@@ -132,10 +130,9 @@ free.
 | `extra` | JSON. Unknown fields, preserved verbatim |
 
 **Unknown data round-trips.** A node ingesting an unknown `kind` or unknown
-fields stores them in `extra` and re-exports them unchanged. Without this, an
-old node sitting in a future replication path silently truncates data. That
-failure is invisible from both ends, and only reachable against a version you
-do not control.
+fields stores them in `extra` and re-exports them unchanged. Without this, an old
+node in a future replication path silently truncates data — invisible from both
+ends, and only reachable against a version you do not control.
 
 Deliberately absent: a generic `put`/`del` op-log (that needs conflict
 resolution, which single-writer partitioning lets us skip, and it would simply
@@ -149,19 +146,16 @@ incremental sync is a watermark ("everything after N", idempotent), and history
 is not optional, because the picker's preview shows recent events, so the
 protocol has to ship events rather than derived state.
 
-**TypeScript, on install-story grounds.** pi is itself an npm package, so every
-node that runs agents necessarily has Node and npm, so npm is not a new
-dependency on exactly the machines that matter. Python would mean inventing a cross-machine
-install story for the ecosystem that handles it worst, on machines where the
-system interpreter is least yours to touch. The "keep the working script"
-argument is weaker than it looks: those lines worked because dotfiles symlinked
-them, so the moment a second machine needs them they must be packaged from
-scratch either way.
+**TypeScript, on install-story grounds.** pi is an npm package, so every node
+running agents already has Node and npm. Python would mean inventing a
+cross-machine install story for the ecosystem that handles it worst, on machines
+where the system interpreter is least yours to touch. "Keep the working script"
+is weaker than it looks: those lines worked because dotfiles symlinked them, so
+a second machine means packaging them either way.
 
 ## Three ideas to understand before changing anything
 
-Everything else is mechanical. These three are the ones to understand before
-changing anything.
+Everything else is mechanical.
 
 ### 1. State and freshness are different axes, and freshness is two
 
@@ -188,16 +182,17 @@ current.
 ### 2. Facts only the author can know are recorded by the author
 
 Pids, window liveness and window names mean something only on the machine that
-owns them. So crash synthesis runs on the authoring node during export, not on
-the reader.
+owns them, so crash synthesis runs on the authoring node during export.
 
 Do it on the reader and every remote `working` agent is marked `crashed`, which
-looks exactly like a real crash, so it does not get investigated. This is the
-single easiest thing in the codebase to get backwards.
+looks exactly like a real crash and so goes uninvestigated. This is the easiest
+thing in the codebase to get backwards.
 
-The same rule gave names their home: window ids are machine-local, so resolving
+The same rule gives names their home: window ids are machine-local, so resolving
 a remote id against the local tmux labels an agent with whatever *this* machine
-has at that id. Names travel on the event instead.
+has at that id. Names travel on the event instead. Liveness follows it too — an
+idle agent's pid is only checkable at home, which is why remote idle rows report
+`unknown` rather than a guess.
 
 ### 3. The single-machine case is the same code path
 
@@ -212,9 +207,9 @@ No network, no ssh, no daemon, no added latency. Federation is strictly
 additive: a `host_id` on rows that all say "me", and a loop over an empty array.
 
 This is a constraint, not an observation. A tool that only pays for itself at
-three nodes charges rent daily for fleet capability used occasionally, which is
-one of the things herdr was rejected for. Measured first paint with zero peers:
-48 ms against 250 ms for the picker it replaces.
+three nodes charges rent daily for capability used occasionally — one of the
+things herdr was rejected for. Measured first paint with zero peers: 48 ms
+against 250 ms for the picker it replaces.
 
 ## Design choices, and what they cost
 
@@ -224,18 +219,15 @@ them, because the persisted control socket *is* the tunnel. Push needs a
 listener, which is the thing this design does not have.
 
 **The collector never prompts.** It reuses a warm `ControlMaster` socket when
-there is one and cold-connects when there is not, so with ordinary key auth a
-peer is visible whether or not you have ssh'd there recently — fleet visibility
-is not rationed by a daily chore. `BatchMode=yes` is what makes the cold path
+there is one and cold-connects otherwise, so with key auth a peer is visible
+whether or not you ssh'd there recently. `BatchMode=yes` makes the cold path
 acceptable: no password, passphrase or host-key prompt, so a peer that cannot
-authenticate silently fails fast and shows stale instead of blocking on a
-human.
+authenticate fails fast and shows stale instead of blocking on a human.
 
-The unhandled case is a host demanding a hardware-token touch per connection,
-where "cannot authenticate without a human" is not something `BatchMode` can
-detect before the token blinks. `hasWarmSocket` exists for that: gating collect
-on it per peer would restore the strict posture for those hosts only. Not wired
-up, because no peer in use needs it.
+Unhandled: a host demanding a hardware-token touch per connection, which
+`BatchMode` cannot detect before the token blinks. `hasWarmSocket` exists for
+that — gating collect on it per peer would restore the strict posture for those
+hosts only. Not wired up, because no peer in use needs it.
 
 **Membership is local and asymmetric.** No shared node list, no registry, no
 join protocol. Reachability is not symmetric: a laptop reaches a server, and
@@ -245,12 +237,11 @@ rendering a picker needs targets, and only ones it can reach. Identity is
 *discovered*. Config holds an ssh target, and the first export returns the
 node's UUID and display name.
 
-**Zero knobs.** Every setting exported to the user is one they can get wrong
-invisibly. Only two are irreducible: `peers` (only the operator knows their
-fleet) and `theme`. Retention horizon, collection interval and the staleness
-threshold are constants or derived. The trade is real: a wrong constant needs a
-release rather than an edit. Since heuristics replace knobs, the heuristics are
-where the tests go.
+**Zero knobs.** Every exported setting is one the user can get wrong invisibly.
+Two are irreducible: `peers` (only the operator knows their fleet) and `theme`.
+Retention horizon, collection interval and staleness threshold are constants.
+The trade: a wrong constant needs a release, not an edit. Heuristics replace
+knobs, so heuristics are where the tests go.
 
 **`driver` distinguishes who is waiting.** An agent you are talking to and an
 agent an orchestrator placed want opposite treatment: when the orchestrated one
@@ -261,11 +252,11 @@ workers at once. Null reads as `human`, so an older node's events degrade toward
 visible.
 
 **Glance, not remote rendering.** "Render any pane from the master" hides two
-very different problems: a stateless `capture-pane` (cheap, and what the picker
-preview does) and continuous frame streaming with resize negotiation and input
-routing (most of herdr's codebase). Glance plus jump gets everything except
-never leaving the local frame. Since you are jumping there to work anyway, that
-may not be missed. This deferral is the main reason murmur is small.
+different problems: a stateless `capture-pane` (cheap, and what the preview
+does) and continuous frame streaming with resize negotiation and input routing
+(most of herdr's codebase). Glance plus jump gets everything except never
+leaving the local frame, and you are jumping there to work anyway. This
+deferral is the main reason murmur is small.
 
 ## Why not something else
 
@@ -285,18 +276,16 @@ A Rust terminal multiplexer built for coding agents: workspaces, tabs, panes, a
 per-pane `idle/working/blocked/done` sidebar, a socket API. Evaluated as a tmux
 replacement and rejected on its own terms.
 
-On multi-machine it is strictly 1:1. `--remote <target>` takes a single
-target, and no agent/pane/notification subcommand has a `--host` flag anywhere.
-`--remote` *replaces* the view rather than adding to it, so two machines means
-two sessions and a full switch between them. Multi-client is the maintainer's
-stated top priority but gated behind a server/client refactor that has been in
-progress for some time.
+On multi-machine it is strictly 1:1. `--remote <target>` takes a single target,
+no subcommand has a `--host` flag, and `--remote` *replaces* the view rather
+than adding to it: two machines means two sessions and a full switch between
+them. Multi-client is the maintainer's stated top priority, gated behind a
+long-running server/client refactor.
 
-Waiting would not help, for two structural reasons. The scope is one client
-attaching to multiple *herdr* servers, so every machine must run herdr,
-including machines where you cannot install a multiplexer of your choosing. And
-herdr detects state by matching terminal output, so adopting it means trading
-push-based state from inside the agent for screen-scraping.
+Waiting would not help. The scope is one client attaching to multiple *herdr*
+servers, so every machine must run herdr — including machines where you cannot
+choose the multiplexer. And herdr detects state by matching terminal output, so
+adopting it trades push-based state from inside the agent for screen-scraping.
 
 Taken from it: integration installs that write hooks into each agent's own
 config directory (`murmur link pi`), reusing one authenticated connection, and
@@ -311,14 +300,15 @@ An "agent harness control surface": a server owning agent sessions plus web,
 desktop and mobile clients over one RPC WebSocket.
 
 Its remote access is well ahead of herdr: direct ws/wss, bearer pairing, relay
-tunnels, mesh-VPN serve and desktop-managed SSH, all shipped. But the aggregated view is unbuilt, by its own internals docs: multiple
-live connections exist, a fused cross-machine agent overview does not.
+tunnels, mesh-VPN serve and desktop-managed SSH, all shipped. But the aggregated
+view is unbuilt by its own internals docs — multiple live connections exist, a
+fused cross-machine overview does not.
 
 It also does not support pi, and adding it is expensive: a provider needs a
-driver plus an adapter implementing fourteen methods, and the reference
-implementation is over 1700 lines. murmur's adapter problem is smaller for a
-structural reason. T3 Code drives an agent it does not live inside, while
-murmur's extension runs *in process* and calls the store directly.
+driver plus a fourteen-method adapter, and the reference implementation is over
+1700 lines. murmur's adapter problem is smaller structurally: T3 Code drives an
+agent it does not live inside, while murmur's extension runs *in process* and
+calls the store directly.
 
 Taken from it: the rule that *remoteness is expressed at the connection layer,
 never by splitting the runtime* (murmur's channel seam is exactly this),
@@ -332,8 +322,9 @@ workspaces. It already solved the hard half of the replication problem: machine
 identity, per-peer watermarks, an op-log.
 
 Two ideas taken directly. Sync is ambient rather than a daemon: every invocation
-syncs before the verb, and no watcher outlives the command. And sync must never
-fail a command (every ambient entry point is total; a dead peer warns and returns).
+syncs before the verb, and no watcher outlives the command. And sync never fails
+a command — every ambient entry point is total, and a dead peer warns and
+returns.
 
 One idea deliberately not taken: mu's generic replicated KV. A generic op-log
 needs conflict resolution, which single-writer partitioning skips entirely, and
@@ -361,16 +352,28 @@ Not tested: ssh transport (OpenSSH's job), tmux wrappers (thin and loud), TUI
 rendering, packaging.
 
 New tests are verified by breaking the code they cover and watching them fail. A
-test that has never failed has not been shown to test anything. During
-development a test asserting a *wrong* behaviour was written twice, so this step
-is not ceremony.
+test that has never failed has not been shown to test anything. A test asserting
+a *wrong* behaviour has been written twice here, so this step is not ceremony.
+
+Two traps this caught, both in the tests rather than the code. A `setTimeout(0)`
+used to drain the extension's fire-and-forget queue passed and failed about one
+run in ten -- a race in the test, which is worse than a failing test because it
+teaches people to re-run. And a `until()` helper that threw on timeout made a
+mutation "pass": the regression died inside the helper instead of at the
+assertion describing it. Barriers wait for an observable effect, and report
+through the caller's `expect`.
+
+Where the fake is the test's weak point, the test talks to the real thing.
+`test/mux-targets.test.ts` drives a private tmux server on its own `-L` socket,
+because every other test fakes the `Mux` and a malformed tmux target passes them
+all — two wrong target spellings did exactly that.
 
 **The thing to know before adding a feature:** most bugs worth fixing here were
 invisible to unit tests and to reading the code. A silently no-opping extension,
 a remote jump broken by two independent shell-quoting layers, a 75-second hang
-on an unreachable peer, ages that measured the wrong clock. All of them surfaced
-by running the thing on two real machines. Unit tests protect the heuristics;
-they do not tell you the tool is usable.
+on an unreachable peer, ages that measured the wrong clock. All surfaced by
+running the thing on two real machines. Unit tests protect the heuristics; they
+do not tell you the tool is usable.
 
 ## Deliberate non-goals
 
@@ -387,32 +390,19 @@ Each was considered and refused with reasons above:
 
 ## Known gaps
 
-- **An idle agent's liveness is only known on its own host.** `agent_end` fires
-  at the end of every *turn*, not the session, so a pi in active use alternates
-  `working` / `cleared` and reads as idle between turns. Idle is the right state
-  -- it wants nothing -- but it used to cover both "still running" and "exited
-  hours ago", and the picker showed them identically.
-
-  An idle row now carries `liveness`, folded from the last pid the agent
-  reported: `alive`, `exited`, or `unknown`. It is a separate axis rather than a
-  state, because "is the process there" is orthogonal to "does it need me",
-  which is what the attention sort orders by. `unknown` is load-bearing: a pid
-  only means something in its own machine's process table, so a remote idle
-  agent is never guessed at, and an agent that reported no pid is not claimed to
-  have exited.
-
-  What is still missing is the inverse for *remote* nodes. A peer could report
-  liveness for its own idle agents, since only it can check its own pids, and
-  nothing in the wire format prevents it.
-- **Nested tmux is solved for the jump, unverified for the session.** Jumping to
-  a remote agent now runs the `ssh -t host tmux attach` in its own local session
-  with `status off` and `prefix None`, so it is full-screen and `^b` reaches the
-  remote directly -- no `^b b`, no second prefix. Verified against real tmux
-  servers: options apply, the client switches in, and it returns home when the
-  attach exits. Returning to the exact origin *window* rather than the session
-  is implemented but not yet verified end to end. The local server is
-  unreachable from inside the wrapper by design; the README documents the
-  root-table key that detaches out.
+- **Liveness of a quiet agent degrades to `unknown` after an hour.** Pids
+  recycle -- measured at ~9/sec idle here, so darwin's 99999-pid space wraps in
+  about three hours -- and `pidAlive` only asks whether *something* holds that
+  number. Past the trust horizon an alive agent that has been quiet reads
+  `unknown`, which is honest but less useful than the truth. A start timestamp
+  compared against the process's own would fix it and needs a `ps` call.
+- **Remote idle agents report no liveness.** Only the authoring node can check a
+  pid, so remote idle rows read `unknown` where local ones read `live` or
+  `exited`. A peer could fold and export its own, and the wire format allows it.
+- **The remote wrapper session is verified against tmux, not against use.**
+  Options, the switch, and the return to the origin window are verified on real
+  tmux servers with a stub ssh. Sitting in a live remote pane and working in it
+  is not, which is the same gap as interactive attach below.
 - **Interactive attach is unverified.** Federation, staleness and the jump
   target are verified across two machines over real ssh; sitting in a remote
   pane and working in it is not.

@@ -5,6 +5,27 @@ import { join } from "node:path";
 import { expect, test, vi } from "vitest";
 import { driverFromEnv, endState } from "../src/extension/decide.js";
 
+/**
+ * Wait until `condition` holds, or fail loudly.
+ *
+ * The handlers are `void enqueue(...)`, so they return before their work runs,
+ * and that work awaits a dynamic import -- which needs an unknown number of
+ * macrotask turns to settle. A fixed `setTimeout(0)` looked like it worked and
+ * failed roughly one run in ten: a race in the TEST, which is worse than a
+ * failing test because it teaches people to re-run.
+ */
+async function until(condition: () => boolean, _label: string): Promise<void> {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    if (condition()) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  // Returns rather than throws, deliberately. Throwing here would make a
+  // regression fail inside this helper instead of at the assertion that
+  // describes it -- and worse, a mutation that stops the work happening at all
+  // would be "caught" by a timeout message that says nothing about the
+  // behaviour. Let the caller's expect() report it.
+}
+
 test("agent_end reports done only when unseen and not mu-managed", () => {
   expect(endState(false, false)).toBe("done");
   expect(endState(true, false)).toBe("cleared");
@@ -89,6 +110,192 @@ test("a failed append closes the store it is dropping", async () => {
   // it. Before the fix this was opened=1, closed=0.
   expect(opened).toBe(1);
   expect(closed).toBe(1);
+
+  vi.doUnmock("@martintrojer/murmur/extension-store");
+  vi.doUnmock("../src/mux.js");
+  vi.resetModules();
+});
+
+test("a transient write failure does not silence the agent for the rest of its life", async () => {
+  // Regression, observed on a real agent: it stopped reporting mid-session and
+  // read as idle for minutes while it was working.
+  //
+  // getStore cached `null` to mean "murmur is absent, stop trying", and
+  // dropStore assigned that same `null` after a failed write. So one transient
+  // failure -- a lock held by a concurrent writer is enough -- latched the
+  // cache off, and every later event was dropped for the life of the process.
+  // Silently: the tmux badge is set before the append, so the window still
+  // looked right while the log went nowhere.
+  let opened = 0;
+  const appended: string[] = [];
+  let failNext = true;
+
+  vi.doMock("@martintrojer/murmur/extension-store", () => ({
+    loadIdentity: () => ({ host_id: "H", display_name: "h" }),
+    openStore: () => {
+      opened += 1;
+      return {
+        append: (event: { state: string }) => {
+          // Fail once, then work -- the shape of a lock contention, not of a
+          // missing install.
+          if (failNext) {
+            failNext = false;
+            throw new Error("database is locked");
+          }
+          appended.push(event.state);
+        },
+        close: () => {},
+      };
+    },
+  }));
+
+  vi.doMock("../src/mux.js", () => ({
+    tmux: {
+      currentWindow: () => ({
+        session: "$0",
+        window: "@1",
+        pane: "%1",
+        session_name: null,
+        window_name: null,
+      }),
+      setState: () => {},
+    },
+  }));
+
+  vi.resetModules();
+  const { default: murmurPi } = await import("../src/extension/murmur-pi.js");
+
+  const handlers = new Map<string, () => void | Promise<void>>();
+  murmurPi({ on: (event, handler) => handlers.set(event, handler) });
+
+  // First turn: the append throws and the handle is dropped. Waited on the
+  // observable effect (the store was opened) rather than on a timer.
+  await handlers.get("agent_start")?.();
+  await until(() => opened === 1, "first store open");
+  expect(appended).toEqual([]);
+
+  // Second turn: this is the assertion that failed before the fix. The store
+  // must be reopened and the event recorded, not skipped because a previous
+  // write failed.
+  await handlers.get("agent_start")?.();
+  await until(() => appended.length > 0, "second turn's append");
+  expect(appended).toEqual(["working"]);
+  expect(opened).toBe(2);
+
+  vi.doUnmock("@martintrojer/murmur/extension-store");
+  vi.doUnmock("../src/mux.js");
+  vi.resetModules();
+});
+
+test("a missing murmur is given up on after one attempt, not retried per event", async () => {
+  // The other half of the same decision, and why dropStore could not simply
+  // always retry. When the import itself fails murmur is not installed, which
+  // does not become false later in the process, so retrying would pay a failed
+  // dynamic import on every turn forever.
+  let imports = 0;
+
+  vi.doMock("@martintrojer/murmur/extension-store", () => {
+    imports += 1;
+    throw new Error("Cannot find module");
+  });
+
+  vi.doMock("../src/mux.js", () => ({
+    tmux: {
+      currentWindow: () => ({
+        session: "$0",
+        window: "@1",
+        pane: "%1",
+        session_name: null,
+        window_name: null,
+      }),
+      setState: () => {},
+    },
+  }));
+
+  vi.resetModules();
+  const { default: murmurPi } = await import("../src/extension/murmur-pi.js");
+
+  const handlers = new Map<string, () => void | Promise<void>>();
+  murmurPi({ on: (event, handler) => handlers.set(event, handler) });
+
+  for (let turn = 0; turn < 3; turn += 1) {
+    await handlers.get("agent_start")?.();
+    // The first turn must have tried and given up before the next is queued,
+    // or "one attempt" would pass simply because turns 2 and 3 had not run.
+    await until(() => imports === 1, `import attempt by turn ${turn + 1}`);
+  }
+
+  // One attempt, however many events arrive.
+  expect(imports).toBe(1);
+
+  vi.doUnmock("@martintrojer/murmur/extension-store");
+  vi.doUnmock("../src/mux.js");
+  vi.resetModules();
+});
+
+test("a pane moved to another window keeps its identity and stops badging the old one", async () => {
+  // tmux keeps a pane's id when it moves between windows (move-pane,
+  // break-pane, or a keybinding wrapping them) and changes only the window id.
+  // Verified against a real tmux: pane %0 went from @0 to @1.
+  //
+  // Resolving the window once at startup broke three things at once: the badge
+  // was painted on the window the agent had left, every later event recorded a
+  // window the agent was no longer in (so a jump went to the wrong place), and
+  // `liveWindows()` -- which prunes rows whose window is gone -- deleted the
+  // agent as dead when the old window was closed.
+  const appended: { window: string; agent_id: string }[] = [];
+  const badges: [string, string | null][] = [];
+
+  vi.doMock("@martintrojer/murmur/extension-store", () => ({
+    loadIdentity: () => ({ host_id: "H", display_name: "h" }),
+    openStore: () => ({
+      append: (event: { window: string; agent_id: string }) => {
+        appended.push({ window: event.window, agent_id: event.agent_id });
+      },
+      close: () => {},
+    }),
+  }));
+
+  // The pane stays %1 throughout; only the window moves.
+  let window = "@1";
+  vi.doMock("../src/mux.js", () => ({
+    tmux: {
+      currentWindow: () => ({
+        session: "$0",
+        window,
+        pane: "%1",
+        session_name: null,
+        window_name: null,
+      }),
+      setState: (target: string, state: string | null) => badges.push([target, state]),
+    },
+  }));
+
+  vi.resetModules();
+  const { default: murmurPi } = await import("../src/extension/murmur-pi.js");
+
+  const handlers = new Map<string, () => void | Promise<void>>();
+  murmurPi({ on: (event, handler) => handlers.set(event, handler) });
+  await handlers.get("agent_start")?.();
+  await until(() => appended.length === 1, "first turn's append");
+
+  // The pane is moved to another window between turns.
+  window = "@2";
+  await handlers.get("agent_start")?.();
+  await until(() => appended.length === 2, "second turn's append");
+
+  // The second event records the NEW window, not the startup one.
+  expect(appended.map((event) => event.window)).toEqual(["@1", "@2"]);
+
+  // Identity is the pane, so it survives the move: a new agent_id would make
+  // the moved agent a second row and orphan the first.
+  expect(new Set(appended.map((event) => event.agent_id))).toEqual(new Set(["H:%1"]));
+
+  // The old window's badge is cleared, or a `working` glyph sits forever on a
+  // window with no agent. Nothing else can clear it: the badge belongs to the
+  // window, and only this process knows the agent left.
+  expect(badges).toContainEqual(["@1", null]);
+  expect(badges.at(-1)).toEqual(["@2", "working"]);
 
   vi.doUnmock("@martintrojer/murmur/extension-store");
   vi.doUnmock("../src/mux.js");

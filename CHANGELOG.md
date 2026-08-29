@@ -3,6 +3,59 @@
 Notable changes per release. Written for someone deciding whether to upgrade,
 so it says what changed for a user rather than listing every commit.
 
+## Unreleased
+
+Two fixes, both about telling two situations apart that used to look identical.
+
+**Jumping to a remote agent no longer nests tmux in a way you can feel.** The
+`ssh -t host tmux attach` used to run in a local tmux window, so the local
+prefix and status bar stayed live on top of the remote's: `^b` went to the wrong
+tmux and reaching the agent took `^b b`. It now runs in a local session of its
+own with `status off` and `prefix None`, so the jump is full-screen and `^b`
+goes straight to the remote. Leaving returns you to the exact window you jumped
+from; a second jump to the same host reuses the one session.
+
+While you are in that session the local tmux has no prefix and cannot be
+reached. If you want a way out that does not involve the remote, the README
+documents a one-line root-table binding.
+
+**An idle agent now says whether it is still running.** `idle` covered both a pi
+sitting between turns and a pane whose agent exited hours ago, and the picker
+showed them identically — two live agents on the author's machine read as plain
+idle for hours. Idle rows now carry a `live` or `exited` flag. Remote idle rows
+show neither, because only an agent's own machine can check a pid.
+
+**Three fixes for agents that stopped reporting.** Found by chasing the case
+above, and each one silently dropped events while the tmux badge kept painting:
+
+- **Concurrent agents lost events to database lock contention.** With eight
+  agents appending at once, five failed outright. WAL allows one writer, and
+  `append` reads the max sequence number before writing, so two appends at once
+  failed the loser with `SQLITE_BUSY_SNAPSHOT` -- which no timeout can fix,
+  because waiting cannot refresh a stale snapshot. Writes now take the lock up
+  front. Eight concurrent writers: 5 failures before, 0 after.
+- **One failed write silenced an agent for the rest of its life.** The
+  extension cached "murmur is not installed, stop trying" and "that write
+  failed, let go of the handle" as the same value, so a single transient failure
+  -- one lock contention was enough -- stopped all further reporting until the
+  agent was restarted.
+- **Moving a pane between windows broke its agent.** tmux keeps the pane id and
+  changes the window id, but the extension resolved its window once at startup.
+  The badge was left on the window the agent had left, later events recorded the
+  wrong window so jumps went to the wrong place, and closing the old window
+  deleted the agent as dead.
+
+An idle agent's `live` flag is also now bounded by pid age. Pids recycle in
+about three hours on this machine, so a day-old pid was being reported as alive
+when it may well have belonged to an unrelated process; past an hour the answer
+is `unknown`.
+
+Tests went 103 to 124, including a new file that drives a real tmux server on a
+private socket: every other test fakes the multiplexer, so two malformed tmux
+targets passed the whole suite. Every new test was verified by mutating the code
+it covers. One new test was itself flaky (a timer standing in for a barrier) and
+was rewritten to wait on an observable effect.
+
 ## 0.1.4
 
 A review pass over the peer-collection code, and the bugs it found.

@@ -5,11 +5,16 @@ import type { AgentState, Event } from "../src/types.js";
 const alive: LiveCheck = () => true;
 const dead: LiveCheck = () => false;
 
+// A recent default ts: liveness only trusts a pid for a bounded window, so a
+// fixture stuck at the epoch would make every pid look ancient and every
+// liveness assertion pass for the wrong reason.
+const NOW = Date.now();
+
 function ev(state: AgentState, partial: Partial<Event> = {}): Event {
   return {
     host_id: "host",
     seq: 1,
-    ts: 1,
+    ts: NOW,
     agent_id: "agent",
     session: "session",
     window: "window",
@@ -122,6 +127,39 @@ test("a nonsense pid is not treated as a process to check", () => {
   expect(checked).toEqual([]);
 });
 
+test("a pid too old to mean anything is not trusted", () => {
+  // Pids are recycled, and measurably fast: pids advanced ~9/sec on an idle
+  // machine, so darwin's 99999-pid space wraps in about three hours. An old pid
+  // can name an unrelated process, and pidAlive cannot tell -- it only asks
+  // whether SOMETHING holds that number.
+  //
+  // Reachable rather than theoretical. Retention keeps the newest event per
+  // agent forever so idle rows never age out, and the author's machine held
+  // 24-hour-old idle rows carrying pids. `alive` on those is a coin flip, and
+  // `unknown` is what is actually known.
+  const ancient = foldAgent(
+    [ev("working", { pid: 4242, ts: NOW - 48 * 3_600_000 }), ev("cleared", { ts: NOW })],
+    alive,
+  );
+  expect(ancient.liveness).toBe("unknown");
+
+  // Age is taken from the event that CARRIED the pid, not from the fold: a
+  // fresh `cleared` does not make an old pid trustworthy again.
+  const recent = foldAgent(
+    [ev("working", { pid: 4242, ts: NOW - 60_000 }), ev("cleared", { ts: NOW })],
+    alive,
+  );
+  expect(recent.liveness).toBe("alive");
+
+  // Just past the horizon, to pin the boundary rather than only the extremes:
+  // a 2-hour-old pid is inside the pid-space wrap and must not be trusted.
+  const borderline = foldAgent(
+    [ev("working", { pid: 4242, ts: NOW - 2 * 3_600_000 }), ev("cleared", { ts: NOW })],
+    alive,
+  );
+  expect(borderline.liveness).toBe("unknown");
+});
+
 test("an idle agent that never reported a pid is unknown, not exited", () => {
   // "exited" is a claim about a process. With no pid there is nothing to check,
   // and answering `exited` would invent a fact -- the row would suggest closing
@@ -163,7 +201,12 @@ test("a cleared event's timestamp does not become the row's age", () => {
   // The event is still dropped on purpose. It is a *clear*, so letting it
   // survive would make "last said something" mean "last stopped saying
   // something", and every idle row would look freshly active.
-  const folded = foldAgent([ev("working", { pid: 1, ts: 100 }), ev("cleared", { ts: 200 })], alive);
+  // Relative to NOW, so the pid stays inside the trust window: this test is
+  // about the event being dropped, not about pid age.
+  const folded = foldAgent(
+    [ev("working", { pid: 1, ts: NOW - 2000 }), ev("cleared", { ts: NOW - 1000 })],
+    alive,
+  );
 
   expect(folded.event).toBeNull();
   expect(folded.liveness).toBe("alive");

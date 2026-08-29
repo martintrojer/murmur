@@ -160,7 +160,7 @@ already full-screen, and you land back at your shell prompt on exit.
 
 ## Status
 
-**0.1.3.** In daily use on one machine and verified across two over real ssh.
+**0.1.4.** In daily use on one machine and verified across two over real ssh.
 It is new and not battle-tested. The known gaps are listed at the end of
 [ARCHITECTURE.md](ARCHITECTURE.md#known-gaps).
 
