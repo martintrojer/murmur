@@ -2,8 +2,9 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, expect, test } from "vitest";
-import { formatTable, parseSshHosts } from "../src/cli/peer.js";
+import { formatTable, parseSshHosts, peerAddDecision } from "../src/cli/peer.js";
 import { openStore } from "../src/store.js";
+import type { Peer } from "../src/types.js";
 
 beforeEach(() => {
   process.env.MURMUR_STATE_DIR = mkdtempSync(join(tmpdir(), "murmur-peer-"));
@@ -35,17 +36,70 @@ test("removePeer drops the peer and reports whether it existed", () => {
   expect(store.removePeer("ghost")).toBe(false);
 });
 
-test("the same host cannot be added twice under different names", () => {
+test("peer add refuses a host already configured under another name", () => {
   // Found in use: `peer add bubba2 bubba` happily created a second peer for a
   // node already configured as `bubba`. Events dedupe on (host_id, seq) so the
-  // agent list looked right, which is what made it easy to miss — meanwhile
+  // agent list looked right, which is what made it easy to miss - meanwhile
   // every command paid two ssh round-trips to the same box.
-  const store = openStore();
-  store.upsertPeer({ name: "bubba", target: "bubba", host_id: "H", display_name: "bubba" });
-  const clash = store
-    .peers()
-    .find((candidate) => candidate.host_id === "H" && candidate.name !== "bubba2");
-  expect(clash?.name).toBe("bubba");
+  //
+  // The old version of this test inserted one peer and then reimplemented the
+  // duplicate lookup in its own assertion, so it never ran the production
+  // branch: disabling that branch entirely left it green.
+  const envelope = {
+    schema_version: 1,
+    host_id: "H",
+    display_name: "bubba",
+    exported_at: 1,
+  };
+  const peers = [{ name: "bubba", target: "bubba", host_id: "H", display_name: "bubba" } as Peer];
+
+  const refusal = peerAddDecision({
+    name: "bubba2",
+    target: "bubba",
+    envelope,
+    selfHostId: "SELF",
+    peers,
+  });
+
+  expect(refusal).toContain('already configured as peer "bubba"');
+});
+
+test("re-adding the same peer name is allowed, so a target can be corrected", () => {
+  const refusal = peerAddDecision({
+    name: "bubba",
+    target: "bubba.local",
+    envelope: { schema_version: 1, host_id: "H", display_name: "bubba", exported_at: 1 },
+    selfHostId: "SELF",
+    peers: [{ name: "bubba", target: "bubba", host_id: "H", display_name: "bubba" } as Peer],
+  });
+
+  expect(refusal).toBeNull();
+});
+
+test("peer add refuses this node itself", () => {
+  const refusal = peerAddDecision({
+    name: "me",
+    target: "localhost",
+    envelope: { schema_version: 1, host_id: "SELF", display_name: "me", exported_at: 1 },
+    selfHostId: "SELF",
+    peers: [],
+  });
+
+  expect(refusal).toContain("is this node");
+});
+
+test("an unreachable host is still added, on the operator's word", () => {
+  // No envelope means the probe failed. The peer is added anyway and the first
+  // successful collect discovers who it is.
+  const refusal = peerAddDecision({
+    name: "asleep",
+    target: "asleep",
+    envelope: null,
+    selfHostId: "SELF",
+    peers: [],
+  });
+
+  expect(refusal).toBeNull();
 });
 
 test("a peer keeps its identity when re-added under the same name", () => {
