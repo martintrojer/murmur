@@ -148,7 +148,9 @@ export function registerPeer(program: Command): void {
           return;
         }
         const rows = [
-          ["NAME", "TARGET", "HOST"],
+          // HOSTNAME, not HOST: this is what the node reported about itself,
+          // which is not the handle any other command takes. NAME is.
+          ["NAME", "TARGET", "HOSTNAME"],
           ...peers.map((configured) => [
             configured.name,
             configured.target,

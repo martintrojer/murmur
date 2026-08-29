@@ -81,10 +81,14 @@ export function status(store: Store, now = Date.now()): Status {
       // A jump proved this host's tmux was down and nothing has authored since.
       // Stronger than staleness: the host answers, its agents are just gone.
       tmux_down: peer?.tmux_down_at != null,
+      // The name the human typed, not the machine's self-reported hostname. A
+      // peer added as `linuxpc` reported `18c04d69b860` (a container hostname)
+      // and that is what the picker showed — a string that appears nowhere
+      // else in the tool and cannot be typed at `peer remove` or searched for.
+      // Only the local node, which has no peer row, falls back to its own
+      // discovered display_name.
       host:
-        peer?.display_name ??
-        peer?.name ??
-        (agent.host_id === identity?.host_id ? identity.display_name : agent.host_id),
+        peer?.name ?? (agent.host_id === identity?.host_id ? identity.display_name : agent.host_id),
     };
   });
 

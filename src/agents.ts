@@ -254,7 +254,10 @@ export function jumpToAgent(store: Store, agent: Agent): JumpResult {
     // with "can't find session". shellQuote alone is not enough: it protects
     // the remote shell, this protects the local one.
     const command = `ssh -t ${shellQuote(target)} tmux attach -t ${shellQuote(attachTarget)}`;
-    const name = `@${peer?.display_name ?? target}`;
+    // Named after the peer as configured, matching what the picker's host
+    // column shows. The machine's self-reported display_name can be something
+    // like a container id, which makes the window unrecognisable.
+    const name = `@${peer?.name ?? target}`;
 
     // Reuse an existing window for this host rather than stacking a new one on
     // every jump. murmur navigates to agents; the window is only here because a

@@ -81,7 +81,9 @@ test("counts group by folded state and a stale peer keeps its last state", () =>
     state: "done",
     stale: true,
     age_ms: 120_001,
-    host: "Dev box",
+    // The configured peer name, not the machine's self-reported display_name:
+    // that can be a container id nobody can type back at `peer remove`.
+    host: "dev",
   });
 });
 
