@@ -387,18 +387,23 @@ Each was considered and refused with reasons above:
 
 ## Known gaps
 
-- **A working agent reads as idle between turns, by construction.** `agent_end`
-  fires at the end of every *turn*, not at the end of the session, and for an
-  unfocused human-driven agent `endState` reports `done` -- or `cleared` when
-  the pane is focused, on the theory that you have already seen it. So a pi that
-  is very much still in use alternates `working` / `cleared` once per turn, and
-  anything sampling between turns sees an idle agent with a live pid.
+- **An idle agent's liveness is only known on its own host.** `agent_end` fires
+  at the end of every *turn*, not the session, so a pi in active use alternates
+  `working` / `cleared` and reads as idle between turns. Idle is the right state
+  -- it wants nothing -- but it used to cover both "still running" and "exited
+  hours ago", and the picker showed them identically.
 
-  This is right for the question the picker asks ("who needs me?") and wrong for
-  "is this agent alive?". Worth knowing before trusting a single sample: two
-  observations minutes apart can both say `cleared` while the process never
-  stopped. The pid on the event plus `pidAlive()` is what distinguishes "turn
-  finished" from "agent gone", and no reader currently makes that distinction.
+  An idle row now carries `liveness`, folded from the last pid the agent
+  reported: `alive`, `exited`, or `unknown`. It is a separate axis rather than a
+  state, because "is the process there" is orthogonal to "does it need me",
+  which is what the attention sort orders by. `unknown` is load-bearing: a pid
+  only means something in its own machine's process table, so a remote idle
+  agent is never guessed at, and an agent that reported no pid is not claimed to
+  have exited.
+
+  What is still missing is the inverse for *remote* nodes. A peer could report
+  liveness for its own idle agents, since only it can check its own pids, and
+  nothing in the wire format prevents it.
 - **Nested tmux is solved for the jump, unverified for the session.** Jumping to
   a remote agent now runs the `ssh -t host tmux attach` in its own local session
   with `status off` and `prefix None`, so it is full-screen and `^b` reaches the

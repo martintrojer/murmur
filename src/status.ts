@@ -53,9 +53,15 @@ export function status(store: Store, now = Date.now()): Status {
     events.filter((event) => event.host_id === identity?.host_id),
     pidAlive,
   );
+  // A remote pid means nothing here -- it names a process on another machine,
+  // and this host's process table would answer about an unrelated one. `working`
+  // rows trust the authoring node (which checked its own pids before exporting),
+  // but liveness of an IDLE remote agent is genuinely unknown, and must not be
+  // guessed: `() => true` would report every remote idle row as alive.
   const remote = foldAll(
     events.filter((event) => event.host_id !== identity?.host_id),
     () => true,
+    "unknown",
   );
   const counts = emptyCounts();
   const orchestratedCounts = emptyCounts();
