@@ -82,7 +82,7 @@ export function headerRow(showHost: boolean): string {
     " ".repeat(COLUMNS.glyph),
     pad("state", COLUMNS.state),
     pad("agent", COLUMNS.name),
-    pad("workstream", showHost ? COLUMNS.stream : COLUMNS.streamWide),
+    pad("stream", showHost ? COLUMNS.stream : COLUMNS.streamWide),
     showHost ? pad("host", COLUMNS.host) : "",
     "age / flags",
   ]
@@ -199,7 +199,18 @@ export function pickerRow(agent: Agent, showHost: boolean, current: boolean, loc
       ? `${DIM}  here${RESET}`
       : `${REMOTE}\u2192 ${terminalText(agent.host)}${RESET}`
     : "";
-  const workstream = agent.workstream ? `${DIM}${terminalText(agent.workstream)}${RESET}` : "";
+  // Workstream if mu set one, otherwise the tmux session name. Both answer
+  // "which piece of work is this", and only mu-spawned agents have a
+  // workstream, so the column was empty for most human agents.
+  //
+  // The session name is also what the tms picker shows and what you have
+  // trained yourself to search on: a session called `hacking/murmur` holding a
+  // pi whose window is named `Python` was unfindable by typing `murmur`. This
+  // is the one thing tms had that murmur did not, and folding whole sessions
+  // into this list was the wrong way to get it -- a session without an agent
+  // has no place here.
+  const group = agent.workstream ?? agent.session_name;
+  const workstream = group ? `${DIM}${terminalText(group)}${RESET}` : "";
   // Two ages, and the one worth showing is how old the AGENT'S news is, not
   // how recently we reached its host. A peer we polled a second ago can be
   // serving events from three hours back — which read as fresh until this
@@ -348,7 +359,19 @@ export async function runPick(store: Store, options: PickOptions = {}): Promise<
       "--with-nth",
       "2..",
       "--ansi",
-      "--no-sort",
+      // Literal substring matching, and matching only the visible columns.
+      // Default fuzzy scatters query characters across the row: `re` matched
+      // "Fix Murmur Pick Fzf Filter" as well as "recovered". A query here is a
+      // word or two of an agent or workstream name, so substring is what the
+      // fingers expect. Prefix a token with ' to opt back into fuzzy.
+      // Same choice as the tms session picker, for consistency across the two.
+      "--exact",
+      // `begin` ranks earlier match positions higher, so `scratch` puts the
+      // scratch workstream above a row that merely mentions it. `index` is the
+      // empty-query fallback and preserves the attention order the fold
+      // produced, which is the whole point of the list.
+      "--tiebreak",
+      "begin,index",
       "--layout",
       "reverse",
       "--border",

@@ -99,7 +99,9 @@ bind -N "agent state picker" a display-popup -E -w 80% -h 60% "murmur pick"
 ```
 
 In the picker: `^r` refreshes, `^p` cycles the preview, `del` drops a stuck
-row, and `^b` / `^w` / `^d` / `^x` filter by state.
+row, and `^b` / `^w` / `^d` / `^x` filter by state. Typing filters on the agent
+name, its workstream or tmux session, and its host, matching literal substrings
+rather than scattered characters.
 
 `murmur status` prints per-state counts for a status bar. Everything else is
 `--help`.

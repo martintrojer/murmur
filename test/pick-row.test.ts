@@ -65,7 +65,7 @@ test("columns stay aligned when the name carries colour escapes", () => {
   const long = label(pickerRow({ ...base, window_name: "a".repeat(20) }, true, false, false));
   expect(short.indexOf("bubba")).toBe(long.indexOf("bubba"));
   // And the position is the padded width, not the raw string length: glyph
-  // column (4) + state (9) + name (31) + workstream (14) + the arrow's two
+  // column (4) + state (9) + name (31) + stream (14) + the arrow's two
   // columns.
   expect(short.indexOf("bubba")).toBe(60);
 });
@@ -97,7 +97,7 @@ test("the header lines up with the columns it names", () => {
   const header = headerRow(true);
   const row = label(pickerRow(base, true, false, false));
   expect(header.indexOf("state")).toBe(row.indexOf("blocked"));
-  expect(header.indexOf("workstream")).toBe(row.indexOf("ws"));
+  expect(header.indexOf("stream")).toBe(row.indexOf("ws"));
   expect(header.indexOf("host")).toBe(row.indexOf("→"));
 });
 
@@ -146,4 +146,23 @@ test("currentWindow is null outside tmux, even when a server is running", () => 
     if (saved === undefined) delete process.env.TMUX_PANE;
     else process.env.TMUX_PANE = saved;
   }
+});
+
+test("the session name fills the stream column when there is no workstream", () => {
+  // Only mu-spawned agents have a workstream, so this column was empty for most
+  // human agents — and the session name is what the tms picker shows and what
+  // you search by. A session called `hacking/murmur` holding a pi whose window
+  // is named `Python` was unfindable by typing `murmur`.
+  const withStream = label(pickerRow(base, false, false, true));
+  expect(withStream).toContain("ws");
+
+  const noStream = { ...base, workstream: null, session_name: "hacking/murmur" } as typeof base;
+  expect(label(pickerRow(noStream, false, false, true))).toContain("hacking/murmur");
+});
+
+test("an agent with neither leaves the column empty rather than printing null", () => {
+  const neither = { ...base, workstream: null, session_name: null } as typeof base;
+  const text = label(pickerRow(neither, false, false, true));
+  expect(text).not.toContain("null");
+  expect(text).not.toContain("undefined");
 });
