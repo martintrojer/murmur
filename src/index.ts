@@ -19,7 +19,6 @@ export {
 } from "./agents.js";
 export { type Channel, hasWarmSocket, ssh } from "./channel.js";
 export {
-  COLLECT_INTERVAL_MS,
   type CollectResult,
   collect,
   MAX_CONCURRENT_PEERS,

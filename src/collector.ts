@@ -3,8 +3,22 @@ import { type Envelope, eventFromWire, SCHEMA_VERSION } from "./export.js";
 import type { Store } from "./store.js";
 import type { Event } from "./types.js";
 
-export const COLLECT_INTERVAL_MS = 30_000;
-export const STALENESS_MS = 2 * COLLECT_INTERVAL_MS;
+/**
+ * How long a peer may go unfetched before it renders stale.
+ *
+ * Not derived from a collect interval, because murmur has no scheduler: there
+ * is no timer here, and `collect` runs only when a command asks for it. In
+ * practice the cadence is the operator's tmux `status-interval`, since
+ * `murmur status` collects and tmux re-runs it on a tick.
+ *
+ * So this is a judgement about the operator's setup, not arithmetic on a
+ * constant murmur controls. Sixty seconds is comfortably above a default 15s
+ * status bar -- a peer needs to miss several ticks before it is called out,
+ * which keeps one slow fetch from flickering the HUD. A status bar slower than
+ * this will show every peer permanently stale; that is the number to change if
+ * so.
+ */
+export const STALENESS_MS = 60_000;
 
 // A reachable peer is cheap — milliseconds on a warm control socket, still
 // only a couple hundred cold. The cap is not about those.
