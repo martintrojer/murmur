@@ -17,13 +17,26 @@ type ExtensionAPI = {
   getSessionName?(): string | undefined;
 };
 
-// `murmur link pi` rewrites this line to an absolute path at install time.
+// Where to import the store from.
+//
 // The bare specifier only resolves when murmur is a dependency of the importer,
-// which it never is: the extension is copied into ~/.pi/agent/extensions, and a
-// globally linked or installed murmur is not resolvable from there. Falling
-// back to the bare specifier keeps a hand-copied extension working inside a
-// project that does depend on murmur.
-const storeModule = "@martintrojer/murmur/extension-store";
+// which it never is: the extension is loaded from ~/.pi/agent/extensions, and a
+// globally linked or installed murmur is not resolvable from there. Unpinned,
+// the import throws, getStore swallows it, and every append silently no-ops
+// while the tmux badge still paints -- so nothing looks broken while the log
+// stays empty and the node exports nothing.
+//
+// Two ways it gets pinned, because there are two install shapes:
+//
+//   $MURMUR_STORE_MODULE  set by the shim `murmur link pi` writes, which is a
+//                         re-export of THIS file from the murmur install. The
+//                         shim cannot rewrite this constant (it does not copy
+//                         the source), so it passes the path instead.
+//   link pi --copy        inlines this file and rewrites the string literal.
+//
+// The bare specifier remains the fallback, which keeps a hand-copied extension
+// working inside a project that really does depend on murmur.
+const storeModule = process.env.MURMUR_STORE_MODULE || "@martintrojer/murmur/extension-store";
 const muManaged = process.env.MU_MANAGED_AGENT === "1";
 const driver = driverFromEnv(process.env);
 

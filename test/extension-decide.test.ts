@@ -38,22 +38,95 @@ test("driver is orchestrated only under a supervisor", () => {
   expect(driverFromEnv({})).toBe("human");
 });
 
-test("link pi pins the store import to an absolute, resolvable path", () => {
-  // Regression: the extension is copied into ~/.pi/agent/extensions, where a
-  // bare "@martintrojer/murmur/extension-store" specifier cannot resolve — not
-  // even for a global install. Unpinned, every append silently no-ops: the
-  // tmux badge still paints, so nothing looks broken while the log stays empty.
+function linkPi(home: string, ...args: string[]): string {
+  return execFileSync(
+    process.execPath,
+    [join(process.cwd(), "dist", "cli.js"), "link", "pi", ...args],
+    { env: { ...process.env, MURMUR_PI_HOME: home }, encoding: "utf8" },
+  );
+}
+
+/** As above, but with a state dir of its own, so identity presence is controlled. */
+function linkPiWithState(home: string, stateDir: string, ...args: string[]): string {
+  return execFileSync(
+    process.execPath,
+    [join(process.cwd(), "dist", "cli.js"), "link", "pi", ...args],
+    {
+      env: { ...process.env, MURMUR_PI_HOME: home, MURMUR_STATE_DIR: stateDir },
+      encoding: "utf8",
+    },
+  );
+}
+
+function installedExtension(home: string): string {
+  return readFileSync(join(home, ".pi", "agent", "extensions", "murmur.ts"), "utf8");
+}
+
+test("link pi re-exports the install rather than copying it, so upgrades apply", () => {
+  // The upgrade story. `link pi` used to inline the whole built extension, which
+  // made the installed file a point-in-time snapshot: upgrading murmur left the
+  // OLD extension running with no warning. The author's own machine was running
+  // an extension missing two committed fixes -- a silently wrong state report,
+  // which is the exact failure the extension exists to prevent.
   const home = mkdtempSync(join(tmpdir(), "murmur-link-"));
-  execFileSync(process.execPath, [join(process.cwd(), "dist", "cli.js"), "link", "pi"], {
-    env: { ...process.env, MURMUR_PI_HOME: home },
-    stdio: "ignore",
-  });
-  const source = readFileSync(join(home, ".pi", "agent", "extensions", "murmur.ts"), "utf8");
-  const match = source.match(/storeModule = "([^"]+)"/);
-  expect(match).not.toBeNull();
-  const pinned = match?.[1] ?? "";
+  linkPi(home);
+  const source = installedExtension(home);
+
+  // Points at the install; does not contain the extension's own logic.
+  expect(source).not.toContain("agent_start");
+  const entry = source.match(/await import\("([^"]+)"\)/)?.[1] ?? "";
+  expect(entry.startsWith("/")).toBe(true);
+  expect(existsSync(entry)).toBe(true);
+});
+
+test("the shim pins the store path, which the extension cannot resolve itself", () => {
+  // A bare "@martintrojer/murmur/extension-store" specifier cannot resolve from
+  // ~/.pi/agent/extensions -- not even for a global install. The failure is
+  // silent: the import throws, getStore swallows it, and every append no-ops
+  // while the tmux badge still paints. Verified against a real pi: with the
+  // path unpinned the store module never loaded.
+  const home = mkdtempSync(join(tmpdir(), "murmur-link-"));
+  linkPi(home);
+  const source = installedExtension(home);
+
+  const storePath = source.match(/MURMUR_STORE_MODULE \?\?= "([^"]+)"/)?.[1] ?? "";
+  expect(storePath.startsWith("/")).toBe(true);
+  expect(existsSync(storePath)).toBe(true);
+
+  // Set BEFORE the import, and via a dynamic import: ESM hoists static
+  // re-exports above the assignment, so `export ... from` left the extension
+  // reading undefined. Verified directly -- the static form printed undefined.
+  expect(source.indexOf("MURMUR_STORE_MODULE")).toBeLessThan(source.indexOf("await import"));
+  expect(source).not.toMatch(/export \{ default \} from/);
+});
+
+test("--copy still inlines and pins, for an install that must stand alone", () => {
+  const home = mkdtempSync(join(tmpdir(), "murmur-link-"));
+  linkPi(home, "--copy");
+  const source = installedExtension(home);
+
+  // The real thing, with the specifier rewritten in place.
+  expect(source).toContain("agent_start");
+  const pinned =
+    source.match(/storeModule =\s*process\.env\.MURMUR_STORE_MODULE \|\| "([^"]+)"/)?.[1] ?? "";
   expect(pinned.startsWith("/")).toBe(true);
   expect(existsSync(pinned)).toBe(true);
+});
+
+test("re-linking reports an inlined copy it replaced, and stays quiet otherwise", () => {
+  // Anyone linked before the shim existed has a snapshot that stopped tracking
+  // upgrades silently, and "wrote a file" does not tell them their agents may
+  // have been misreporting.
+  const home = mkdtempSync(join(tmpdir(), "murmur-link-"));
+
+  expect(linkPi(home)).not.toContain("Replaced an inlined copy");
+  // Re-linking a shim must not claim it replaced a copy. This regressed once:
+  // the check keyed on the import statement, which changed when the hoisting
+  // bug above was fixed.
+  expect(linkPi(home)).not.toContain("Replaced an inlined copy");
+
+  linkPi(home, "--copy");
+  expect(linkPi(home)).toContain("Replaced an inlined copy");
 });
 
 test("a failed append closes the store it is dropping", async () => {
@@ -300,4 +373,26 @@ test("a pane moved to another window keeps its identity and stops badging the ol
   vi.doUnmock("@martintrojer/murmur/extension-store");
   vi.doUnmock("../src/mux.js");
   vi.resetModules();
+});
+
+test("link warns when the node has no identity, since the extension would record nothing", () => {
+  // Found while testing the shim against a real pi: events fired, handlers ran,
+  // and nothing was written. The extension reads identity with loadIdentity and
+  // returns early when it is absent -- deliberately, because an agent must not
+  // decide what this node is called -- but the consequence is invisible. The
+  // badge still paints, so the agent looks fine while the log stays empty.
+  //
+  // Linking is the only moment a human is looking at this path, so it is where
+  // the warning belongs.
+  const home = mkdtempSync(join(tmpdir(), "murmur-link-"));
+  const stateDir = mkdtempSync(join(tmpdir(), "murmur-noident-"));
+
+  expect(linkPiWithState(home, stateDir)).toContain("murmur init");
+
+  // And is silent once the node has one.
+  execFileSync(process.execPath, [join(process.cwd(), "dist", "cli.js"), "init"], {
+    env: { ...process.env, MURMUR_STATE_DIR: stateDir },
+    stdio: "ignore",
+  });
+  expect(linkPiWithState(home, stateDir)).not.toContain("murmur init");
 });

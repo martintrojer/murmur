@@ -50,7 +50,25 @@ about three hours on this machine, so a day-old pid was being reported as alive
 when it may well have belonged to an unrelated process; past an hour the answer
 is `unknown`.
 
-Tests went 103 to 124, including a new file that drives a real tmux server on a
+**Upgrading murmur now upgrades the pi extension.** `link pi` used to copy the
+whole extension into `~/.pi/agent/extensions/`, which made it a snapshot of the
+version that wrote it: upgrading murmur left the old extension running, with no
+warning and nothing to compare against. This was not hypothetical -- the
+author's machine was running an extension missing two committed fixes, which is
+exactly the silently-wrong state report the extension exists to prevent.
+
+The installed file is now a one-line re-export of the install, so `npm install
+-g` is the whole upgrade. Re-run `link pi` only if the install path moves.
+`link pi --copy` keeps the old inlining behaviour for an extension that must
+survive murmur being moved or removed, and re-linking over an old copy says
+what it replaced.
+
+`link pi` also warns when the node has no identity. The extension deliberately
+does not create one -- an agent should not decide what a machine is called --
+but the consequence was invisible: it loaded, ran, and recorded nothing while
+the tmux badge still painted.
+
+Tests went 103 to 128, including a new file that drives a real tmux server on a
 private socket: every other test fakes the multiplexer, so two malformed tmux
 targets passed the whole suite. Every new test was verified by mutating the code
 it covers. One new test was itself flaky (a timer standing in for a barrier) and

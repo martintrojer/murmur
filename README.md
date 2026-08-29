@@ -88,8 +88,19 @@ murmur init      # this node's identity
 murmur link pi   # install the agent-side extension
 ```
 
-`link pi` writes the extension into `~/.pi/agent/extensions/`, pinned to this
-installation. Re-run it after upgrading murmur.
+`link pi` writes a one-line extension into `~/.pi/agent/extensions/` that
+re-exports this installation, so `npm install -g` is the whole upgrade and
+there is nothing to re-run. Running agents keep the old code until they
+restart, which is true of any extension change.
+
+Re-run `link pi` only if the install path itself moves. `link pi --copy`
+inlines the extension instead, which pins it to the version that wrote it and
+does need re-linking after every upgrade — use it only if the extension has to
+keep working when the murmur install is gone.
+
+Order matters: without `murmur init` the extension loads and records nothing,
+because a node with no identity has nothing to author events as. `link pi` says
+so if you skip it.
 
 Also on every node, in `.tmux.conf`, so a finished agent stops asking for
 attention once you look at it:
