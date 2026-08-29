@@ -35,7 +35,16 @@ function runTmux(args: string[]): string | null {
 
 export const tmux: Mux = {
   currentWindow() {
-    const pane = process.env.TMUX_PANE ?? runTmux(["display-message", "-p", "#{pane_id}"]);
+    // $TMUX_PANE is the only trustworthy signal that we are inside a pane, and
+    // it is set by tmux for every process in one.
+    //
+    // Asking tmux instead does not work: `display-message` answers from any
+    // process on a machine with a running server, and reports whichever pane
+    // that server considers active. A pi started outside tmux -- a bare ssh
+    // login, a plain terminal, cron -- would then record itself as living in
+    // some unrelated agent's pane and overwrite that agent's state. Falling
+    // back to `display-message` here was exactly that bug.
+    const pane = process.env.TMUX_PANE;
     if (!pane) return null;
 
     // One call for ids and names together. The names are recorded on every
@@ -68,6 +77,12 @@ export const tmux: Mux = {
   // deliberately distinct from an empty set, which means "tmux answered, and
   // there are no windows". Treating the first as the second would clear every
   // agent on the host the moment tmux was unreachable.
+  //
+  // Unlike currentWindow, this deliberately asks tmux rather than reading the
+  // environment, and it is right to: "which windows exist on this host" is a
+  // server-wide question with one answer, and export runs over ssh with no
+  // pane of its own. currentWindow asks "which pane am I in", which only
+  // $TMUX_PANE can answer.
   liveWindows() {
     const out = runTmux(["list-windows", "-a", "-F", "#{window_id}"]);
     if (out === null) return null;

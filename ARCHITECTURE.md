@@ -55,6 +55,32 @@ Two consequences worth stating, because both are easy to violate by accident:
   thing today, and differ the moment anything gossips. Free to preserve now,
   expensive to retrofit.
 
+## A tmux pane is the agent's address
+
+Everything below assumes agents run inside tmux. That assumption does real work
+in one specific way: a pane is how murmur names an agent and how a jump reaches
+one.
+
+The extension resolves its pane from `$TMUX_PANE` and returns early if there is
+none, so a pi started in a plain terminal writes no events and never appears in
+the picker. That is the honest outcome rather than a gap: with no pane there is
+no address, and a row you cannot jump to is worse than no row.
+
+Two nearby calls look contradictory and are not:
+
+- `currentWindow()` answers "which pane am I in", so only `$TMUX_PANE` can tell
+  it. Asking tmux instead reports whichever pane the server considers active,
+  which would let a non-tmux pi record itself in an unrelated agent's pane and
+  overwrite that agent's state.
+- `liveWindows()` answers "which windows exist on this host", which is
+  server-wide and correct from anywhere. Export runs over ssh with no pane of
+  its own and still has to see the windows.
+
+The remote jump inherits the same requirement, since it is `ssh -t <host> tmux
+attach`. tmux must be running on the far side, which is why a dead remote tmux
+server gets its own diagnosis rather than being reported as an unreachable
+host.
+
 ## The six units
 
 | Unit | Does | Depends on |

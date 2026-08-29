@@ -66,6 +66,12 @@ against herdr, T3 Code and `mu`.
 tmux, [pi](https://github.com/earendil-works/pi-coding-agent), `fzf`, and Node
 20+. For more than one machine: ssh access, and murmur installed on each.
 
+**Agents must run inside tmux**, on every machine. A tmux pane is how murmur
+addresses an agent, so a pi started in a plain terminal records nothing and
+never appears in the picker. That is deliberate: there would be no way to jump
+to it. Remote agents need tmux on the remote too, since the jump is
+`ssh -t <host> tmux attach`.
+
 ## Install
 
 On every node that runs agents:
