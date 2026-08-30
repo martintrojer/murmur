@@ -1,5 +1,5 @@
 import type { Command } from "commander";
-import { foldAgent, type LiveCheck } from "../fold.js";
+import { type LiveCheck, type ResolvedState, resolveState } from "../fold.js";
 import { loadIdentity } from "../identity.js";
 import { asPaneId, type PaneId, type WindowId } from "../ids.js";
 import { type Mux, pidAlive, tmux } from "../mux.js";
@@ -30,33 +30,11 @@ import type { Event } from "../types.js";
  * foldedState below. `crashed` was in here from the start and still never
  * cleared, because nothing is ever STORED as crashed.
  */
-const CLEARABLE = new Set(["blocked", "done", "crashed"]);
-
-/**
- * What the USER is looking at, which is the only thing focus can acknowledge.
- *
- * `crashed` is derived, never stored: a `working` row whose pid is gone folds to
- * `crashed` at read time (fold.ts), which is what the picker and the status bar
- * show. `clear` used to gate on the raw row, so it saw `working`, found it
- * absent from CLEARABLE, and returned -- an agent the user could see had
- * crashed was unclearable forever, no matter how often they focused it.
- *
- * So fold, and gate on the result. Focus acknowledges what was displayed.
- *
- * Cheap on purpose: this runs from a tmux focus hook on EVERY focus event, so it
- * folds the single row we already have rather than re-reading the agent's
- * history. foldAgent returns on the newest row it recognises, so one row is the
- * whole answer -- and an unrecognised state from a newer node still folds to
- * null, which is not clearable, exactly as before.
- *
- * The probe fails CLOSED. `pidAlive` only reports death on ESRCH, so a probe
- * that cannot answer (EPERM, or anything else) says alive, which folds to
- * `working`, which is not clearable. A liveness check we cannot trust must never
- * be what lets focus overwrite a running agent's state.
- */
-function foldedState(owner: Event, isAlive: LiveCheck): string | null {
-  return foldAgent([owner], isAlive).state;
-}
+// Typed as ResolvedState, so this set is checked against the resolver's
+// vocabulary rather than being three loose strings. A typo, or a state that
+// stops existing, is now a compile error instead of a whitelist entry that
+// silently never matches.
+const CLEARABLE = new Set<ResolvedState>(["blocked", "done", "crashed"]);
 
 /**
  * Does any OTHER pane in this window own an agent?
@@ -155,12 +133,20 @@ export function clearPane(raw: string, mux: Mux = tmux, isAlive: LiveCheck = pid
     // version also had a `working` early return, so adding `working` to this
     // set silently did nothing.
     //
-    // The FOLDED state, so a dead-pid `working` row -- which the user is being
+    // The RESOLVED state, so a dead-pid `working` row -- which the user is being
     // shown as `crashed` -- is clearable, while a live one is not. The two rows
     // are identical apart from whether the pid answers, which is precisely why
     // the raw state cannot decide this.
-    const state = foldedState(owner, isAlive);
-    if (state === null || !CLEARABLE.has(state)) return;
+    //
+    // One row, not the agent's history: this runs from a tmux focus hook on
+    // EVERY focus event, and the resolver returns on the newest row it
+    // recognises, so one row is the whole answer. An unrecognised state from a
+    // newer node resolves to `idle`, which is not clearable, as before.
+    //
+    // Fails CLOSED via the resolver: an unanswerable pid reads as alive, which
+    // resolves to `working`, which is not clearable. A liveness check we cannot
+    // trust must never be what lets focus overwrite a running agent's state.
+    if (!CLEARABLE.has(resolveState([owner], isAlive))) return;
 
     // `owner` came from this store, so it is open; the check is for the type.
     try {

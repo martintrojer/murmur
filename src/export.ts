@@ -1,5 +1,5 @@
 import { createRequire } from "node:module";
-import { foldAgent, type LiveCheck } from "./fold.js";
+import { type LiveCheck, resolveState } from "./fold.js";
 import { ensureIdentity, loadIdentity } from "./identity.js";
 import { asPaneId, asSessionId, asWindowId, type PaneId, type WindowId } from "./ids.js";
 import { pidAlive, tmux } from "./mux.js";
@@ -159,11 +159,16 @@ export function synthesizeCrashes(store: Store, isAlive: LiveCheck = pidAlive): 
   for (const events of byAgent.values()) {
     events.sort((left, right) => left.seq - right.seq);
     const newest = events.at(-1);
+    // The raw `newest.state === "working"` check is NOT a second derivation: it
+    // asks what the row SAYS, because this function's job is to supersede a
+    // specific stored row and it must not append a duplicate on top of its own
+    // previous synthetic. The resolver answers the other half -- what the agent
+    // actually IS -- and that is the only liveness judgement here.
     if (
       newest &&
       newest.state === "working" &&
       !newest.synthetic &&
-      foldAgent(events, isAlive).state === "crashed"
+      resolveState(events, isAlive) === "crashed"
     ) {
       const { host_id: _hostId, seq: _seq, ts: _ts, ...event } = newest;
       store.append({ ...event, state: "crashed", synthetic: true, reason: "pid_gone" });

@@ -1,11 +1,21 @@
 import { type Channel, ssh } from "./channel.js";
 import { collect, STALENESS_MS } from "./collector.js";
-import { type AgentView, attentionSort, foldAll, isStale } from "./fold.js";
+import {
+  type AgentView,
+  attentionSort,
+  foldAll,
+  isStale,
+  type ResolvedState,
+  viewState,
+} from "./fold.js";
 import { loadIdentity } from "./identity.js";
 import { pidAlive } from "./mux.js";
 import type { Store } from "./store.js";
 
-type StatusState = "working" | "blocked" | "done" | "crashed" | "idle";
+// The resolver's vocabulary, not a second one. This was a local union that
+// happened to match; naming it here meant status could drift from what every
+// other surface calls the same states.
+type StatusState = ResolvedState;
 type Counts = Record<StatusState, number>;
 
 export type Status = {
@@ -72,6 +82,12 @@ export function status(store: Store, now = Date.now()): Status {
   // A remote pid means nothing here: it names a process in another machine's
   // table. `working` rows are trusted because the authoring node checked its
   // own pids before exporting.
+  //
+  // Left inline rather than pulled into the resolver. It looks like a shared
+  // rule, but this is the only function in the codebase that folds a mixed
+  // list, so a `probeFor(host, self, probe)` helper had exactly one caller and
+  // made the call site worse -- it needed sentinel host ids to express
+  // "remote". A one-caller abstraction is the layer this task exists to avoid.
   const remote = foldAll(
     events.filter((event) => event.host_id !== identity?.host_id),
     () => true,
@@ -81,8 +97,12 @@ export function status(store: Store, now = Date.now()): Status {
   const agents = attentionSort([...local, ...remote]).map((agent) => {
     const peer = peersByHost.get(agent.host_id);
     const fetchedAt = peer?.fetched_at ?? null;
-    const state: StatusState =
-      agent.state === null || agent.state === "cleared" ? "idle" : agent.state;
+    // One translation, shared with the picker. The `=== "cleared"` half of the
+    // old expression here was dead: fold maps a `cleared` row to null, so a
+    // resolved view can never carry that string. Verified by exhausting the
+    // two-event state space against the built fold -- reachable results are
+    // blocked, crashed, done, working and null, never "cleared".
+    const state = viewState(agent);
     const target = agent.driver === "human" ? counts : orchestratedCounts;
     target[state] += 1;
     return {

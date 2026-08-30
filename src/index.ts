@@ -32,6 +32,9 @@ export {
   foldAll,
   isStale,
   type LiveCheck,
+  type ResolvedState,
+  resolveState,
+  viewState,
 } from "./fold.js";
 export { glance } from "./glance.js";
 export { ensureIdentity, loadIdentity, type NodeIdentity } from "./identity.js";

@@ -9,7 +9,7 @@ import {
   jumpToAgent,
   terminalText,
 } from "../agents.js";
-import { age } from "../fold.js";
+import { age, viewState } from "../fold.js";
 import { glance } from "../glance.js";
 import { loadIdentity } from "../identity.js";
 import { status, statusWithCollect } from "../status.js";
@@ -78,7 +78,17 @@ const BOLD = "\u001b[1m";
 const DIM = "\u001b[2m";
 const RESET = "\u001b[0m";
 
-// Attention order, and the order the prompt counts appear in.
+// The order the prompt COUNTS appear in, byte-identical to status.ts's own
+// `urgency` list -- and deliberately left duplicated rather than folded into the
+// resolver, which owns state and not presentation.
+//
+// Worth knowing that it disagrees with fold.ts's ATTENTION_ORDER, which sorts
+// ROWS: this leads with `crashed`, that leads with `blocked`. Both are
+// defensible (a dead agent is the most alarming thing to count; a blocked one is
+// the most actionable row to put at the top) and neither is a bug, but they are
+// two answers to "which state matters most" and only one of them can be right
+// for a reader. That is a product call about presentation, not a derivation
+// seam, so it is recorded here rather than quietly unified.
 const URGENCY = ["crashed", "blocked", "done", "working", "idle"] as const;
 
 /**
@@ -266,7 +276,10 @@ export function isPopup(env: NodeJS.ProcessEnv): boolean {
  * comes back.
  */
 export function pickerRow(agent: Agent, showHost: boolean, current: boolean, local = true): string {
-  const state = agent.state ?? "idle";
+  // The resolver's answer, not a local translation. This was `?? "idle"` here
+  // and in two more places in this file, plus a fourth spelling in status.ts
+  // that also tested `=== "cleared"` -- a condition a folded view cannot carry.
+  const state = viewState(agent);
   const colour = COLOUR[state] ?? "";
   const glyph = GLYPH[state] ?? "?";
   const marker = current ? `${BOLD}\u25c6${RESET}` : " "; // ◆ you are here
@@ -336,7 +349,7 @@ export function pickerRow(agent: Agent, showHost: boolean, current: boolean, loc
 }
 
 function previewText(store: Store, agent: Agent): string {
-  const state = agent.state ?? "idle";
+  const state = viewState(agent);
   const colour = COLOUR[state] ?? "";
   const head = [
     `${colour}${GLYPH[state] ?? "?"} ${state}${RESET}  ${BOLD}${agent.agent_name ? terminalText(agent.agent_name) : agentLabel(agent)}${RESET}`,
@@ -426,7 +439,7 @@ export async function runPick(
 
   const counts = new Map<string, number>();
   for (const agent of agents) {
-    const state = agent.state ?? "idle";
+    const state = viewState(agent);
     counts.set(state, (counts.get(state) ?? 0) + 1);
   }
   const prompt = URGENCY.filter((state) => counts.get(state))
