@@ -1,7 +1,7 @@
 import { foldAgent, type LiveCheck } from "./fold.js";
 import { ensureIdentity, loadIdentity } from "./identity.js";
 import { asPaneId, asSessionId, asWindowId, type PaneId, type WindowId } from "./ids.js";
-import { tmux } from "./mux.js";
+import { pidAlive, tmux } from "./mux.js";
 import type { Store } from "./store.js";
 import type { Driver, Event } from "./types.js";
 
@@ -71,10 +71,36 @@ export function eventFromWire(wire: Record<string, unknown>): Event {
   };
 }
 
-function synthesizeCrashes(store: Store, hostId: string, isAlive: LiveCheck): void {
+/**
+ * Record a `crashed` row for this host's agents whose pid is gone.
+ *
+ * Only the authoring host can do this, and that is the whole reason it must not
+ * live on the export path. A reader folds a REMOTE `working` row with
+ * `() => true` (status.ts) because a remote pid names a process in another
+ * machine's table -- so a peer cannot derive `crashed` for this host's agents,
+ * ever. If this node does not write the row, no node learns the fact: the
+ * replica shows `working` forever.
+ *
+ * It used to be called only from `exportJsonl`, which runs when a PEER asks
+ * over ssh. So a single-machine node synthesized never, and a node whose peers
+ * are asleep -- the normal case for this tool -- only when one happened to
+ * wake. Live store evidence: 438 raw `working` rows against 2 `crashed`.
+ *
+ * Exactly the structural mistake `reapDeadAgents` was moved out of export to
+ * fix, and this was the half left behind. Housekeeping a zero-peer node needs
+ * belongs on `collect`, which runs on every invocation.
+ *
+ * Resolves identity itself and defaults `isAlive`, like `reapDeadAgents`, so
+ * `collect` can call it with no arguments and it is a no-op on a node with no
+ * identity yet.
+ */
+export function synthesizeCrashes(store: Store, isAlive: LiveCheck = pidAlive): void {
+  const identity = loadIdentity();
+  if (!identity) return;
+
   const byAgent = new Map<string, Event[]>();
   for (const event of store.allEvents()) {
-    if (event.host_id !== hostId) continue;
+    if (event.host_id !== identity.host_id) continue;
     const events = byAgent.get(event.agent_id);
     if (events) events.push(event);
     else byAgent.set(event.agent_id, [event]);
@@ -204,7 +230,7 @@ export function exportJsonl(
   live?: Set<WindowId> | null,
 ): string {
   const identity = ensureIdentity();
-  synthesizeCrashes(store, identity.host_id, isAlive);
+  synthesizeCrashes(store, isAlive);
   if (live !== undefined) reconcileDeadAgents(store, identity.host_id, live);
 
   const envelope: Envelope = {

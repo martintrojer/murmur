@@ -1,5 +1,11 @@
 import type { Channel } from "./channel.js";
-import { type Envelope, eventFromWire, reapDeadAgents, SCHEMA_VERSION } from "./export.js";
+import {
+  type Envelope,
+  eventFromWire,
+  reapDeadAgents,
+  SCHEMA_VERSION,
+  synthesizeCrashes,
+} from "./export.js";
 import type { Store } from "./store.js";
 import type { Event } from "./types.js";
 
@@ -292,6 +298,16 @@ export async function collect(
     // peers never reaped, and four dead crew rows sat in the author's picker
     // indefinitely. Only the owning host can do this: `live` is its own tmux.
     reapDeadAgents(store);
+    // Same argument, same reason it is here rather than on export: only the
+    // authoring host can tell that one of ITS pids is gone. A reader folds a
+    // remote `working` row with `() => true`, so a peer can never derive
+    // `crashed` for this host -- if this node does not write the row, no node
+    // ever learns it, and the replica shows `working` forever.
+    //
+    // After reapDeadAgents, not before: reaping drops agents whose pane is gone
+    // and whose last word was already `cleared`, which are rows synthesis has
+    // no business resurrecting a `crashed` for.
+    synthesizeCrashes(store);
   } catch {
     // Retention is housekeeping: it must not fail a command, and it must not
     // report either. A failed prune costs disk, which the next collect retries.
