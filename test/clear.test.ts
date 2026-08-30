@@ -50,15 +50,13 @@ function read<T>(work: (store: Store) => T): T {
   }
 }
 
-/** Windows the mux was asked to clear. */
-function badgeRecorder(): { cleared: WindowId[]; set: (w: WindowId, s: unknown) => void } {
-  const cleared: WindowId[] = [];
-  return {
-    cleared,
-    set: (window, state) => {
-      if (state === null) cleared.push(window);
-    },
-  };
+/** Badge writes made by the clear hook. */
+function badgeRecorder(): {
+  writes: [WindowId, unknown][];
+  set: (window: WindowId, state: unknown) => void;
+} {
+  const writes: [WindowId, unknown][] = [];
+  return { writes, set: (window, state) => void writes.push([window, state]) };
 }
 
 test("focus acknowledges every kind of attention on the pane", () => {
@@ -85,7 +83,7 @@ test("focus acknowledges every kind of attention on the pane", () => {
   );
 
   expect(read((store) => store.localPanes())).toEqual([]);
-  expect(badges.cleared).toEqual(["@1"]);
+  expect(badges.writes).toEqual([["@1", null]]);
 });
 
 test("focus cannot touch the agent in the pane, whatever it is doing", () => {
@@ -109,10 +107,19 @@ test("focus cannot touch the agent in the pane, whatever it is doing", () => {
     return store.localPanes();
   });
 
-  clearPane("%1", fakeMux({ windowForPane: () => asWindowId("@1") }));
+  const badges = badgeRecorder();
+  clearPane(
+    "%1",
+    fakeMux({
+      windowForPane: () => asWindowId("@1"),
+      panesInWindow: () => [asPaneId("%1")],
+      setWindowBadge: badges.set,
+    }),
+  );
 
   expect(read((store) => store.localPanes())).toEqual(before);
   expect(before[0]?.agent).toMatchObject({ activity: "running", agent_name: "worker-1" });
+  expect(badges.writes).toEqual([["@1", "running"]]);
 });
 
 test("a pane murmur has never seen still gets its badge cleared", () => {
@@ -127,7 +134,7 @@ test("a pane murmur has never seen still gets its badge cleared", () => {
     fakeMux({ windowForPane: () => asWindowId("@42"), setWindowBadge: badges.set }),
   );
 
-  expect(badges.cleared).toEqual(["@42"]);
+  expect(badges.writes).toEqual([["@42", null]]);
 });
 
 test("a sibling pane that still wants attention keeps the badge lit", () => {
@@ -143,7 +150,17 @@ test("a sibling pane that still wants attention keeps the badge lit", () => {
       message: "",
       source: "pi",
     });
-    store.claimAgent({ location: location("%busy"), owner_pid: process.pid, meta: META });
+    const claim = store.claimAgent({
+      location: location("%busy"),
+      owner_pid: process.pid,
+      meta: META,
+    });
+    store.setActivity({
+      agent_id: "agent_id" in claim ? claim.agent_id : "",
+      owner_pid: process.pid,
+      activity: "running",
+      location: location("%busy"),
+    });
   });
   const badges = badgeRecorder();
   const mux = fakeMux({
@@ -154,12 +171,15 @@ test("a sibling pane that still wants attention keeps the badge lit", () => {
 
   // Focusing the shell: the agent next door still wants attention.
   clearPane("%shell", mux);
-  expect(badges.cleared).toEqual([]);
+  expect(badges.writes).toEqual([["@1", "done"]]);
 
-  // Focusing the finished agent: nothing else in the window wants attention now,
-  // because the merely BUSY pane is not a reason to keep the badge.
+  // Focusing the finished agent leaves the busy sibling's activity projected
+  // onto the window rather than making it look idle.
   clearPane("%agent", mux);
-  expect(badges.cleared).toEqual(["@1"]);
+  expect(badges.writes).toEqual([
+    ["@1", "done"],
+    ["@1", "running"],
+  ]);
 });
 
 test("clear is silent and total when nothing can answer", () => {

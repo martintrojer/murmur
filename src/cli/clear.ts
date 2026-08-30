@@ -1,7 +1,8 @@
 import type { Command } from "commander";
-import { asPaneId, type PaneId, type WindowId } from "../ids.js";
+import { asPaneId, type WindowId } from "../ids.js";
 import { type Mux, tmux } from "../mux.js";
 import { openStore, type Store } from "../store.js";
+import { RENDER_PRIORITY, type RenderState, renderState } from "../view.js";
 
 /**
  * Does any OTHER pane in this window still want attention?
@@ -17,16 +18,18 @@ import { openStore, type Store } from "../store.js";
  * yes. Wrongly keeping a badge is recoverable by focusing the pane; wrongly
  * clearing one loses the signal.
  */
-function siblingWantsAttention(window: WindowId, focused: PaneId, mux: Mux, store: Store): boolean {
-  try {
-    const siblings = new Set(
-      mux.panesInWindow(window).filter((candidate) => candidate !== focused),
+function windowBadge(window: WindowId, mux: Mux, store: Store): RenderState | null {
+  const panes = new Set(mux.panesInWindow(window));
+  const states = store
+    .localPanes()
+    .filter((pane) => panes.has(pane.pane))
+    .map((pane) =>
+      renderState({
+        activity: pane.agent?.activity ?? null,
+        attention: pane.attention.map((entry) => entry.kind),
+      }),
     );
-    if (siblings.size === 0) return false;
-    return store.localPanes().some((pane) => siblings.has(pane.pane) && pane.attention.length > 0);
-  } catch {
-    return true;
-  }
+  return RENDER_PRIORITY.find((state) => state !== "idle" && states.includes(state)) ?? null;
 }
 
 /**
@@ -61,8 +64,15 @@ export function clearPane(raw: string, mux: Mux = tmux): void {
     }
 
     if (!window) return;
-    if (store && siblingWantsAttention(window, pane, mux, store)) return;
-    mux.setWindowBadge(window, null);
+    // @agent_state is a derived, window-scoped projection. Recompute it after
+    // deleting this pane's attention: blindly clearing the option made a live
+    // running agent display as idle even though its agent row was untouched.
+    try {
+      mux.setWindowBadge(window, store ? windowBadge(window, mux, store) : null);
+    } catch {
+      // If the projection cannot be read, leave the existing badge alone. A
+      // stale badge is recoverable; erasing a real signal is not.
+    }
   } catch {
     // Focus hooks run inside the tmux server: they must always be silent and
     // total.
