@@ -216,19 +216,26 @@ export default function murmurPi(pi: ExtensionAPI): void {
   };
 
   /**
-   * Report activity. Never touches attention, never touches owner metadata.
+   * Report activity, and answer whether this process is still the owner.
    *
    * `setActivity` returning false is not an error and is not retried: it means
    * this process is no longer the owner of record, and the correct response is
    * silence.
+   *
+   * The boolean is what the badge is gated on. It has to be, because the badge
+   * is the only part of a report a human sees directly: painting it before the
+   * write, as this used to, is how a silently non-reporting extension looked
+   * healthy for the life of a process. A window whose agent row belongs to
+   * someone else must not carry this process's glyph.
    */
-  const report = async (activity: Activity, location: Location): Promise<void> => {
+  const report = async (activity: Activity, location: Location): Promise<boolean> => {
     try {
       const store = await getStore();
-      if (!store || !agentId) return;
-      store.setActivity({ agent_id: agentId, owner_pid: process.pid, activity, location });
+      if (!store || !agentId) return false;
+      return store.setActivity({ agent_id: agentId, owner_pid: process.pid, activity, location });
     } catch {
       dropStore();
+      return false;
     }
   };
 
@@ -265,16 +272,22 @@ export default function murmurPi(pi: ExtensionAPI): void {
   pi.on("agent_start", () => {
     void enqueue(async () => {
       const location = here();
-      badge(location, "running");
-      await report("running", location);
+      // Ownership first, glyph second. A process whose pane was taken over
+      // while its handle was dropped learns that from the claim inside
+      // `report`, and a badge painted before it would announce an agent that
+      // no longer lives in this window.
+      if (await report("running", location)) badge(location, "running");
     });
   });
 
   pi.on("agent_end", () => {
     void enqueue(async () => {
       const location = here();
-      badge(location, null);
+      // Clearing is safe whatever the answer -- it retracts this process's own
+      // glyph and can only ever say less -- but it is still ordered after the
+      // write so that both halves read the same ownership answer.
       await report("stopped", location);
+      badge(location, null);
     });
   });
 
@@ -340,6 +353,18 @@ export default function murmurPi(pi: ExtensionAPI): void {
       if (state.kind === "absent") state = { kind: "untried" };
       const location = here();
       lastWindow = location.window;
+      // Re-claim NOW, not on the next agent event.
+      //
+      // `session_shutdown` released the agent row, so between it and this
+      // handler the pane has no owner and `claimAgent` would refuse nobody. If
+      // the re-claim waited for an agent event -- which may be minutes away, or
+      // never, since /reload happens while the agent is idle -- a pi started in
+      // this pane in the meantime claims it legitimately, and this process is
+      // then refused permanently: silent for the rest of its life while its
+      // badge still paints. pi fires session_start immediately after the
+      // shutdown for exactly this reestablishment, which bounds the unowned
+      // window to the gap between two synchronous handler calls.
+      await getStore();
     });
   });
 }
