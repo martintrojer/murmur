@@ -2,14 +2,14 @@ import { execFileSync } from "node:child_process";
 import { type Location, tmux } from "../mux.js";
 import type { Store } from "../store.js";
 import type { AgentState } from "../types.js";
-import { driverFromEnv, endState } from "./decide.js";
+import { driverFromEnv, endState, settledState } from "./decide.js";
 import type { StoreModule } from "./store-api.js";
 
 // Declared here rather than imported: murmur must not depend on pi to build,
 // and this is the whole surface the extension touches. getSessionName is
 // optional because an older pi does not have it, and a missing method must
 // degrade to "no name" rather than break the extension.
-// The four events murmur needs, and no `reason` on any of them.
+// The five events murmur needs, and no `reason` on any of them.
 //
 // pi puts a reason on session_shutdown ("quit" | "reload" | "new" | "resume" |
 // "fork"), but the correct response is the same for all five: clear the badge,
@@ -18,7 +18,7 @@ import type { StoreModule } from "./store-api.js";
 // the reason would be a second, weaker way to learn the same thing.
 type ExtensionAPI = {
   on(
-    event: "agent_start" | "agent_end" | "session_shutdown" | "session_start",
+    event: "agent_start" | "agent_end" | "agent_settled" | "session_shutdown" | "session_start",
     handler: () => void | Promise<void>,
   ): void;
   getSessionName?(): string | undefined;
@@ -233,6 +233,28 @@ export default function murmurPi(pi: ExtensionAPI): void {
       const state = endState(focused(location.pane), muManaged);
       tmux.setWindowBadge(location.window, state === "cleared" ? null : state);
       await append(state, null, location);
+    });
+  });
+
+  // The event that finally produces `blocked`. See the decision table at the
+  // top of decide.ts for how this composes with agent_end -- both fire, in that
+  // order, and the last writer wins.
+  //
+  // agent_end alone cannot express this. It fires when a run's loop ends, which
+  // is not the same as "nothing more will happen": pi re-enters the loop for a
+  // retry, a compaction, or a message queued by an agent_end handler, and each
+  // re-entry emits its own agent_start/agent_end pair. Only `agent_settled`
+  // means the agent is finished and waiting on a human. Verified against pi
+  // 0.84.3 -- a queued continuation produced start, end, start, end, settled.
+  //
+  // Nothing is appended when there is nothing to request: see settledState.
+  pi.on("agent_settled", () => {
+    void enqueue(async () => {
+      const location = here();
+      const settled = settledState(focused(location.pane), muManaged);
+      if (settled === null) return;
+      tmux.setWindowBadge(location.window, settled);
+      await append(settled, null, location);
     });
   });
 

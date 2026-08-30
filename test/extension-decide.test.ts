@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test, vi } from "vitest";
-import { driverFromEnv, endState } from "../src/extension/decide.js";
+import { driverFromEnv, endState, settledState } from "../src/extension/decide.js";
 import { builtArtifact, runBuiltCli } from "./helpers/built.js";
 
 /**
@@ -31,6 +31,16 @@ test("agent_end reports done only when unseen and not mu-managed", () => {
   expect(endState(false, false)).toBe("done");
   expect(endState(true, false)).toBe("cleared");
   expect(endState(false, true)).toBe("cleared");
+});
+
+test("agent_settled asks for a human only when unseen and not mu-managed", () => {
+  // The whole point of the state. Unfocused plus settled means the agent is
+  // finished and waiting on you and you are not looking; anything else has
+  // nothing to request, and agent_end has already written the right row.
+  expect(settledState(false, false)).toBe("blocked");
+  expect(settledState(true, false)).toBeNull();
+  expect(settledState(false, true)).toBeNull();
+  expect(settledState(true, true)).toBeNull();
 });
 
 test("driver is orchestrated only under a supervisor", () => {
@@ -518,4 +528,177 @@ test("session_start re-arms an extension that gave up, so a reload is a real rec
   vi.doUnmock("@martintrojer/murmur/extension-store");
   vi.doUnmock("../src/mux.js");
   vi.resetModules();
+});
+
+/**
+ * Drive the extension with a controllable focus answer.
+ *
+ * `focused()` shells out to tmux with execFileSync, which is the only reason
+ * node:child_process is mocked here: it is the seam between "the user is looking
+ * at this pane" and every state decision that depends on it.
+ */
+async function driveExtension(options: { focused: boolean; muManaged?: boolean }): Promise<{
+  handlers: Map<string, () => void | Promise<void>>;
+  appended: string[];
+  badges: (string | null)[];
+}> {
+  const appended: string[] = [];
+  const badges: (string | null)[] = [];
+
+  vi.doMock("node:child_process", () => ({
+    execFileSync: () => (options.focused ? "1" : "0"),
+  }));
+
+  vi.doMock("@martintrojer/murmur/extension-store", () => ({
+    loadIdentity: () => ({ host_id: "H", display_name: "h" }),
+    openStore: () => ({
+      append: (event: { state: string }) => appended.push(event.state),
+      close: () => {},
+    }),
+  }));
+
+  vi.doMock("../src/mux.js", () => ({
+    tmux: {
+      currentWindow: () => ({
+        session: "$0",
+        window: "@1",
+        pane: "%1",
+        session_name: null,
+        window_name: null,
+      }),
+      setWindowBadge: (_window: string, badge: string | null) => void badges.push(badge),
+    },
+  }));
+
+  vi.resetModules();
+  const previous = process.env.MU_MANAGED_AGENT;
+  if (options.muManaged) process.env.MU_MANAGED_AGENT = "1";
+  else delete process.env.MU_MANAGED_AGENT;
+  const { default: murmurPi } = await import("../src/extension/murmur-pi.js");
+  if (previous === undefined) delete process.env.MU_MANAGED_AGENT;
+  else process.env.MU_MANAGED_AGENT = previous;
+
+  const handlers = new Map<string, () => void | Promise<void>>();
+  murmurPi({ on: (event, handler) => handlers.set(event, handler) });
+  return { handlers, appended, badges };
+}
+
+function unmockExtension(): void {
+  vi.doUnmock("node:child_process");
+  vi.doUnmock("@martintrojer/murmur/extension-store");
+  vi.doUnmock("../src/mux.js");
+  vi.resetModules();
+}
+
+test("an unfocused agent that settles asks for a human, which is what blocked means", async () => {
+  // The bug this closes: NOTHING in production ever emitted `blocked`. The
+  // state was in the enum, in the CLEARABLE whitelist, in the status counts and
+  // behind an alt-b picker filter, and no code path produced it -- because
+  // murmur subscribed to agent_start and agent_end and not to `agent_settled`,
+  // the one event that means "no retry, compaction or queued continuation will
+  // run". Verified against pi 0.84.3 that agent_settled really fires, and that
+  // it fires last: start, end, settled, with settled about 60ms after end.
+  const { handlers, appended, badges } = await driveExtension({ focused: false });
+
+  await handlers.get("agent_start")?.();
+  await until(() => appended.length === 1, "the turn's working");
+  await handlers.get("agent_end")?.();
+  await until(() => appended.length === 2, "the turn's done");
+  await handlers.get("agent_settled")?.();
+  await until(() => appended.length === 3, "the settle's blocked");
+
+  // The full sequence one unfocused turn now writes. `blocked` is LAST, which
+  // is what makes the fold report it -- see the decision table in decide.ts.
+  expect(appended).toEqual(["working", "done", "blocked"]);
+  expect(badges).toEqual(["working", "done", "blocked"]);
+
+  unmockExtension();
+});
+
+test("a focused agent that settles says nothing, because the user is already there", async () => {
+  // There is no attention to request from someone who is looking at the pane.
+  // agent_end has already written `cleared`; a second row would only make the
+  // agent's "last said something" age reset for no reported change.
+  const { handlers, appended, badges } = await driveExtension({ focused: true });
+
+  await handlers.get("agent_start")?.();
+  await until(() => appended.length === 1, "the turn's working");
+  await handlers.get("agent_end")?.();
+  await until(() => appended.length === 2, "the turn's cleared");
+  await handlers.get("agent_settled")?.();
+  // Waits for something that must not arrive, so the assertion is not just
+  // "the append had not happened yet".
+  await until(() => appended.length === 3, "an append that must not happen");
+
+  expect(appended).toEqual(["working", "cleared"]);
+  expect(badges).toEqual(["working", null]);
+
+  unmockExtension();
+});
+
+test("an orchestrated agent that settles stays out of the human's status bar", async () => {
+  // mu placed the work and mu consumes the result, so a finishing worker is not
+  // a human's problem. This matters more than it looks: status.ts counts
+  // ORCHESTRATED `blocked` in the status bar and pick.ts un-hides crew rows for
+  // it, so emitting here would put every settling worker in front of a human.
+  // Orchestrated blocked stays reserved for an outside notifier.
+  const { handlers, appended } = await driveExtension({ focused: false, muManaged: true });
+
+  await handlers.get("agent_start")?.();
+  await until(() => appended.length === 1, "the turn's working");
+  await handlers.get("agent_end")?.();
+  await until(() => appended.length === 2, "the turn's cleared");
+  await handlers.get("agent_settled")?.();
+  await until(() => appended.length === 3, "an append that must not happen");
+
+  expect(appended).toEqual(["working", "cleared"]);
+
+  unmockExtension();
+});
+
+test("a new run after a settle overwrites blocked with working, not the other way round", async () => {
+  // The cbcd9c4 failure mode, guarded. That commit let a clear path overwrite
+  // `working` and wiped 50 of 84 turns on one agent. `blocked` is appended
+  // after a run ends, and pi re-enters the loop for a retry, a compaction, or a
+  // queued continuation -- each with its own agent_start. The extension's
+  // promise queue serialises the handlers, so the NEXT run's `working` is
+  // strictly the later write and a stale blocked can never mask a live agent.
+  const { handlers, appended } = await driveExtension({ focused: false });
+
+  await handlers.get("agent_start")?.();
+  await handlers.get("agent_end")?.();
+  await handlers.get("agent_settled")?.();
+  await until(() => appended.length === 3, "the first run, settled");
+  await handlers.get("agent_start")?.();
+  await until(() => appended.length === 4, "the next run's working");
+
+  expect(appended).toEqual(["working", "done", "blocked", "working"]);
+  expect(appended.at(-1)).toBe("working");
+
+  unmockExtension();
+});
+
+test("agent_settled still reports after a /reload, because session_shutdown is not terminal", async () => {
+  // 862d5cd, applied to the new handler. pi fires session_shutdown for
+  // /reload, session switch, resume and fork, then rebinds and keeps using the
+  // same extension instance -- so a handler that does not survive the
+  // shutdown/start pair silently stops reporting for the life of the process
+  // while the tmux badge still paints.
+  const { handlers, appended } = await driveExtension({ focused: false });
+
+  await handlers.get("agent_start")?.();
+  await handlers.get("agent_end")?.();
+  await handlers.get("agent_settled")?.();
+  await until(() => appended.length === 3, "the first run, settled");
+
+  await handlers.get("session_shutdown")?.();
+  await handlers.get("session_start")?.();
+  await handlers.get("agent_start")?.();
+  await handlers.get("agent_end")?.();
+  await handlers.get("agent_settled")?.();
+  await until(() => appended.length === 7, "the run after the reload, settled");
+
+  expect(appended).toEqual(["working", "done", "blocked", "cleared", "working", "done", "blocked"]);
+
+  unmockExtension();
 });

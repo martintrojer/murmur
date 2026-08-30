@@ -69,6 +69,28 @@ test("cleared resets to null", () => {
   expect(foldAgent([ev("blocked"), ev("cleared")], alive).state).toBeNull();
 });
 
+test("the real settled sequence folds to blocked, not to the done underneath it", () => {
+  // The exact rows production now writes for one unfocused turn: agent_start
+  // then agent_end then agent_settled. `blocked` is last, so the fold must
+  // report it -- if `done` won, the highest-attention state would be invisible
+  // on every surface even though it was authored.
+  expect(foldAgent([ev("working", { pid: 1 }), ev("done"), ev("blocked")], alive).state).toBe(
+    "blocked",
+  );
+});
+
+test("a blocked row folds to blocked with a dead pid, so it survives to be cleared", () => {
+  // blocked is appended with pid null, and the run that authored it has ended,
+  // so by the time a focus hook folds this the process may well be gone. The
+  // fold must not turn it into `crashed` on the way past the earlier `working`
+  // row: `clear` gates on the FOLDED state (193118f), so the fold decides
+  // whether focus can acknowledge it, and crashed-instead-of-blocked would
+  // misreport a finished agent as a dead one.
+  expect(foldAgent([ev("working", { pid: 4242 }), ev("done"), ev("blocked")], dead).state).toBe(
+    "blocked",
+  );
+});
+
 test("a cleared event's timestamp does not become the row's age", () => {
   // The event is still dropped on purpose. It is a *clear*, so letting it
   // survive would make "last said something" mean "last stopped saying
