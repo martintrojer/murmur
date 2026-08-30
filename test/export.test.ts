@@ -2,7 +2,13 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, test } from "vitest";
-import { clearDeadWindows, eventFromWire, exportJsonl, SCHEMA_VERSION } from "../src/export.js";
+import {
+  clearDeadWindows,
+  eventFromWire,
+  exportJsonl,
+  reapDeadAgents,
+  SCHEMA_VERSION,
+} from "../src/export.js";
 import { openStore, type Store } from "../src/store.js";
 import type { Event } from "../src/types.js";
 
@@ -164,11 +170,11 @@ test("an agent whose window is gone and which already said cleared is dropped", 
   // windows indefinitely, visible under --all forever, and the only way to get
   // rid of them was the manual `del` key. A window tmux says is gone needs no
   // human judgement, so it should not need a keystroke.
-  s.append(localEvent({ agent_id: "dead", window: "@gone", state: "cleared" }));
-  s.append(localEvent({ agent_id: "alive", window: "@here", state: "cleared" }));
+  s.append(localEvent({ agent_id: "dead", pane: "%gone", state: "cleared" }));
+  s.append(localEvent({ agent_id: "alive", pane: "%here", state: "cleared" }));
   const hostId = s.allEvents()[0]?.host_id ?? "";
 
-  clearDeadWindows(s, hostId, new Set(["@here"]));
+  clearDeadWindows(s, hostId, new Set(["@w"]), new Set(["%here"]));
 
   const remaining = new Set(s.allEvents().map((event) => event.agent_id));
   expect(remaining.has("dead")).toBe(false);
@@ -183,11 +189,11 @@ test("an unacknowledged state on a dead window is superseded, never deleted", ()
   // agent that died mid-task would simply disappear. They become a synthetic
   // `cleared` instead, which keeps the history and the reason.
   for (const state of ["blocked", "done", "crashed"]) {
-    s.append(localEvent({ agent_id: `dead-${state}`, window: "@gone", state }));
+    s.append(localEvent({ agent_id: `dead-${state}`, pane: `%gone-${state}`, state }));
   }
   const hostId = s.allEvents()[0]?.host_id ?? "";
 
-  clearDeadWindows(s, hostId, new Set(["@here"]));
+  clearDeadWindows(s, hostId, new Set(["@w"]), new Set(["%here"]));
 
   for (const state of ["blocked", "done", "crashed"]) {
     const events = s.allEvents().filter((event) => event.agent_id === `dead-${state}`);
@@ -200,21 +206,19 @@ test("an unacknowledged state on a dead window is superseded, never deleted", ()
   }
 });
 
-test("reap-only housekeeping removes dead rows but authors nothing", () => {
+test("housekeeping removes dead rows but authors nothing", () => {
   // Why the delete half is callable on its own. clearDeadWindows ran only from
   // `export`, which happens when a PEER asks over ssh -- so a node with no
   // peers reaped never, which is the everyday single-machine case. Housekeeping
   // now runs from `collect`, on every invocation.
   //
   // It must not author, though: synthesising a `cleared` is an authorship
-  // decision that belongs with crash synthesis in export, where the envelope
-  // carrying it is being built.
-  s.append(localEvent({ agent_id: "dead", window: "@gone", state: "cleared" }));
-  s.append(localEvent({ agent_id: "blocked", window: "@gone", state: "blocked" }));
-  const hostId = s.allEvents()[0]?.host_id ?? "";
+  // decision that belongs with crash synthesis in export.
+  s.append(localEvent({ agent_id: "dead", pane: "%gone", state: "cleared" }));
+  s.append(localEvent({ agent_id: "blocked", pane: "%gone2", state: "blocked" }));
 
   const before = s.allEvents().length;
-  clearDeadWindows(s, hostId, new Set<string>(), "reap-only");
+  reapDeadAgents(s, new Set<string>());
   const after = s.allEvents();
 
   expect(after.some((event) => event.agent_id === "dead")).toBe(false);
@@ -223,4 +227,32 @@ test("reap-only housekeeping removes dead rows but authors nothing", () => {
   expect(blocked).toHaveLength(1);
   expect(blocked[0]?.state).toBe("blocked");
   expect(after.length).toBeLessThan(before);
+});
+
+test("an agent whose PANE is alive survives, even if its window id is stale", () => {
+  // The regression this pins, and it was severe: the sweep keyed on the window
+  // id, which goes stale routinely. A pane keeps its id across move-pane,
+  // break-pane, and a window being closed and reopened -- verified against real
+  // tmux, where after move-pane the pane id was unchanged and the old window id
+  // had vanished. Since `agent_id` is `host:pane`, the window on an agent's last
+  // event is simply not evidence about whether the agent exists.
+  //
+  // Ten live pi agents were deleted from the author's store in one sweep: 13
+  // panes carried murmur's badge and only 3 still had events.
+  s.append(localEvent({ agent_id: "moved", pane: "%7", window: "@long-gone", state: "cleared" }));
+
+  reapDeadAgents(s, new Set(["%7"]));
+
+  expect(s.allEvents().some((event) => event.agent_id === "moved")).toBe(true);
+});
+
+test("a sweep is abandoned when tmux cannot answer", () => {
+  // null means "could not ask", which must never be read as "nothing exists".
+  // Treating it as an empty set would delete every cleared agent on the host
+  // the moment tmux was briefly unreachable.
+  s.append(localEvent({ agent_id: "safe", pane: "%1", state: "cleared" }));
+
+  reapDeadAgents(s, null);
+
+  expect(s.allEvents().some((event) => event.agent_id === "safe")).toBe(true);
 });

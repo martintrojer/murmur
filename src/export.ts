@@ -120,22 +120,47 @@ function synthesizeCrashes(store: Store, hostId: string, isAlive: LiveCheck): vo
  * Resolves identity and tmux itself because both are facts only the owning host
  * can know, and this must be a no-op on a node that has neither.
  */
-export function reapDeadAgents(store: Store, live: Set<string> | null = tmux.liveWindows()): void {
+export function reapDeadAgents(store: Store, panes: Set<string> | null = tmux.livePanes()): void {
   const identity = loadIdentity();
-  if (!identity || live === null) return;
-  clearDeadWindows(store, identity.host_id, live, "reap-only");
+  if (!identity || panes === null) return;
+
+  const newest = new Map<string, Event>();
+  for (const event of store.allEvents()) {
+    if (event.host_id !== identity.host_id) continue;
+    const previous = newest.get(event.agent_id);
+    if (!previous || event.seq > previous.seq) newest.set(event.agent_id, event);
+  }
+
+  for (const event of newest.values()) {
+    // Keyed on the PANE, not the window, and that distinction deleted ten live
+    // agents on the author's machine.
+    //
+    // `agent_id` is `host:pane`, and a pane keeps its id when it moves between
+    // windows -- move-pane, break-pane, or closing and reopening a window. So
+    // the window id on an agent's last event goes stale routinely while the
+    // agent is still running, and sweeping on windows read that as "the agent
+    // is gone". Verified against real tmux: after move-pane the pane id was
+    // unchanged and the old window id had vanished from liveWindows().
+    if (panes.has(event.pane)) continue;
+
+    // Only a row that already says "nothing to see". blocked, done and crashed
+    // are unacknowledged facts; export supersedes those with a synthetic
+    // `cleared` rather than deleting them, so a real failure is never swept
+    // away silently.
+    if (event.state === "cleared") store.forgetAgent(event.agent_id);
+  }
 }
 
 export function clearDeadWindows(
   store: Store,
   hostId: string,
   live: Set<string> | null,
-  mode: "full" | "reap-only" = "full",
+  panes: Set<string> | null = tmux.livePanes(),
 ): void {
   // null means tmux could not answer. An empty set means it did and there are
   // no windows. Conflating them would clear every agent on the host whenever
   // tmux was briefly unreachable.
-  if (live === null) return;
+  if (live === null || panes === null) return;
 
   const newest = new Map<string, Event>();
   for (const event of store.allEvents()) {
@@ -145,35 +170,28 @@ export function clearDeadWindows(
   }
 
   for (const event of newest.values()) {
-    if (live.has(event.window)) continue;
+    // The PANE decides whether the agent is gone, not the window.
+    //
+    // `agent_id` is `host:pane`, and a pane keeps its id when it moves between
+    // windows -- move-pane, break-pane, or a window closed and reopened. So the
+    // window id on an agent's last event goes stale routinely while the agent
+    // is still running. Keying on the window read that as death and, on the
+    // author's machine, deleted ten live agents in one sweep. Verified against
+    // real tmux: after move-pane the pane id was unchanged and the old window
+    // id had vanished from liveWindows().
+    //
+    // The window set is still taken, and still null-checked above, because a
+    // tmux that cannot answer must stop the whole sweep.
+    if (panes.has(event.pane)) continue;
 
-    // The window is gone AND the agent already reported cleared, so there is no
-    // state left to supersede and nothing a human could learn from the row.
-    // Drop it outright.
-    //
-    // Without this the row was immortal, which is a leak from two correct rules
-    // meeting. Retention keeps the newest event per agent forever so a
-    // long-idle agent does not vanish, and this loop only ever CONVERTED a live
-    // row to cleared -- an already-cleared row had nothing to supersede, so it
-    // was skipped. A dead agent's final `cleared` was therefore protected by
-    // pruning and removed by nothing: four crew rows on the author's machine
-    // had outlived their windows indefinitely.
-    //
-    // Deliberately narrow. `blocked`, `done` and `crashed` on a dead window
-    // still become a synthetic `cleared` below rather than being deleted: those
-    // are unacknowledged facts, and sweeping them away silently would hide the
-    // very failures this tool exists to surface. Only a row that already says
-    // "nothing to see" is discarded.
+    // Gone AND already saying "nothing to see": drop it. Without this the row
+    // was immortal -- retention keeps the newest event per agent forever, and
+    // this loop only ever CONVERTED a live row, so an already-cleared row had
+    // nothing to supersede and was skipped.
     if (event.state === "cleared") {
       store.forgetAgent(event.agent_id);
       continue;
     }
-
-    // reap-only: never author. Synthesising a `cleared` is an authorship
-    // decision that belongs to export, where crash synthesis already lives and
-    // where the envelope that carries it is being built. Housekeeping only
-    // removes rows that say nothing.
-    if (mode === "reap-only") continue;
     const { host_id: _hostId, seq: _seq, ts: _ts, ...rest } = event;
     store.append({
       ...rest,

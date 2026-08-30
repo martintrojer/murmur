@@ -12,6 +12,7 @@ export type Location = {
 export interface Mux {
   currentWindow(): Location | null;
   liveWindows(): Set<string> | null;
+  livePanes(): Set<string> | null;
   setState(window: string, state: AgentState | null): void;
   // Reports whether the attach actually happened. runTmux swallows failures to
   // return null, and a jump that silently failed looked exactly like "enter did
@@ -126,6 +127,22 @@ export const tmux: Mux = {
   // $TMUX_PANE can answer.
   liveWindows() {
     const out = runTmux(["list-windows", "-a", "-F", "#{window_id}"]);
+    if (out === null) return null;
+    return new Set(out.split("\n").filter(Boolean));
+  },
+
+  // Which of this host's PANES still exist.
+  //
+  // The companion to liveWindows, and the one that matches how an agent is
+  // identified. `agent_id` is `host:pane`, and a pane keeps its id when it
+  // moves between windows -- so a window id recorded on an old event can be
+  // gone while the agent is very much alive. Sweeping on windows deleted ten
+  // live agents on the author's machine.
+  //
+  // Same null-vs-empty contract as liveWindows: null means tmux could not
+  // answer, an empty set means it did and there are none.
+  livePanes() {
+    const out = runTmux(["list-panes", "-a", "-F", "#{pane_id}"]);
     if (out === null) return null;
     return new Set(out.split("\n").filter(Boolean));
   },

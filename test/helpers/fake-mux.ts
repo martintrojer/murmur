@@ -15,6 +15,7 @@ export function fakeMux(over: Partial<Mux> = {}): Mux {
   return {
     currentWindow: () => null,
     liveWindows: () => new Set<string>(),
+    livePanes: () => new Set<string>(),
     setState: () => {},
     attach: () => true,
     capture: () => null,
