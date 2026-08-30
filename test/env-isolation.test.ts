@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test, vi } from "vitest";
-import { OWNED } from "./setup.js";
+import { CLEARED, OWNED, REDIRECTED } from "./setup.js";
 
 /**
  * The suite must not be able to tell what the developer's shell exports.
@@ -23,22 +23,33 @@ test("the ambient murmur environment is gone by the time a test runs", () => {
   //
   // Honest about its own limit -- in an already-clean shell this cannot fail,
   // which is why the two tests below do not depend on the environment at all.
-  for (const name of OWNED) {
+  for (const name of CLEARED) {
     expect(process.env[name], `${name} leaked into the suite`).toBeUndefined();
+  }
+  // The redirected half is asserted by value, not by absence: unsetting these
+  // hands the suite the developer's real state dir, so "gone" would be the
+  // wrong contract. See test/state-isolation.test.ts.
+  for (const [name, value] of Object.entries(REDIRECTED)) {
+    expect(process.env[name], `${name} is not pointed at the sandbox`).toBe(value);
   }
 });
 
-test("the setup file removes the variables rather than merely reading them", () => {
+test("the setup file rewrites the variables rather than merely reading them", () => {
   // The setup's own behaviour, independent of the shell: set every name, load
-  // the module fresh, and require that it cleared them. A setup that imports
-  // cleanly but deletes nothing would pass the test above in a clean shell.
+  // the module fresh, and require that it acted. A setup that imports cleanly
+  // but changes nothing would pass the test above in a clean shell.
   for (const name of OWNED) vi.stubEnv(name, "/leaked/from/the/developer/shell");
   for (const name of OWNED) expect(process.env[name]).toBe("/leaked/from/the/developer/shell");
 
   vi.resetModules();
   return import("./setup.js").then(() => {
-    for (const name of OWNED) {
+    for (const name of CLEARED) {
       expect(process.env[name], `${name} survived the setup`).toBeUndefined();
+    }
+    for (const name of Object.keys(REDIRECTED)) {
+      expect(process.env[name], `${name} kept the leaked value`).not.toBe(
+        "/leaked/from/the/developer/shell",
+      );
     }
     vi.unstubAllEnvs();
   });
@@ -62,8 +73,15 @@ test("every environment variable src/ reads is one the rig controls", () => {
       const path = join(dir, entry.name);
       if (entry.isDirectory()) walk(path);
       else if (entry.name.endsWith(".ts")) {
+        // Widened past `process.env.X` on purpose, because the original pattern
+        // could not see the two reads that caused the second half of the
+        // incident. `MURMUR_PANE_OWNER` is a string constant
+        // (decide.ts: OWNER_ENV) indexed as `env[OWNER_ENV]`, and TMUX /
+        // TMUX_PANE / XDG_* reach src/ both as `process.env.TMUX_PANE` and as
+        // `env.TMUX_PANE` on a passed-in environment. All three shapes now
+        // count as "src/ reads this".
         for (const match of readFileSync(path, "utf8").matchAll(
-          /process\.env\.((?:MURMUR|MU)_[A-Z0-9_]+)/g,
+          /(?:\benv\.|["'`])((?:MURMUR|MU|TMUX|XDG)[A-Z0-9_]*)/g,
         )) {
           if (match[1]) read.add(match[1]);
         }
