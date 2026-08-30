@@ -81,6 +81,13 @@ export function exactPaneTarget(session: string): string {
   return `=${session}:`;
 }
 
+export function tmuxBadgeState(state: RenderState): string {
+  // @agent_state is consumed by existing tmux configuration, whose public
+  // vocabulary calls active work "working". Keep the internal activity named
+  // "running" without forcing a coordinated config rollout.
+  return state === "running" ? "working" : state;
+}
+
 export const tmux: Mux = {
   currentWindow() {
     // $TMUX_PANE is the only trustworthy signal that we are inside a pane, and
@@ -135,7 +142,7 @@ export const tmux: Mux = {
     if (state === null) {
       runTmux(["set-window-option", "-qu", "-t", window, "@agent_state"]);
     } else {
-      runTmux(["set-window-option", "-q", "-t", window, "@agent_state", state]);
+      runTmux(["set-window-option", "-q", "-t", window, "@agent_state", tmuxBadgeState(state)]);
       runTmux(["set-window-option", "-q", "-t", window, "@pane_agent", "1"]);
     }
     runTmux(["refresh-client", "-S"]);
