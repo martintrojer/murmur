@@ -5,6 +5,19 @@ so it says what changed for a user rather than listing every commit.
 
 ## Unreleased
 
+**Harnesses other than pi can ask for attention again.** `murmur notify` is the
+path for codex and opencode, which have no in-process hook and can only run a
+command when something happens. It replaces the `notify` subcommand of the
+agent-attention script murmur superseded -- same flags, same stdin JSON form, so
+the existing hook lines work with only the command name changed. Without it those
+two harnesses never show `blocked`, and because the status bar keeps working for
+pi agents the failure is invisible.
+
+It is the one path where a process that does not own a pane may write about it,
+and it is narrow by construction: it can only ever say `blocked`, and its row
+carries no pid, so it makes no claim about any process being alive. working, done
+and crashed stay the pane owner's alone.
+
 Two fixes, both about telling two situations apart that used to look identical.
 
 **Jumping to a remote agent no longer nests tmux in a way you can feel.** The

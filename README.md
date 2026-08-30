@@ -116,6 +116,28 @@ The pane id is passed explicitly because hooks run in the tmux server, where
 looked at it" is true of one pane. Without it, a window holding an agent and a
 shell clears when you focus the shell.
 
+### Harnesses other than pi
+
+pi reports from inside itself, through the extension. codex and opencode have no
+such hook -- they can only run a command when something happens -- so they use
+`murmur notify`, which records an attention request for the pane it runs in:
+
+```toml
+# ~/.codex/config.toml
+notify = ["/bin/sh", "-lc", "murmur notify --source codex --event-type notify --title Codex"]
+```
+
+The same four fields may arrive as a JSON object on stdin instead, which is
+opencode's plugin form; flags win over the payload, so the line above behaves
+identically either way.
+
+`notify` is the one path where a process that does not own a pane may write
+about it, and it is deliberately narrow: it can only ever say `blocked`, and the
+row it writes carries no pid, so it makes no claim about any process being
+alive. Everything else -- working, done, crashed -- stays the pane owner's
+alone. Outside tmux it records nothing and exits 0, so it cannot break the
+caller's own exit code.
+
 Then, on whichever machine you want to watch from, add the peers and bind the
 picker to a key:
 
