@@ -300,7 +300,13 @@ async function readStdin(): Promise<string> {
     const onData = (chunk: Buffer) => chunks.push(chunk);
     const done = () => {
       process.stdin.off("data", onData);
-      process.stdin.unref();
+      // Optional because only a PIPE is a Socket. Redirect stdin from a file or
+      // /dev/null -- which `sh -lc` does, so this is the codex hook's own path --
+      // and `process.stdin` is an fs ReadStream with no `unref` at all, so
+      // calling it unconditionally threw TypeError and took the whole hook down.
+      // Nothing is lost: a file or /dev/null reaches EOF on its own, and it is
+      // only the never-ending pipe that needed releasing.
+      process.stdin.unref?.();
       resolve(Buffer.concat(chunks).toString("utf8"));
     };
     // Unreffed so the deadline itself cannot be what holds the process open.

@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { openSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "vitest";
 
@@ -60,5 +61,39 @@ test("a payload arriving in chunks is still read in full", async () => {
       resolve(status ?? -1);
     });
   });
+  expect(code).toBe(0);
+}, 10000);
+
+/**
+ * stdin redirected from a FILE, which is what `sh -lc` gives a hook.
+ *
+ * Only a pipe is a `Socket`; redirect from a file or /dev/null and
+ * `process.stdin` is an fs `ReadStream` with no `unref` method, while `isTTY` is
+ * still false so the guard does not catch it. Calling `unref()` unconditionally
+ * threw `TypeError: process.stdin.unref is not a function` and took the whole
+ * hook down -- caught while migrating the real codex config, whose notify line is
+ * exactly this shape.
+ */
+test("stdin redirected from a file does not crash the hook", async () => {
+  const child = spawn(
+    process.execPath,
+    [join(process.cwd(), "dist", "cli.js"), "notify", "--source", "file-stdin"],
+    { stdio: [openSync("/dev/null", "r"), "ignore", "pipe"] },
+  );
+  let stderr = "";
+  child.stderr?.on("data", (chunk: Buffer) => {
+    stderr += chunk.toString("utf8");
+  });
+  const code = await new Promise<number>((resolve) => {
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      resolve(-1);
+    }, 4000);
+    child.on("exit", (status) => {
+      clearTimeout(timer);
+      resolve(status ?? -1);
+    });
+  });
+  expect(stderr).not.toContain("unref is not a function");
   expect(code).toBe(0);
 }, 10000);
