@@ -3,6 +3,28 @@
 Notable changes per release. Written for someone deciding whether to upgrade,
 so it says what changed for a user rather than listing every commit.
 
+## 0.2.1
+
+**Agents are named by their tmux session, not by whatever process tmux found
+running in the window.** The picker's `agent` column showed `Python`, `node` and
+`zsh` for real agents — pi's own interpreter, labelled "agent".
+
+tmux's `automatic-rename` is on by default, which makes a window name simply the
+foreground command, and murmur preferred that name over the session name. So any
+agent without a mu agent name or a pi `/name` was listed under a process name,
+and `hacking/murmur` — the string you actually search for — was hidden. A window
+name is now recorded only when someone chose it, which means a window you renamed
+yourself still wins, as does mu's own naming.
+
+A row also no longer prints one string twice: the name and the stream column both
+fell back to the session name, so an unnamed agent read `hacking/murmur
+hacking/murmur` and spent thirteen columns saying nothing new.
+
+Upgrading does not retroactively fix agents that are already running. The name is
+recorded by the pane's own owner, so each agent's row is corrected when its pi
+process next starts. A pi `/reload` is not enough — it re-runs the extension
+inside the same process, which has the old code cached.
+
 ## 0.2.0
 
 **murmur now stores current state instead of an event log, and every node
