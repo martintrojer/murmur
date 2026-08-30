@@ -91,7 +91,53 @@ export type CollectResult = {
   ok: boolean;
   ingested: number;
   error?: string;
+  /**
+   * True when the peer could not be reached at all, as opposed to answering
+   * with something wrong.
+   *
+   * A fleet normally has nodes that are asleep or switched off, so this is the
+   * expected outcome rather than a fault, and callers use it to stay quiet
+   * about the ordinary case while still reporting a peer that is reachable but
+   * broken -- a bad schema version, a missing binary, a corrupt export.
+   */
+  unreachable?: boolean;
 };
+
+/**
+ * Whether an error means "could not reach the host".
+ *
+ * ssh exits 255 for its own failures and prints a recognisable line, and the
+ * exec wrapper puts both in the message. Matching on the text is unpleasant but
+ * it is the only signal available: the channel seam returns an Error, not an
+ * exit status, and widening it to carry one would push ssh's exit conventions
+ * into every future channel.
+ */
+function isUnreachable(message: string): boolean {
+  return (
+    /Host is down|No route to host|Connection refused|Connection timed out|Connection closed|Operation timed out|Network is unreachable|Name or service not known|Could not resolve hostname|Permission denied|timed out after/i.test(
+      message,
+    ) || /\bssh:/.test(message)
+  );
+}
+
+/**
+ * A peer failure in one line a human can act on.
+ *
+ * The raw error was the whole ssh invocation plus ssh's own message -- over 200
+ * characters, of which the actionable part was the host name. It also leaked
+ * every ssh option murmur passes, which a user cannot do anything about.
+ */
+export function describeFailure(peer: string, message: string): string {
+  const collapsed = message.replace(/\s+/g, " ").trim();
+  if (isUnreachable(collapsed)) {
+    const reason = /ssh: (?:connect to host \S+ port \d+: )?(.+?)(?: \(|$)/i.exec(collapsed);
+    return `${peer}: unreachable (${(reason?.[1] ?? "ssh failed").trim()})`;
+  }
+  // Reachable but wrong: keep the message, since it is the diagnosis, but bound
+  // it so a corrupt export cannot print a screenful.
+  const detail = collapsed.length > 160 ? `${collapsed.slice(0, 157)}...` : collapsed;
+  return `${peer}: ${detail}`;
+}
 
 function parseJsonl(output: string): { envelope: Envelope; events: Event[] } {
   const lines = output.trim().split("\n");
@@ -193,15 +239,31 @@ export async function collect(
         });
         results.push({ peer: peer.name, ok: true, ingested });
       } catch (error) {
+        // Reported through the return value, never printed here. `collect` runs
+        // from `murmur status` on every status-bar tick, and from `pick` inside
+        // a display-popup, so a single sleeping laptop wrote to stderr forever
+        // and corrupted both. Only the `collect` command -- which a human ran
+        // on purpose -- prints. See registerCollect.
         const message = error instanceof Error ? error.message : String(error);
-        process.stderr.write(`murmur: collect: peer ${peer.name}: ${message}\n`);
-        results.push({ peer: peer.name, ok: false, ingested: 0, error: message });
+        results.push({
+          peer: peer.name,
+          ok: false,
+          ingested: 0,
+          error: message,
+          unreachable: isUnreachable(message.replace(/\s+/g, " ")),
+        });
       }
     }
   } catch (error) {
-    process.stderr.write(
-      `murmur: collect: ${error instanceof Error ? error.message : String(error)}\n`,
-    );
+    // The whole collect failed rather than one peer -- a broken peer table, say.
+    // Still not printed: the caller decides. Recorded against no peer so a
+    // caller that reports failures has something to report.
+    results.push({
+      peer: "",
+      ok: false,
+      ingested: 0,
+      error: error instanceof Error ? error.message : String(error),
+    });
   } finally {
     clearTimeout(timer);
   }
@@ -220,10 +282,9 @@ export async function collect(
   // Retention must not be able to fail a command, hence its own try.
   try {
     store.prune();
-  } catch (error) {
-    process.stderr.write(
-      `murmur: collect: prune: ${error instanceof Error ? error.message : String(error)}\n`,
-    );
+  } catch {
+    // Retention is housekeeping: it must not fail a command, and it must not
+    // report either. A failed prune costs disk, which the next collect retries.
   }
   return results;
 }

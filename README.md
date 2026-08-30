@@ -120,8 +120,15 @@ Then, on whichever machine you want to watch from, add the peers and bind the
 picker to a key:
 
 ```bash
+murmur peer list         # peers, plus ssh hosts that could become one
 murmur peer add devbox   # an ssh target; identity is discovered
 ```
+
+Nodes being asleep or switched off is the normal state of a fleet, so nothing
+warns about it on a polling path: `murmur status` and `murmur pick` stay silent
+whatever the peers are doing. `murmur peer list` has a LAST SEEN column, and
+`murmur collect` -- which you run deliberately -- prints one line per peer it
+could not reach.
 
 ```tmux
 bind -N "agent state picker" a display-popup -E -w 80% -h 60% "murmur pick"

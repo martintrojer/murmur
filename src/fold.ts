@@ -106,6 +106,21 @@ export function attentionSort(views: AgentView[]): AgentView[] {
   });
 }
 
+/**
+ * A duration as the shortest thing worth reading: "5m", "2h", "3d".
+ *
+ * Lives beside isStale because both answer "how old is this", and both the
+ * picker and `peer list` render it -- the two must not drift into saying the
+ * same age differently. Under a minute is the empty string: an age that changes
+ * every second is noise in a status column.
+ */
+export function age(ms: number | null): string {
+  if (ms === null || ms < 60_000) return "";
+  if (ms < 3_600_000) return `${Math.floor(ms / 60_000)}m`;
+  if (ms < 86_400_000) return `${Math.floor(ms / 3_600_000)}h`;
+  return `${Math.floor(ms / 86_400_000)}d`;
+}
+
 export function isStale(fetchedAt: number | null, now: number, thresholdMs = 60_000): boolean {
   return fetchedAt !== null && now - fetchedAt > thresholdMs;
 }

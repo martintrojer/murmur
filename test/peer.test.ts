@@ -2,7 +2,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, expect, test } from "vitest";
-import { formatTable, parseSshHosts, peerAddDecision } from "../src/cli/peer.js";
+import { formatTable, lastSeen, parseSshHosts, peerAddDecision } from "../src/cli/peer.js";
 import { openStore } from "../src/store.js";
 import type { Peer } from "../src/types.js";
 
@@ -124,4 +124,16 @@ test("peer list output is column-aligned under a header", () => {
       "",
     ].join("\n"),
   );
+});
+
+test("lastSeen separates never-answered from merely stale", () => {
+  // These mean different things and used to render identically. A peer that has
+  // never answered is a setup problem -- wrong target, or murmur not installed
+  // on it -- and no amount of waiting fixes it. An old age is an ordinary
+  // sleeping node, which is the normal state of a fleet.
+  const now = 1_000_000_000;
+  expect(lastSeen(null, now)).toBe("never");
+  expect(lastSeen(now - 1_000, now)).toBe("just now");
+  expect(lastSeen(now - 12 * 3_600_000, now)).toBe("12h ago");
+  expect(lastSeen(now - 3 * 86_400_000, now)).toBe("3d ago");
 });

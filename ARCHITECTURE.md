@@ -229,6 +229,20 @@ Unhandled: a host demanding a hardware-token touch per connection, which
 that — gating collect on it per peer would restore the strict posture for those
 hosts only. Not wired up, because no peer in use needs it.
 
+**A node being down is the common case, so nothing routine reports it.** A fleet
+normally has a laptop asleep and a box switched off. The collector used to write
+two lines of ssh diagnostics per failed peer, and it runs from `murmur status`
+on every tmux status-bar tick and from `murmur pick` inside a display-popup --
+so one sleeping node wrote to stderr several times a minute, forever, and into a
+UI. The author's own status script had to pass `stderr=DEVNULL`, which is the
+tell that the output was wrong rather than merely verbose.
+
+Failures now travel in `collect`'s return value. `murmur collect`, which a human
+runs on purpose, is the only thing that prints, and it distinguishes unreachable
+(expected, exit 0) from reachable-but-broken (a bad schema version or a missing
+binary, exit 1). Reachability is otherwise read where it is asked for: the
+picker's `unreachable` flag and `peer list`'s LAST SEEN column.
+
 **Membership is local and asymmetric.** No shared node list, no registry, no
 join protocol. Reachability is not symmetric: a laptop reaches a server, and
 the server does not reach a laptop behind NAT that sleeps. A global list would

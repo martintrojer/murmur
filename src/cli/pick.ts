@@ -8,6 +8,7 @@ import {
   jumpToAgent,
   terminalText,
 } from "../agents.js";
+import { age } from "../fold.js";
 import { glance } from "../glance.js";
 import { loadIdentity } from "../identity.js";
 import { status, statusWithCollect } from "../status.js";
@@ -118,13 +119,6 @@ function timestamp(ts: number): string {
  * column saying so, and "0s" on every live agent is noise that hides the one
  * row reading "3h".
  */
-function age(ms: number | null): string {
-  if (ms === null || ms < 60_000) return "";
-  if (ms < 3_600_000) return `${Math.floor(ms / 60_000)}m`;
-  if (ms < 86_400_000) return `${Math.floor(ms / 3_600_000)}h`;
-  return `${Math.floor(ms / 86_400_000)}d`;
-}
-
 /**
  * Fit a cell to exactly `width` visible columns, padding or truncating.
  *

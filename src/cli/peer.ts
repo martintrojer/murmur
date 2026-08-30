@@ -3,7 +3,9 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Command } from "commander";
 import { hasWarmSocket, ssh } from "../channel.js";
+import { STALENESS_MS } from "../collector.js";
 import type { Envelope } from "../export.js";
+import { age, isStale } from "../fold.js";
 import { loadIdentity } from "../identity.js";
 import { openStore } from "../store.js";
 import type { Peer } from "../types.js";
@@ -33,6 +35,20 @@ function sshHosts(): string[] {
  * and hostnames), so `length` is a fine width; trailing cells are not padded so
  * the output stays clean for `cut` and friends.
  */
+/**
+ * How long since a peer last answered.
+ *
+ * `never` is deliberately distinct from an age: a peer that has never answered
+ * is a setup problem (wrong target, murmur not installed there), while an old
+ * age is an ordinary sleeping node. Uses the same fetched_at and threshold the
+ * picker does, so the two cannot disagree about one peer.
+ */
+export function lastSeen(fetchedAt: number | null, now: number): string {
+  if (fetchedAt === null) return "never";
+  if (!isStale(fetchedAt, now, STALENESS_MS)) return "just now";
+  return `${age(now - fetchedAt)} ago`;
+}
+
 export function formatTable(rows: string[][]): string {
   const widths: number[] = [];
   for (const row of rows) {
@@ -167,42 +183,96 @@ export function registerPeer(program: Command): void {
 
   peer
     .command("list")
-    .description("List configured peers")
+    .description("List peers, and SSH hosts that could become peers")
     .option("--json", "print JSON")
-    .action((options: { json?: boolean }) => {
+    .option("--peers-only", "hide SSH hosts that are not peers")
+    .action((options: { json?: boolean; peersOnly?: boolean }) => {
       const store = openStore();
       try {
+        // `list` and `discover` were two halves of one question -- "what hosts
+        // can murmur see, and which of them are up?" -- and discover needed a
+        // PEER column and a LAST SEEN column to be readable at all, at which
+        // point it WAS list plus the unadded hosts. Merged, with --peers-only
+        // for the narrower view.
+        //
+        // The union of configured targets and ssh hosts, not ssh hosts alone:
+        // `peer add` accepts any ssh target, so a peer can be an IP, a
+        // user@host, or a Tailscale name that appears in no config file.
+        // Listing ssh hosts alone would silently omit it.
         const peers = store.peers();
+        const configured = new Map(peers.map((entry) => [entry.target, entry]));
+        const discovered = options.peersOnly
+          ? []
+          : sshHosts().filter((host) => !configured.has(host));
+        const now = Date.now();
+
+        const rows = [...configured.keys(), ...discovered].map((target) => {
+          const entry = configured.get(target);
+          return {
+            // The handle other commands take: a peer's name, or for a host that
+            // is not one yet, the ssh host `peer add` wants.
+            name: entry?.name ?? target,
+            target,
+            peer: entry !== undefined,
+            // What the node called itself. Shown, never typed: it can be a
+            // container id.
+            hostname: entry?.display_name ?? null,
+            // Being a peer is not the same as being reachable, and the old
+            // output said only the first. A node asleep for twelve hours read
+            // exactly like one polled a second ago.
+            last_seen: entry === undefined ? null : lastSeen(entry.fetched_at, now),
+            // A warm ControlMaster socket makes a collect ~10ms instead of
+            // ~170ms, and is the only path that works on a host demanding a
+            // hardware-token touch per connection. A speed hint, never a
+            // requirement -- which is why the old bare `[x]` / `[ ]` was
+            // unreadable: it never said what was being checked.
+            //
+            // Safe for every row: `ssh -O check` talks to a local socket and
+            // never dials, so a host that is down or does not exist answers in
+            // ~16ms. Measured.
+            ssh: hasWarmSocket(target) ? "warm" : "cold",
+          };
+        });
+
         if (options.json) {
-          process.stdout.write(`${JSON.stringify(peers)}\n`);
+          process.stdout.write(`${JSON.stringify(rows)}\n`);
           return;
         }
-        if (peers.length === 0) {
-          process.stdout.write("no peers configured\n");
+        if (rows.length === 0) {
+          process.stdout.write(
+            options.peersOnly
+              ? "no peers configured\n"
+              : "no peers configured, and no hosts in ~/.ssh/config\n",
+          );
           return;
         }
-        const rows = [
-          // HOSTNAME, not HOST: this is what the node reported about itself,
-          // which is not the handle any other command takes. NAME is.
-          ["NAME", "TARGET", "HOSTNAME"],
-          ...peers.map((configured) => [
-            configured.name,
-            configured.target,
-            configured.display_name ?? "unknown",
+
+        // The PEER column only earns its width when the table mixes both kinds.
+        // Under --peers-only every row would read "yes", which is a column that
+        // says nothing.
+        const showPeerColumn = rows.some((row) => !row.peer);
+        process.stdout.write(
+          formatTable([
+            ["NAME", "TARGET", ...(showPeerColumn ? ["PEER"] : []), "HOSTNAME", "LAST SEEN", "SSH"],
+            ...rows.map((row) => [
+              row.name,
+              row.target,
+              ...(showPeerColumn ? [row.peer ? "yes" : "-"] : []),
+              row.hostname ?? "unknown",
+              row.last_seen ?? "-",
+              row.ssh,
+            ]),
           ]),
-        ];
-        process.stdout.write(formatTable(rows));
+        );
+
+        const addable = rows.filter((row) => !row.peer).length;
+        if (addable > 0) {
+          process.stdout.write(
+            `\n${addable} host${addable === 1 ? "" : "s"} not yet a peer. Add one with: murmur peer add <name>\n`,
+          );
+        }
       } finally {
         store.close();
-      }
-    });
-
-  peer
-    .command("discover")
-    .description("Check SSH hosts for warm control sockets")
-    .action(() => {
-      for (const host of sshHosts()) {
-        process.stdout.write(`${hasWarmSocket(host) ? "[x]" : "[ ]"} ${host}\n`);
       }
     });
 }

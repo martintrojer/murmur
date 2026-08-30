@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import type { Channel } from "../src/channel.js";
-import { collect, MAX_CONCURRENT_PEERS } from "../src/collector.js";
+import { collect, describeFailure, MAX_CONCURRENT_PEERS } from "../src/collector.js";
 import { SCHEMA_VERSION } from "../src/export.js";
 import { openStore, type Store } from "../src/store.js";
 import type { Event } from "../src/types.js";
@@ -96,7 +96,7 @@ test("a failing peer does not throw and leaves fetched_at stale", async () => {
   const result = await collect(store, channel, 5_000);
 
   expect(result).toEqual([
-    { peer: "dev", ok: false, ingested: 0, error: "authentication required" },
+    { peer: "dev", ok: false, ingested: 0, error: "authentication required", unreachable: false },
     { peer: "prod", ok: true, ingested: 1 },
   ]);
   expect(store.peers()[0]?.fetched_at).toBe(123);
@@ -211,7 +211,7 @@ test("a peer that fails late is reported, not an unhandled rejection", async () 
     const results = await collect(store, channel, 5_000);
     await new Promise((resolve) => setImmediate(resolve));
     expect(results).toEqual([
-      { peer: "fast-fail", ok: false, ingested: 0, error: "boom" },
+      { peer: "fast-fail", ok: false, ingested: 0, error: "boom", unreachable: false },
       { peer: "slow", ok: true, ingested: 1 },
     ]);
     expect(unhandled).toEqual([]);
@@ -266,7 +266,7 @@ test("prune runs once per collect, not once per peer", async () => {
   expect(prunes).toBe(1);
 });
 
-test("a failing prune warns and does not fail the collect", async () => {
+test("a failing prune is silent and does not fail the collect", async () => {
   store.upsertPeer({ name: "dev", target: "dev" });
   const spy = new Proxy(store, {
     get: (target, prop, receiver) =>
@@ -278,9 +278,10 @@ test("a failing prune warns and does not fail the collect", async () => {
   });
   const channel: Channel = { exec: async () => jsonl([event(1)]) };
 
-  // Capture stderr, or the assertion only proves the collect resolved -- the
-  // warning could vanish entirely and this test would stay green, which is
-  // what it was doing before.
+  // Capture stderr and require it to stay EMPTY. collect runs from `status` on
+  // every status-bar tick and from `pick` inside a popup, so anything it prints
+  // is printed forever and into a UI. Retention failing is housekeeping the
+  // next collect retries; there is no one on this path to tell.
   const written: string[] = [];
   const original = process.stderr.write.bind(process.stderr);
   process.stderr.write = ((chunk: string | Uint8Array) => {
@@ -296,7 +297,7 @@ test("a failing prune warns and does not fail the collect", async () => {
     process.stderr.write = original;
   }
 
-  expect(written.join("")).toContain("collect: prune: database is locked");
+  expect(written.join("")).toBe("");
 });
 
 test("an empty peer list touches no channel", async () => {
@@ -433,11 +434,98 @@ test("an older wire version is accepted, a newer one is refused", async () => {
   const results = await collect(store, channel, 5_000);
 
   expect(results).toEqual([
-    { peer: "new", ok: false, ingested: 0, error: expect.stringContaining("unsupported schema") },
+    {
+      peer: "new",
+      ok: false,
+      ingested: 0,
+      error: expect.stringContaining("unsupported schema"),
+      unreachable: false,
+    },
     { peer: "old", ok: true, ingested: 1 },
   ]);
   // The refused peer keeps its old fetched_at, so it renders stale rather than
   // looking freshly synced.
   expect(store.peers().find((peer) => peer.name === "new")?.fetched_at).toBe(42);
   expect(store.allEvents().map((item) => item.host_id)).toEqual(["OLD"]);
+});
+
+test("collect never writes to stderr, whatever the peer does", async () => {
+  // The contract that makes the polling paths usable. `collect` is called by
+  // `murmur status` on every tmux status-bar tick and by `pick` inside a
+  // display-popup. It used to print two lines of ssh diagnostics per failed
+  // peer -- the full ssh invocation plus ssh's own message, over 200 characters
+  // -- so one sleeping laptop wrote to stderr several times a minute forever,
+  // and into a popup. The author's own tmux status script had to pass
+  // stderr=DEVNULL to defend against it, which is the tell that the output was
+  // wrong rather than merely verbose.
+  //
+  // A fleet normally has nodes that are off or asleep, so this is the common
+  // case, not a fault worth a log line. Failures travel in the return value;
+  // only the `collect` command prints them.
+  store.upsertPeer({ name: "down", target: "down" });
+  store.upsertPeer({ name: "broken", target: "broken" });
+
+  const channel: Channel = {
+    exec: async (target) => {
+      if (target === "down") {
+        throw new Error(
+          "Command failed: ssh -o BatchMode=yes down murmur export --since 0\nssh: connect to host down port 22: Host is down",
+        );
+      }
+      throw new Error("unsupported schema version 99");
+    },
+  };
+
+  const written: string[] = [];
+  const original = process.stderr.write.bind(process.stderr);
+  process.stderr.write = ((chunk: string | Uint8Array) => {
+    written.push(String(chunk));
+    return true;
+  }) as typeof process.stderr.write;
+
+  let results: Awaited<ReturnType<typeof collect>>;
+  try {
+    results = await collect(store, channel, 5_000);
+  } finally {
+    process.stderr.write = original;
+  }
+
+  expect(written.join("")).toBe("");
+
+  // And the information is not lost -- it is in the result, including which
+  // kind of failure it was, so a caller can report a broken peer while staying
+  // quiet about a sleeping one.
+  const byPeer = new Map(results.map((result) => [result.peer, result]));
+  expect(byPeer.get("down")?.unreachable).toBe(true);
+  expect(byPeer.get("broken")?.unreachable).toBe(false);
+});
+
+test("a peer failure is described in one line a human can act on", () => {
+  // The raw error is the whole ssh command line plus ssh's message. The
+  // actionable part is the host and the reason; the ssh options are murmur's
+  // own and the user cannot do anything about them.
+  expect(
+    describeFailure(
+      "linuxpc",
+      "Command failed: ssh -o BatchMode=yes -o ControlPath=~/.ssh/control/%r@%h:%p linuxpc murmur export --since 0\nssh: connect to host linuxpc port 22: Host is down",
+    ),
+  ).toBe("linuxpc: unreachable (Host is down)");
+
+  // A reachable peer that answers wrongly keeps its message, because that IS
+  // the diagnosis, but bounded so a corrupt export cannot print a screenful.
+  expect(describeFailure("dev", "unsupported schema version 99 (supports 2)")).toBe(
+    "dev: unsupported schema version 99 (supports 2)",
+  );
+  expect(describeFailure("dev", "x".repeat(400)).length).toBeLessThan(200);
+
+  // Unreachable is classified by what ssh says, not by guessing. Each of these
+  // is a real ssh failure mode from a fleet with sleeping nodes.
+  for (const message of [
+    "ssh: connect to host box port 22: No route to host",
+    "ssh: connect to host box port 22: Connection refused",
+    "ssh: connect to host box port 22: Operation timed out",
+    "ssh: Could not resolve hostname box: nodename nor servname provided",
+  ]) {
+    expect(describeFailure("box", message)).toContain("unreachable");
+  }
 });

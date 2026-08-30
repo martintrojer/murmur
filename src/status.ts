@@ -123,9 +123,19 @@ export function status(store: Store, now = Date.now()): Status {
  * lands on a closed handle and reports "The database connection is not open",
  * which looks like corruption rather than a race.
  *
- * Sync must never fail a command, so a peer failure only warns. With no peers
- * this is a loop over an empty array: no network, no added latency, which is
- * the everyday single-machine path.
+ * Sync must never fail a command, and on this path it must never print either.
+ * `status` runs on every status-bar tick and `pick` runs inside a display-popup,
+ * so one sleeping laptop used to write two lines of ssh diagnostics to stderr
+ * several times a minute, forever. A fleet normally has nodes that are off or
+ * asleep, so that is the common case, not a fault worth a log line.
+ *
+ * The reachability of a peer is already reported where it can be read: the
+ * picker's `unreachable` flag and the peer table's age column, per row and on
+ * demand. `murmur collect`, which a human runs deliberately, is the only place
+ * that prints.
+ *
+ * With no peers this is a loop over an empty array: no network, no added
+ * latency, which is the everyday single-machine path.
  */
 export async function statusWithCollect(
   store: Store,
@@ -134,10 +144,9 @@ export async function statusWithCollect(
 ): Promise<Status> {
   try {
     await collect(store, channel, now);
-  } catch (error) {
-    process.stderr.write(
-      `murmur: status: collect: ${error instanceof Error ? error.message : String(error)}\n`,
-    );
+  } catch {
+    // Total by construction: a fold over whatever the replica already holds is
+    // always better than no output, and this path has no one to tell.
   }
   return status(store, now);
 }

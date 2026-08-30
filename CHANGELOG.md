@@ -39,6 +39,27 @@ above, and each one silently dropped events while the tmux badge kept painting:
   wrong window so jumps went to the wrong place, and closing the old window
   deleted the agent as dead.
 
+**A sleeping node is no longer noisy.** The collector wrote two lines of ssh
+diagnostics for every peer it could not reach -- the full ssh invocation plus
+ssh's own message, over 200 characters -- and it runs from `murmur status` on
+every tmux status-bar tick and from `murmur pick` inside a popup. One laptop
+asleep meant stderr several times a minute, forever, and a corrupted popup.
+Nodes being off or asleep is the normal state of a fleet, not a fault.
+
+`status` and `pick` are now silent whatever the peers do. `murmur collect`,
+which you run deliberately, prints one line per unreachable peer -- `linuxpc:
+unreachable (Host is down)` rather than the whole ssh command line -- and exits
+0, because a sleeping node is not a failure. A peer that is reachable but broken
+still exits 1. `murmur collect --quiet` says nothing at all.
+
+**`peer list` and `peer discover` are one command.** They answered two halves of
+one question, and `discover`'s output was a bare `[x]` / `[ ]` per host with no
+header, which never said what was being checked (a warm ssh control socket -- a
+speed hint, not a requirement). `peer list` now shows every peer and every other
+ssh host that could become one, with columns: whether it is a peer, what it
+calls itself, when it was last seen, and whether its ssh connection is warm.
+`--peers-only` hides the unadded hosts.
+
 **Switching back to an agent's pane no longer wipes its state.** The tmux focus
 hooks call `murmur clear`, which cleared whatever state it found -- including
 `working`. So looking at a busy agent marked it idle. On the author's own agent
@@ -90,7 +111,7 @@ machine: the pid-age bound that kept it honest rejected the same old idle rows
 it existed to describe, and `clearDeadWindows` already prunes agents whose
 window is gone. The `clear` fix above removed the reason it seemed necessary.
 
-Tests went 103 to 124, including a new file that drives a real tmux server on a
+Tests went 103 to 127, including a new file that drives a real tmux server on a
 private socket: every other test fakes the multiplexer, so two malformed tmux
 targets passed the whole suite. Every new test was verified by mutating the code
 it covers. One new test was itself flaky (a timer standing in for a barrier) and
