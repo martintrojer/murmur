@@ -48,7 +48,7 @@ broken somewhere.
 Two consequences worth stating, because both are easy to violate by accident:
 
 - **A node may not author events about another node's agents.** Not even
-  corrections. A reader that learns something (a jump proving a window is gone)
+  corrections. A reader that learns something (a jump proving a pane is gone)
   records it as *reader state*, or deletes its replica. It does not write an
   event.
 - **`host_id` is the origin, watermarks are keyed by peer.** These are the same
@@ -89,10 +89,24 @@ Both return `null` for "could not tell", which is deliberately distinct from an
 empty set. Conflating them clears every agent on the host the moment tmux is
 unreachable.
 
+The rule binds the JUMP as well as the sweep, and that took two goes to learn.
+A local jump asks `livePanes()`, and the remote probe is `tmux list-panes -a -F
+'#{pane_id}'` — not `list-windows`, because no answer about windows can say
+whether a pane exists. Both paths DELETE the row when the probe says gone, so
+asking about windows there condemned healthy agents on one keypress, and for a
+local agent the delete is unrecoverable: `forgetReplica` rewinds a peer's
+watermark to let the rows come back, and a local agent has no peer row.
+
 The remote jump inherits the same requirement, since it is `ssh -t <host> tmux
 attach`. tmux must be running on the far side, which is why a dead remote tmux
 server gets its own diagnosis rather than being reported as an unreachable
 host.
+
+What the branded ids do NOT buy, since it bounds how much the types can be
+trusted: both jump paths compared a `WindowId` against a `Set<WindowId>`, which
+is internally coherent and compiles cleanly. Branding stops you MIXING the three
+ids; it cannot stop you asking the wrong one a question. Only a test that moves
+a pane out from under a recorded window catches that.
 
 The badge also has to be cleared from outside, which is why `murmur clear --pane
 <id>` exists and why tmux hooks call it. The status bar and the `tms` picker read

@@ -103,6 +103,40 @@ test("an exact target does not match a longer session by prefix", () => {
   expect(rig("show-options", "-t", exactPaneTarget("bubba~"), "status")).toBe("status on");
 });
 
+test("a moved pane outlives the window it left, so only list-panes can see it", () => {
+  // The tmux fact the jump path got wrong twice, pinned against a real server
+  // because no fake can establish it. Every other assertion about liveness is
+  // made against a stubbed Mux, so if this premise is wrong they all agree with
+  // each other and with nothing else.
+  rig("new-session", "-d", "-s", "moved", "sleep 300");
+  const from = rig("list-panes", "-t", "moved", "-F", "#{pane_id} #{window_id}").split(" ");
+  const pane = from[0] as string;
+  const window = from[1] as string;
+  rig("new-window", "-t", "moved", "sleep 300");
+  const target = rig("list-panes", "-a", "-F", "#{pane_id} #{window_id}")
+    .split("\n")
+    .map((line) => line.split(" "))
+    .find((fields) => fields[1] !== window && fields[1] !== undefined)?.[0] as string;
+
+  rig("move-pane", "-s", pane, "-t", target);
+
+  const panes = rig("list-panes", "-a", "-F", "#{pane_id}").split("\n");
+  const windows = rig("list-windows", "-a", "-F", "#{window_id}").split("\n");
+
+  // The pane is alive and jumpable; the window on its last recorded event is
+  // simply not there any more. Deciding liveness from `windows` therefore
+  // condemns a healthy agent -- and the jump used to DELETE it on that basis.
+  expect(panes).toContain(pane);
+  expect(windows).not.toContain(window);
+
+  // And the stale window id is not even usable as a target, which is why the
+  // question has to be asked about the pane rather than papered over at attach
+  // time.
+  expect(rigFails("select-window", "-t", window)).toBe(true);
+
+  rig("kill-session", "-t", exactSession("moved"));
+});
+
 test("a bare target cannot address a session whose name starts with a sigil", () => {
   // Why remoteSessionName strips `@`, `$` and `%`. The old per-host WINDOW was
   // named `@<host>`, harmless for a window name because names are not targets.

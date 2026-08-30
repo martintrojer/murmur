@@ -52,6 +52,21 @@ revealing the crew rows the header names two lines below. It now toggles crew in
 and out of the list, and `^u` -- fzf's own binding, which always existed --
 clears.
 
+**Jumping to an agent whose pane has moved no longer deletes it.** Pressing
+enter on a healthy agent could report `is gone -- its window no longer exists.
+Cleared.` and remove it from the picker. The jump decided the agent was dead by
+asking whether the WINDOW on its last event still existed, and a pane keeps its
+id when it moves between windows while the window it left stops existing --
+`move-pane` and `break-pane` do exactly that, and closing the old window is
+enough. One keypress, on a working agent, with a message that said the opposite
+of the truth.
+
+Both halves now ask about the pane: locally through `list-panes`, and remotely
+by probing the peer with `tmux list-panes -a -F '#{pane_id}'` instead of
+`list-windows`. For a local agent this mattered more than for a replica, because
+nothing brought it back: a deleted replica returns when its peer is next
+collected, but a local agent has no peer to re-read and had to report again.
+
 **Agents whose tmux window is gone clean themselves up.** A dead agent's final
 `cleared` event was immortal: retention keeps the newest event per agent so a
 long-idle agent does not vanish, and the dead-window sweep only ever converted a

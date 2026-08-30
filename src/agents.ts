@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { SSH_OPTIONS } from "./channel.js";
 import { loadIdentity } from "./identity.js";
+import { asPaneId } from "./ids.js";
 import { type Mux, tmux } from "./mux.js";
 import type { Status } from "./status.js";
 import type { Store } from "./store.js";
@@ -95,17 +96,26 @@ export type JumpResult =
   | { ok: true }
   | {
       ok: false;
-      reason: "no_peer" | "unreachable" | "no_tmux" | "window_gone" | "attach_failed";
+      // Local to this process: the picker prints `message` and nothing else, so
+      // no reason code here is stored, folded or sent over the wire. (The
+      // `window_gone` string in export.ts IS on the wire and stays as it is.)
+      // That is what made renaming this one a vocabulary fix rather than a
+      // schema change.
+      reason: "no_peer" | "unreachable" | "no_tmux" | "pane_gone" | "attach_failed";
       message: string;
     };
 
 /**
  * Drop a dead agent's rows from the local replica.
  *
- * Export on the authoring node clears dead windows, but that only runs when the
- * peer is next polled, and a window can die between a fetch and a jump. When a
- * jump proves the window is gone, the agent should leave this HUD now rather
+ * Export on the authoring node clears dead agents, but that only runs when the
+ * peer is next polled, and a pane can die between a fetch and a jump. When a
+ * jump proves the pane is gone, the agent should leave this HUD now rather
  * than at the next collect.
+ *
+ * "Proves" is load-bearing and was once false: the caller asked whether the
+ * agent's WINDOW still existed, which a live pane routinely outlives, so this
+ * delete fired on healthy agents.
  *
  * DELETE rather than append a `cleared` event, because this node cannot author
  * an event about another node's agent. `store.append` stamps the local host_id,
@@ -136,7 +146,7 @@ export type JumpResult =
  * Drops every replicated row for that origin and rewinds the watermark, the
  * same recoverable delete `forgetReplica` does for one agent — just scoped to
  * the node, because "no tmux server" is a fact about the host rather than about
- * the window we happened to aim at. Leaving the rows and only labelling them
+ * the pane we happened to aim at. Leaving the rows and only labelling them
  * meant the picker kept offering four dead agents you had just been told were
  * gone.
  *
@@ -217,13 +227,24 @@ export function jumpToAgent(
 ): JumpResult {
   const identity = loadIdentity();
   if (agent.host_id === identity?.host_id) {
-    const live = mux.liveWindows();
-    if (live && !live.has(agent.window)) {
+    // The PANE decides, and only the pane. This asked `liveWindows()` about
+    // `agent.window` -- the exact rule 0e546c7 removed from the sweep, left
+    // live on the jump path -- and then DELETED the row. A pane keeps its id
+    // across move-pane and break-pane while the window it left stops existing,
+    // so one keypress on a healthy agent deleted it and reported it as gone.
+    // Verified against real tmux: after `move-pane -s %0 -t @1`, list-panes
+    // still has %0 and list-windows no longer has @0.
+    //
+    // Worse here than in the sweep, because the delete is unrecoverable: a
+    // local agent has no peer row, so forgetReplica's watermark rewind has
+    // nothing to rewind and nothing will ever re-author the rows.
+    const panes = mux.livePanes();
+    if (panes && !panes.has(agent.pane)) {
       forgetReplica(store, agent.agent_id, agent.host_id);
       return {
         ok: false,
-        reason: "window_gone",
-        message: `${agentLabel(agent)} is gone -- its window no longer exists. Cleared.`,
+        reason: "pane_gone",
+        message: `${agentLabel(agent)} is gone -- its pane no longer exists. Cleared.`,
       };
     }
     // Reporting the attach rather than assuming it. A select-window that fails
@@ -248,7 +269,11 @@ export function jumpToAgent(
     };
   }
 
-  // Check the window is still there before opening a window to attach to it.
+  // Check the agent's PANE is still there before opening a window to attach to
+  // it. Panes, not windows: `list-windows -a -F '#{window_id}'` cannot answer
+  // the only question that matters -- whether the agent exists -- because the
+  // window on its last event goes stale every time the pane moves. Asking the
+  // wrong one here deleted the replica of a live remote agent.
   // Without this the attach fails inside a new tmux window that closes
   // instantly, which is indistinguishable from "enter did nothing" -- the
   // symptom that sent us looking for a quoting bug that did not exist.
@@ -266,7 +291,7 @@ export function jumpToAgent(
   const probe = run("ssh", [
     ...SSH_OPTIONS,
     target,
-    `tmux list-windows -a -F ${shellQuote("#{window_id}")}`,
+    `tmux list-panes -a -F ${shellQuote("#{pane_id}")}`,
   ]);
   if (probe.status !== 0) {
     // 255 is ssh's own failure code; anything else came from the remote
@@ -297,13 +322,13 @@ export function jumpToAgent(
       message: `${target} has no tmux server running, so its agents are gone. Removed them; they will come back when it reports again.`,
     };
   }
-  const remoteWindows = new Set(probe.stdout.split("\n").filter(Boolean));
-  if (!remoteWindows.has(agent.window)) {
+  const remotePanes = new Set(probe.stdout.split("\n").filter(Boolean).map(asPaneId));
+  if (!remotePanes.has(agent.pane)) {
     forgetReplica(store, agent.agent_id, agent.host_id);
     return {
       ok: false,
-      reason: "window_gone",
-      message: `${agentLabel(agent)} is gone -- ${target} no longer has that window. Cleared.`,
+      reason: "pane_gone",
+      message: `${agentLabel(agent)} is gone -- ${target} no longer has that pane. Cleared.`,
     };
   }
 
