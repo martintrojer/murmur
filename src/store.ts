@@ -605,7 +605,13 @@ export function openStore(): Store {
         display_name: identity.display_name,
         murmur_version: MURMUR_VERSION,
         generated_at: world.now ?? Date.now(),
-        // Rule 3: an empty pane is readable locally but must not be published.
+        // Rule 3: a pane with no agent and no attention must not be published.
+        // A no-op against today's `readLocalPanes`, which builds a pane entry
+        // only from a row and so cannot produce an empty one -- kept because the
+        // rule belongs to the DOCUMENT, and the validator rejects such an entry
+        // outright. Without it, one narrowing of the local read would make this
+        // node reachable-but-broken on every peer that collects it, and the
+        // symptom would show up on the other machines.
         panes: readLocalPanes().filter((pane) => pane.agent !== null || pane.attention.length > 0),
       };
     },
