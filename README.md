@@ -141,7 +141,14 @@ from inside the harness, not from your terminal:
 
 ```bash
 murmur notify --source probe --message reachable && murmur status
+# then undo it, or the pane stays badged:
+murmur clear --pane "$TMUX_PANE"
 ```
+
+The probe is a real attention request: it records `blocked` and badges the
+window, which is what makes it a genuine test of the path. `murmur clear` is
+what takes it back, and focusing the pane does the same if you have the hooks
+above installed.
 
 If `murmur` is not reachable there, give the hook the absolute path
 (`command -v murmur` from your shell) rather than relying on PATH.
