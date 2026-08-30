@@ -1,8 +1,16 @@
 import { execFileSync } from "node:child_process";
-import { type Location, tmux } from "../mux.js";
+import { type Location, pidAlive, tmux } from "../mux.js";
 import type { Store } from "../store.js";
 import type { AgentState } from "../types.js";
-import { driverFromEnv, endState, settledState } from "./decide.js";
+import {
+  driverFromEnv,
+  endState,
+  mayReport,
+  OWNER_ENV,
+  ownerClaim,
+  ownsPane,
+  settledState,
+} from "./decide.js";
 import type { StoreModule } from "./store-api.js";
 
 // Declared here rather than imported: murmur must not depend on pi to build,
@@ -80,6 +88,25 @@ function safeSessionName(pi: ExtensionAPI): string | null {
 export default function murmurPi(pi: ExtensionAPI): void {
   const startLocation = tmux.currentWindow();
   if (!startLocation) return;
+
+  // Does this process own the pane, or is it something the owner spawned?
+  //
+  // Decided ONCE, at load, and before anything is written. A nested pi must not
+  // author a single event: the pane's agent_id is derived from $TMUX_PANE, which
+  // every descendant inherits, so a child that reports at all reports AS the
+  // parent agent. Six pids wrote `working` to one pane this way and the parent
+  // read as idle while it was working. See ownsPane in decide.ts.
+  //
+  // Silence is the whole behaviour: no store opened, no handlers registered, no
+  // badge painted. A process with nothing true to say should say nothing.
+  if (!ownsPane(process.env, startLocation.pane, process.pid)) return;
+
+  // Claim the pane for this process, so anything it spawns knows it is nested.
+  // Set on process.env rather than passed anywhere, because inheritance is the
+  // transport: a child pi loads this same extension and reads it back. The
+  // claim names the pane so a value that outlives its pane cannot silence a
+  // different one.
+  process.env[OWNER_ENV] = ownerClaim(startLocation.pane, process.pid);
 
   /**
    * Where this agent is NOW, not where it started.
@@ -189,10 +216,48 @@ export default function murmurPi(pi: ExtensionAPI): void {
     try {
       const currentStore = await getStore();
       if (!currentStore || !hostId) return;
+      const agentId = `${hostId}:${location.pane}`;
+
+      // The floor, independent of the environment marker above: never supersede
+      // an agent whose last recorded pid is still ALIVE. Two live processes
+      // cannot both be the agent in one pane, so a different live claimant is
+      // by elimination not the agent. This holds for a writer that never saw
+      // the marker -- a pi that predates it, or one launched in a way that
+      // dropped the environment. See mayReport for why a restart still works.
+      //
+      // Reads the last event that CARRIES a pid, not simply the last event.
+      // Verified against the real corrupted pane, whose history ran:
+      //
+      //   working(61980) working(80183) cleared(null) cleared(null)
+      //   working(82862) cleared(null) cleared(null) working(87286) ...
+      //
+      // Only `working` carries a pid; done, blocked and cleared are all null by
+      // design. Gating on `latestForAgent` alone therefore failed OPEN for
+      // every nested launch after the first, because the newest row was a
+      // pid-less `cleared` -- which is exactly the shape the real damage took,
+      // and it let a fresh write through when tried against a copy of the live
+      // database. The last pid is the last claim about who the agent IS, and a
+      // pid-less row in front of it does not retract it.
+      //
+      // Scans this agent's rows rather than adding a store method: store.ts
+      // belongs to another change in flight, and this is the only caller.
+      //
+      // Best effort by construction: a store that cannot answer must not stop
+      // the owner reporting, so a failed read falls through to the append.
+      try {
+        const withPid = currentStore
+          .allEvents()
+          .filter((event) => event.agent_id === agentId && event.pid !== null)
+          .at(-1);
+        if (!mayReport(process.pid, withPid?.pid ?? null, pidAlive)) return;
+      } catch {
+        // Unreadable history is not evidence of a competing writer.
+      }
+
       currentStore.append({
         // The PANE is the identity and survives a move between windows; the
         // window is only where it currently lives.
-        agent_id: `${hostId}:${location.pane}`,
+        agent_id: agentId,
         session: location.session,
         window: location.window,
         pane: location.pane,

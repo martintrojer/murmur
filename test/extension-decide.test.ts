@@ -3,7 +3,13 @@ import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test, vi } from "vitest";
-import { driverFromEnv, endState, settledState } from "../src/extension/decide.js";
+import {
+  driverFromEnv,
+  endState,
+  mayReport,
+  ownsPane,
+  settledState,
+} from "../src/extension/decide.js";
 import { builtArtifact, runBuiltCli } from "./helpers/built.js";
 
 /**
@@ -701,4 +707,51 @@ test("agent_settled still reports after a /reload, because session_shutdown is n
   expect(appended).toEqual(["working", "done", "blocked", "cleared", "working", "done", "blocked"]);
 
   unmockExtension();
+});
+
+test("only the pane's own pi claims it, and a nested pi stays silent", () => {
+  // The six-pid bug in one function. `$TMUX_PANE` is inherited, so a pi
+  // launched from inside an agent pane resolves the PARENT's pane and, with the
+  // extension linked globally, writes events as the parent agent.
+  const unclaimed: NodeJS.ProcessEnv = {};
+  expect(ownsPane(unclaimed, "%244", 61980)).toBe(true);
+
+  // Claimed for THIS pane by ANOTHER pid: whoever is asking is a descendant,
+  // not the owner.
+  expect(ownsPane({ MURMUR_PANE_OWNER: "%244:61980" }, "%244", 80183)).toBe(false);
+
+  // Claimed for a DIFFERENT pane, which is what a marker that outlived its pane
+  // looks like. It says nothing about this pane, so the agent here is the owner
+  // -- the alternative is silencing a legitimate agent forever, which is the
+  // worst failure this tool has.
+  expect(ownsPane({ MURMUR_PANE_OWNER: "%241:79154" }, "%244", 61980)).toBe(true);
+});
+
+test("a pi recognises its own claim, so /reload does not silence the real agent", () => {
+  // Found by a failing test, not by reading: pi calls the extension FACTORY
+  // again on /reload, in the same process. A marker that could not identify its
+  // own author would make the owner treat itself as nested on the first
+  // /reload and go silent for the rest of the session -- a strictly worse
+  // version of the bug being fixed, since the parent row would then never
+  // update at all. This is why the claim carries a pid rather than being "1".
+  expect(ownsPane({ MURMUR_PANE_OWNER: "%244:61980" }, "%244", 61980)).toBe(true);
+});
+
+test("a pid may not supersede a live pid, but takes over from a dead one", () => {
+  const alive = () => true;
+  const dead = () => false;
+
+  // The floor that alone would have prevented the corruption: two live
+  // processes cannot both be the agent in one pane.
+  expect(mayReport(80183, 61980, alive)).toBe(false);
+  // A legitimate RESTART. Pane %89 has two pids for good reason: the old agent
+  // exited and a new one owns the pane now. No grace period, no horizon.
+  expect(mayReport(80183, 61980, dead)).toBe(true);
+  // The owner reporting its own next event, which is nearly every event.
+  expect(mayReport(61980, 61980, alive)).toBe(true);
+  // Nothing recorded, or a row with no pid (done/blocked/cleared all carry
+  // null): nothing to protect, so the write proceeds. Fails OPEN on purpose --
+  // pidAlive says "alive" when it cannot answer, which would otherwise REJECT.
+  expect(mayReport(61980, null, alive)).toBe(true);
+  expect(mayReport(61980, 0, alive)).toBe(true);
 });
