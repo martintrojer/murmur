@@ -21,7 +21,14 @@ export class SnapshotInvalidError extends Error {
     readonly path: string,
     detail: string,
   ) {
-    super(`${path}: ${detail}`);
+    // An EMPTY path means the failure is about the document as a whole, not
+    // about a field in it, so there is nothing to prefix. Joining regardless
+    // produced `bubba: : not JSON (...)` in `peer list` and in the one line
+    // `murmur collect` prints -- measured against a real second node, and for
+    // the most common remote misconfiguration there is (murmur missing, so the
+    // "document" is a shell error). `path` itself stays "", because that is what
+    // it means and a caller must not have to know a sentinel.
+    super(path === "" ? detail : `${path}: ${detail}`);
     this.name = "SnapshotInvalidError";
   }
 }

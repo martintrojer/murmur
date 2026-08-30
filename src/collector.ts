@@ -107,6 +107,43 @@ function isUnreachable(message: string): boolean {
 }
 
 /**
+ * Drop Node's `Command failed: <argv>` first line, keeping the child's output.
+ *
+ * Every rejection from the ssh channel arrives in that shape, so the first ~140
+ * characters of every real failure are the invocation murmur chose: `ssh -o
+ * BatchMode=yes -o ControlMaster=no -o ControlPath=... -o ConnectTimeout=1
+ * <host> murmur export`. The operator cannot act on any of it, and it pushed the
+ * one line that mattered past the length bound below -- measured against a real
+ * second node, where a missing remote binary printed
+ * `bubba: Command failed: ssh -o BatchMode=yes ... murmur: command not f...`,
+ * truncated on the only actionable word in it.
+ *
+ * Stripped BEFORE the newlines are collapsed, because the line boundary is the
+ * only thing separating the invocation from the diagnosis.
+ */
+function stripInvocation(message: string): string {
+  const firstLine = message.indexOf("\n");
+  if (firstLine === -1 || !message.startsWith("Command failed:")) return message;
+  const rest = message.slice(firstLine + 1).trim();
+  // A bare `Command failed:` line with nothing after it is all we have; saying
+  // nothing would be worse than saying too much.
+  return rest === "" ? message : rest;
+}
+
+/**
+ * The one normalisation, so classification and rendering cannot disagree.
+ *
+ * `unreachable` (a machine-readable flag on `CollectResult`) and
+ * `describeFailure` (the line a human reads) both classify with
+ * `isUnreachable`. Feeding them differently-normalised text is how a peer gets
+ * reported as reachable-but-broken in JSON and "unreachable" in print, about
+ * one fetch -- so both go through here.
+ */
+function normalizeFailure(message: string): string {
+  return stripInvocation(message).replace(/\s+/g, " ").trim();
+}
+
+/**
  * A peer failure in one line a human can act on.
  *
  * The raw error was the whole ssh invocation plus ssh's own message -- over 200
@@ -114,7 +151,7 @@ function isUnreachable(message: string): boolean {
  * every ssh option murmur passes, which a user cannot do anything about.
  */
 export function describeFailure(peer: string, message: string): string {
-  const collapsed = message.replace(/\s+/g, " ").trim();
+  const collapsed = normalizeFailure(message);
   if (isUnreachable(collapsed)) {
     const reason = /ssh: (?:connect to host \S+ port \d+: )?(.+?)(?: \(|$)/i.exec(collapsed);
     return `${peer}: unreachable (${(reason?.[1] ?? "ssh failed").trim()})`;
@@ -179,7 +216,18 @@ export async function collect(
         store.replacePeerSnapshot(peer.name, { ok: true, snapshot: fetch.value, at: now });
         results.push({ peer: peer.name, ok: true, panes: fetch.value.panes.length });
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        // Normalised ONCE, here, before it is stored or returned.
+        //
+        // `last_error` is read by `peer list`, by `status --json` and by
+        // anything built on the SDK, and none of them can undo the mangling: a
+        // raw `execFile` rejection leads with `Command failed: ssh -o
+        // BatchMode=yes -o ControlMaster=no -o ControlPath=... <host> murmur
+        // export`, which is murmur's own invocation and nothing an operator can
+        // act on. Measured against a real second node, where `peer list`
+        // printed 140 characters of ssh options before the four words that
+        // mattered. Storing the normalised text means every surface gets the
+        // diagnosis without each one having to remember to strip it.
+        const message = normalizeFailure(error instanceof Error ? error.message : String(error));
         store.replacePeerSnapshot(peer.name, { ok: false, error: message, at: now });
         // Reported through the return value, never printed here. `collect` runs
         // from `murmur status` on every status-bar tick, and from `pick` inside
@@ -196,7 +244,7 @@ export async function collect(
           unreachable:
             error instanceof SnapshotInvalidError
               ? false
-              : isUnreachable(message.replace(/\s+/g, " ")),
+              : isUnreachable(normalizeFailure(message)),
         });
       }
     }

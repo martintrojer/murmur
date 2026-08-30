@@ -192,8 +192,27 @@ test("a payload naming agent fields lands nowhere in the agents table", () => {
   );
 
   expect(agentRows()).toEqual(before);
-  const serialised = JSON.stringify(agentRows());
-  for (const value of ["4242", "hijacked"]) expect(serialised).not.toContain(value);
+  // Asserted as a closed KEY set plus leaf VALUES, not as a substring search.
+  //
+  // This read `not.toContain("4242")` over the serialised rows, which fails on
+  // an UNCORRUPTED row whenever the test's own `process.pid` happens to contain
+  // those digits -- `owner_pid` is a real column here, and 14242 or 42421 are
+  // ordinary macOS pids. Reproduced by claiming with owner_pid 14242: the
+  // assertion fires while behaviour is correct. Same class as the millisecond
+  // clock that made notify.test.ts flake, and the same fix.
+  //
+  // It also says the stronger thing. The claim is that `AttentionRequest` has no
+  // field for any of these, so what matters is that no agent COLUMN took a value
+  // from the payload -- checked per column, rather than hoping a digit string is
+  // absent from a blob.
+  const hostile = ["stopped", 4242, "hijacked", "human"];
+  for (const row of agentRows()) {
+    for (const [column, value] of Object.entries(row)) {
+      // `driver` is legitimately "orchestrated" and `activity` "running"; the
+      // point is that neither took the payload's word for it.
+      expect(hostile, `${column} took a payload value`).not.toContain(value);
+    }
+  }
   // It did get its attention row -- refusing the write entirely would be a
   // different bug, since the notification is a real fact about the pane.
   expect(attentionRows()).toMatchObject([{ pane: "%250", kind: "blocked", source: "hostile" }]);
