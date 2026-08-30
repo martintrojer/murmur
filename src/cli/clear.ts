@@ -21,6 +21,28 @@ type OwnedPane = {
 };
 
 /**
+ * States that focus is allowed to clear.
+ *
+ * `clear` runs from tmux focus hooks, so the only fact it knows is "the user
+ * looked at this pane". That satisfies an attention REQUEST -- blocked (waiting
+ * on you), done (finished, unseen), crashed (died, unnoticed) -- and each must
+ * stop being shown once seen, or the badge outlives the thing it reported.
+ *
+ * `working` is deliberately absent, and this was a real bug: 50 of 84 turns on
+ * one agent were cleared within a minute of starting, several within seconds,
+ * because switching back to its pane wiped its state. `working` is not a
+ * request for attention -- it is the agent saying what it is doing, and looking
+ * at it does not make it stop. Overwriting it also breaks the rule that facts
+ * only the author can know are authored by the author: only the agent knows
+ * whether it is still working.
+ *
+ * The damage was out of proportion to the mistake because `working` is asserted
+ * once, at the start of a turn. Cleared mid-turn, the agent read idle until its
+ * NEXT turn began -- minutes, for a long turn.
+ */
+const CLEARABLE = new Set(["blocked", "done", "crashed"]);
+
+/**
  * Does any OTHER pane in this window own an agent?
  *
  * Read-only, and best effort: if tmux or the database cannot answer we say yes,
@@ -109,6 +131,14 @@ export function clearPane(pane: string, mux: Mux = tmux): void {
       mux.setState(owner.window, null);
       return;
     }
+
+    // Not an attention request, so focus has nothing to acknowledge. Leave the
+    // event log AND the badge alone: a `working` badge is legitimately set by
+    // the agent, and an unrecognised state from a newer node is not something a
+    // focus hook should overwrite. CLEARABLE is the single gate -- an earlier
+    // version also had a `working` early return, so adding `working` to this
+    // set silently did nothing.
+    if (!CLEARABLE.has(owner.state)) return;
 
     // `owner` came from this store, so it is open; the check is for the type.
     try {

@@ -150,3 +150,60 @@ test("an already-cleared row still clears a stale badge", () => {
   clearPane("%p", mux);
   expect(cleared).toEqual(["@5"]);
 });
+
+test("focusing a working agent does not clear it", () => {
+  // The bug, found by watching a real session: 50 of 84 turns on the author's
+  // own agent were cleared within a minute of starting, several within seconds.
+  // Switching back to an agent's pane while it was thinking wiped its state.
+  //
+  // `clear` runs from tmux focus hooks, so the only fact it knows is "the user
+  // looked at this pane". That cancels an attention REQUEST -- blocked, done,
+  // crashed -- but `working` is not a request: it is the agent reporting what it
+  // is doing, and looking at it does not make it stop. Overwriting it also
+  // breaks murmur's own rule that facts only the author can know are authored
+  // by the author, since only the agent knows whether it is still working.
+  //
+  // The consequence was severe because `working` is only re-asserted at the
+  // start of a turn: once cleared mid-turn, the agent read idle until its NEXT
+  // turn began, which for a long turn is many minutes.
+  const identity = ensureIdentity();
+  const store = openStore();
+  store.append({ ...NEW_EVENT, agent_id: `${identity.host_id}:%1`, state: "working", pid: 4242 });
+  store.close();
+
+  const badges: (string | null)[] = [];
+  clearPane("%1", fakeMux({ setState: (_window, state) => void badges.push(state) }));
+
+  const after = openStore();
+  const events = after.allEvents();
+  // No `cleared` appended: the agent is still working, and only it may say
+  // otherwise.
+  expect(events.at(-1)?.state).toBe("working");
+  after.close();
+
+  // And the badge is left alone. A `working` badge is not an attention request
+  // either, so there is nothing for focus to acknowledge.
+  expect(badges).toEqual([]);
+});
+
+test("focusing an agent that wants attention still clears it", () => {
+  // The other side, and the reason clear exists at all. blocked, done and
+  // crashed are all "look at me"; focusing the pane IS looking, so the request
+  // is satisfied and must stop being shown -- otherwise the badge outlives the
+  // thing it was reporting and sits in the status bar forever.
+  for (const state of ["blocked", "done", "crashed"] as const) {
+    process.env.MURMUR_STATE_DIR = mkdtempSync(join(tmpdir(), `murmur-clear-${state}-`));
+    const identity = ensureIdentity();
+    const store = openStore();
+    store.append({ ...NEW_EVENT, agent_id: `${identity.host_id}:%1`, state });
+    store.close();
+
+    const badges: (string | null)[] = [];
+    clearPane("%1", fakeMux({ setState: (_window, badge) => void badges.push(badge) }));
+
+    const after = openStore();
+    expect(after.allEvents().at(-1)?.state).toBe("cleared");
+    after.close();
+    expect(badges).toEqual([null]);
+  }
+});

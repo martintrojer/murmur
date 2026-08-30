@@ -153,7 +153,7 @@ where the system interpreter is least yours to touch. "Keep the working script"
 is weaker than it looks: those lines worked because dotfiles symlinked them, so
 a second machine means packaging them either way.
 
-## Three ideas to understand before changing anything
+## Four ideas to understand before changing anything
 
 Everything else is mechanical.
 
@@ -387,6 +387,33 @@ Each was considered and refused with reasons above:
 - gossip replication (schema-compatible, not built)
 - configuration knobs beyond peers and theme
 - harnesses other than pi, multiplexers other than tmux, channels other than ssh
+
+### 4. `clear` may only cancel a request for attention
+
+`murmur clear --pane` runs from tmux focus hooks, so the single fact it knows is
+*the user looked at this pane*. That satisfies an attention request and nothing
+else:
+
+| state | asking for attention? | focus clears it? |
+| --- | --- | --- |
+| `blocked` | yes, waiting on you | yes |
+| `done` | yes, finished unseen | yes |
+| `crashed` | yes, died unnoticed | yes |
+| `working` | **no**, it is just busy | **no** |
+
+`working` is the agent reporting what it is doing, and looking at it does not
+make it stop. Clearing it also breaks idea 2 above: only the agent knows whether
+it is still working, so only the agent may say otherwise.
+
+This was a real bug, and the worst one found: 50 of 84 turns on one agent were
+cleared within a minute of starting, several within seconds, because switching
+back to a pane wiped the state of the agent running in it. The damage was out of
+proportion because `working` is asserted **once**, at the start of a turn --
+cleared mid-turn, the agent read idle until its next turn began.
+
+The general form: a focus hook may cancel a notification, never author a fact.
+An unrecognised state from a newer node is therefore left alone rather than
+overwritten, which is why the clearable set is a whitelist and not `!== working`.
 
 ## The extension's lifecycle assumptions
 

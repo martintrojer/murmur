@@ -50,6 +50,19 @@ about three hours on this machine, so a day-old pid was being reported as alive
 when it may well have belonged to an unrelated process; past an hour the answer
 is `unknown`.
 
+**Switching back to an agent's pane no longer wipes its state.** The tmux focus
+hooks call `murmur clear`, which cleared whatever state it found -- including
+`working`. So looking at a busy agent marked it idle. On the author's own agent
+this hit 50 of 84 turns, several within seconds of the turn starting.
+
+Focus now only cancels states that are asking for attention: `blocked`, `done`
+and `crashed`. `working` is not a request, it is the agent saying what it is
+doing, and only the agent can say it has stopped.
+
+This is the bug behind most of the "agent reads idle while it is working"
+symptoms in this release. The other fixes below are real, but this was the one
+doing the damage day to day.
+
 **`/reload` no longer kills reporting.** pi fires `session_shutdown` for
 `/reload` -- and for session switch, resume and fork -- then rebinds and keeps
 using the same extension instance. The extension treated that event as "the
@@ -82,7 +95,7 @@ does not create one -- an agent should not decide what a machine is called --
 but the consequence was invisible: it loaded, ran, and recorded nothing while
 the tmux badge still painted.
 
-Tests went 103 to 130, including a new file that drives a real tmux server on a
+Tests went 103 to 132, including a new file that drives a real tmux server on a
 private socket: every other test fakes the multiplexer, so two malformed tmux
 targets passed the whole suite. Every new test was verified by mutating the code
 it covers. One new test was itself flaky (a timer standing in for a barrier) and
