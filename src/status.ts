@@ -3,6 +3,7 @@ import { collect } from "./collector.js";
 import type { NodeIdentity } from "./identity.js";
 import type { Store } from "./store.js";
 import {
+  freshness,
   type PaneView,
   paneViews,
   RENDER_PRIORITY,
@@ -78,9 +79,12 @@ export function status(store: Store, identity: NodeIdentity, now = Date.now()): 
       // serving a three-hour-old fact, and one number cannot say both.
       snapshot_at: peer.snapshot_at,
       last_error: peer.last_error,
-      // A peer we have never reached is stale, not fresh: null `fetched_at`
-      // means the first collect has not succeeded yet.
-      stale: peer.fetched_at === null || now - peer.fetched_at > 60_000,
+      // The view's verdict, not a second threshold spelled the same way. A
+      // peer we have never reached is stale rather than fresh -- null
+      // `fetched_at` means the first collect has not succeeded yet -- and
+      // `freshness` is the one place that decides, so this list and the panes
+      // the peer contributes cannot disagree about the same host.
+      stale: freshness(peer.fetched_at, now) === "stale",
     })),
   };
 }

@@ -16,6 +16,7 @@ import type {
   Snapshot,
   SnapshotPane,
 } from "../src/types.js";
+import { STALENESS_MS } from "../src/view.js";
 
 const stores: Store[] = [];
 let store: Store;
@@ -284,6 +285,24 @@ test("a peer that has never been reached is stale, not fresh", () => {
   const view = status(store, IDENTITY);
 
   expect(view.peers[0]).toMatchObject({ fetched_at: null, stale: true });
+});
+
+test("a peer's staleness is the view's freshness verdict, not a second threshold", () => {
+  // One definition of "how long is too long", used by the peer list and by every
+  // pane that peer contributes. Two copies of the number is how a peer could
+  // read stale in `peer list` while its panes rendered fresh in the picker -- a
+  // disagreement no operator can resolve from the output.
+  const at = 1_000;
+  store.addPeer("dev", "dev");
+  store.replacePeerSnapshot("dev", { ok: true, at, snapshot: remoteSnapshot([remotePane("%50")]) });
+
+  const edge = status(store, IDENTITY, at + STALENESS_MS);
+  expect(edge.peers[0]?.stale).toBe(false);
+  expect(edge.panes.find((pane) => pane.pane === "%50")?.freshness).toBe("fresh");
+
+  const over = status(store, IDENTITY, at + STALENESS_MS + 1);
+  expect(over.peers[0]?.stale).toBe(true);
+  expect(over.panes.find((pane) => pane.pane === "%50")?.freshness).toBe("stale");
 });
 
 test("snapshot_at and fetched_at are not interchangeable", () => {

@@ -74,6 +74,38 @@ function agentRows(): Record<string, unknown>[] {
   }
 }
 
+/**
+ * Every key and every leaf value in an object graph, for the assertions whose
+ * point is that something is ABSENT from the whole shape.
+ *
+ * Two walks rather than a substring search over `JSON.stringify`: a pid is a
+ * short number, and `not.toContain("100")` matched the digits inside a
+ * millisecond timestamp, so the guard failed for reasons that had nothing to do
+ * with what it guards.
+ */
+function keysOf(value: unknown, found: string[] = []): string[] {
+  if (Array.isArray(value)) {
+    for (const entry of value) keysOf(entry, found);
+  } else if (value !== null && typeof value === "object") {
+    for (const [key, entry] of Object.entries(value)) {
+      found.push(key);
+      keysOf(entry, found);
+    }
+  }
+  return found;
+}
+
+function leavesOf(value: unknown, found: unknown[] = []): unknown[] {
+  if (Array.isArray(value)) {
+    for (const entry of value) leavesOf(entry, found);
+  } else if (value !== null && typeof value === "object") {
+    for (const entry of Object.values(value)) leavesOf(entry, found);
+  } else {
+    found.push(value);
+  }
+  return found;
+}
+
 const alive = (pids: number[]) => (pid: number) => pids.includes(pid);
 const dead = () => false;
 
@@ -433,9 +465,14 @@ test("localPanes joins by pane and exposes no owner_pid anywhere", () => {
   expect(panes.map((pane) => pane.pane)).toEqual(["%1", "%2", "%3"]);
   expect(panes[1]?.attention).toEqual([]);
   expect(panes[2]?.agent).toBeNull();
-  // Structurally, over the whole object graph -- not by reading the type.
-  expect(JSON.stringify(panes)).not.toContain("owner_pid");
-  expect(JSON.stringify(panes)).not.toContain("100");
+  // Structurally, over the whole object graph -- not by reading the type, and
+  // not by substring either: a pid searched for inside JSON.stringify's output
+  // matches the digits of any timestamp that happens to contain them, so
+  // `not.toContain("100")` failed whenever `Date.now()` read 1788100266997.
+  // Walking leaves compares values, which is the claim actually being made.
+  expect(keysOf(panes)).not.toContain("owner_pid");
+  expect(leavesOf(panes)).not.toContain(100);
+  expect(leavesOf(panes)).not.toContain(200);
 });
 
 test("buildLocalSnapshot reconciles, drops empty panes and never carries a pid", () => {

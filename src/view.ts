@@ -218,11 +218,33 @@ export function paneViews(store: Store, identity: NodeIdentity, now = Date.now()
 
 const ORDER = new Map<RenderState, number>(RENDER_PRIORITY.map((state, index) => [state, index]));
 
-/** Attention-first ordering, then the newest news. */
+/**
+ * Attention-first ordering, then the newest news, then address.
+ *
+ * TOTAL on purpose, and that is the whole reason the last two comparisons
+ * exist. Ties on state and age are ordinary rather than exotic -- a pair of
+ * crashed panes reconciled in one transaction shares a `requested_at` exactly --
+ * and `Array.prototype.sort` is stable only with respect to the order it was
+ * GIVEN, which here is whatever SQLite and the peer loop happened to produce. An
+ * unbroken tie therefore makes the list depend on that order: a status bar
+ * reshuffles between two identical ticks, and a picker row moves under the
+ * keypress that was aimed at it.
+ *
+ * Presentation only. No caller may read meaning into the position of a row --
+ * `panes` order in a snapshot carries none either (§6 rule 4), so a reader sorts
+ * for itself rather than trusting what it was served.
+ */
 export function viewSort(views: PaneView[]): PaneView[] {
   return [...views].sort((left, right) => {
     const byState = (ORDER.get(renderState(left)) ?? 99) - (ORDER.get(renderState(right)) ?? 99);
     if (byState !== 0) return byState;
-    return (right.updated_at ?? 0) - (left.updated_at ?? 0);
+    // Unknown age sorts last within its state: an attention-only pane with no
+    // timestamp is not news, and 0 is older than any real clock reading.
+    const byAge = (right.updated_at ?? 0) - (left.updated_at ?? 0);
+    if (byAge !== 0) return byAge;
+    // Address as the final key, because it is the only field guaranteed unique
+    // across the whole view: `pane` is unique per node and `host` per peer.
+    const byHost = left.host.localeCompare(right.host);
+    return byHost !== 0 ? byHost : left.pane.localeCompare(right.pane);
   });
 }
