@@ -55,10 +55,10 @@ still exits 1. `murmur collect --quiet` says nothing at all.
 **`peer list` and `peer discover` are one command.** They answered two halves of
 one question, and `discover`'s output was a bare `[x]` / `[ ]` per host with no
 header, which never said what was being checked (a warm ssh control socket -- a
-speed hint, not a requirement). `peer list` now shows every peer and every other
-ssh host that could become one, with columns: whether it is a peer, what it
-calls itself, when it was last seen, and whether its ssh connection is warm.
-`--peers-only` hides the unadded hosts.
+speed hint, not a requirement). `peer list` now shows each peer, what it calls
+itself, when it was last seen, and whether its ssh connection is warm.
+`peer list --all` adds the ssh hosts that are not peers yet, which is the
+question `discover` existed to answer.
 
 **Switching back to an agent's pane no longer wipes its state.** The tmux focus
 hooks call `murmur clear`, which cleared whatever state it found -- including

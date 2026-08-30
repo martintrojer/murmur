@@ -120,7 +120,8 @@ Then, on whichever machine you want to watch from, add the peers and bind the
 picker to a key:
 
 ```bash
-murmur peer list         # peers, plus ssh hosts that could become one
+murmur peer list         # your peers, and when each was last seen
+murmur peer list --all   # also ssh hosts that could become peers
 murmur peer add devbox   # an ssh target; identity is discovered
 ```
 

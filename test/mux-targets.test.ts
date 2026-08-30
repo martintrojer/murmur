@@ -10,10 +10,20 @@ import { exactPane, exactSession } from "../src/mux.js";
 // and pid-suffixed so concurrent runs cannot collide.
 const SOCKET = `murmur-targets-${process.pid}`;
 
+// `-f /dev/null`, so the rig never reads the developer's ~/.tmux.conf.
+//
+// Isolation is the point -- a personal config can rebind keys, set options and
+// change defaults this file asserts on -- but the cost was the surprise:
+// starting a server that sourced the author's config took 3.5s because of ten
+// `run-shell` status hooks, against 0.02s with an empty config. That is a 175x
+// difference, and it made the first call flaky against any timeout under
+// parallel load. Measured both ways.
+const TMUX = ["-L", SOCKET, "-f", "/dev/null"];
+
 function rig(...args: string[]): string {
-  return execFileSync("tmux", ["-L", SOCKET, ...args], {
+  return execFileSync("tmux", [...TMUX, ...args], {
     encoding: "utf8",
-    timeout: 5000,
+    timeout: 10_000,
     stdio: ["ignore", "pipe", "pipe"],
   }).trim();
 }

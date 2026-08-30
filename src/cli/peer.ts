@@ -183,27 +183,29 @@ export function registerPeer(program: Command): void {
 
   peer
     .command("list")
-    .description("List peers, and SSH hosts that could become peers")
+    .description("List peers; --all adds SSH hosts that could become peers")
     .option("--json", "print JSON")
-    .option("--peers-only", "hide SSH hosts that are not peers")
-    .action((options: { json?: boolean; peersOnly?: boolean }) => {
+    .option("-a, --all", "also show SSH hosts that are not peers yet")
+    .action((options: { json?: boolean; all?: boolean }) => {
       const store = openStore();
       try {
         // `list` and `discover` were two halves of one question -- "what hosts
         // can murmur see, and which of them are up?" -- and discover needed a
         // PEER column and a LAST SEEN column to be readable at all, at which
-        // point it WAS list plus the unadded hosts. Merged, with --peers-only
-        // for the narrower view.
+        // point it WAS list plus the unadded hosts. Merged into this one, with
+        // the unadded hosts behind --all.
         //
-        // The union of configured targets and ssh hosts, not ssh hosts alone:
-        // `peer add` accepts any ssh target, so a peer can be an IP, a
-        // user@host, or a Tailscale name that appears in no config file.
-        // Listing ssh hosts alone would silently omit it.
+        // Peers are the default because that is what the command is called and
+        // what it is used for: the everyday question is "are my peers up?", not
+        // "what could I add?", which is a setup-time question asked once.
+        //
+        // --all is the union of configured targets and ssh hosts, not ssh hosts
+        // alone: `peer add` accepts any ssh target, so a peer can be an IP, a
+        // user@host, or a Tailscale name that appears in no config file, and
+        // listing ssh hosts alone would silently omit it.
         const peers = store.peers();
         const configured = new Map(peers.map((entry) => [entry.target, entry]));
-        const discovered = options.peersOnly
-          ? []
-          : sshHosts().filter((host) => !configured.has(host));
+        const discovered = options.all ? sshHosts().filter((host) => !configured.has(host)) : [];
         const now = Date.now();
 
         const rows = [...configured.keys(), ...discovered].map((target) => {
@@ -239,17 +241,19 @@ export function registerPeer(program: Command): void {
           return;
         }
         if (rows.length === 0) {
+          // Point at the flag that answers the obvious next question, but only
+          // when it would actually show something.
           process.stdout.write(
-            options.peersOnly
-              ? "no peers configured\n"
-              : "no peers configured, and no hosts in ~/.ssh/config\n",
+            options.all
+              ? "no peers configured, and no hosts in ~/.ssh/config\n"
+              : "no peers configured. See what could be added with: murmur peer list --all\n",
           );
           return;
         }
 
         // The PEER column only earns its width when the table mixes both kinds.
-        // Under --peers-only every row would read "yes", which is a column that
-        // says nothing.
+        // Without --all every row would read "yes", which is a column that says
+        // nothing.
         const showPeerColumn = rows.some((row) => !row.peer);
         process.stdout.write(
           formatTable([
