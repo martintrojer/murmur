@@ -264,15 +264,56 @@ export function registerNotify(program: Command): void {
     );
 }
 
+/** How long to wait for a piped payload before proceeding on flags alone. */
+export const STDIN_DEADLINE_MS = 250;
+
 /**
- * Whatever is on stdin, or "" when nothing is piped.
+ * Whatever is on stdin, or "" when nothing arrives in time.
  *
- * Checks `isTTY` first: a notifier that passes only flags leaves stdin open on
- * the terminal, and reading it would hang the hook forever.
+ * BOUNDED, and that is a bug fix rather than caution. `isTTY` catches a notifier
+ * run from a terminal, but it says nothing about a non-TTY stdin that never
+ * closes -- an inherited pipe the parent created and never writes to, which is
+ * the ordinary shape of a plugin host spawning a hook without redirecting
+ * stdin. Reading to EOF then waits for an EOF that never comes:
+ *
+ *     sleep 30 | murmur notify --source codex     # hung; exit 124 under timeout
+ *
+ * A hung notify hook is a bad failure: it is a child of the agent process, it
+ * holds a store handle, a harness that waits on its hook stalls, and its output
+ * goes nowhere so nothing says why. The flags are already sufficient for every
+ * documented consumer, so a deadline degrades to exactly the flags-only
+ * behaviour codex relies on today.
+ *
+ * Two details stop the deadline becoming a different hang. The `data` listener
+ * is removed BY REFERENCE, because a live handler keeps the stream referenced;
+ * and the stream is `unref`ed rather than paused, because `pause()` stops the
+ * flow while leaving the handle on the event loop. Verified with
+ * `process._getActiveHandles()`, which still reported a `Socket` after a paused
+ * read -- the work completed, the row was written, and the process still would
+ * not exit. `unref` rather than `destroy`: this is declining to wait, not
+ * tearing down a pipe the parent owns.
  */
 async function readStdin(): Promise<string> {
   if (process.stdin.isTTY) return "";
   const chunks: Buffer[] = [];
-  for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
-  return Buffer.concat(chunks).toString("utf8");
+  return new Promise<string>((resolve) => {
+    const onData = (chunk: Buffer) => chunks.push(chunk);
+    const done = () => {
+      process.stdin.off("data", onData);
+      process.stdin.unref();
+      resolve(Buffer.concat(chunks).toString("utf8"));
+    };
+    // Unreffed so the deadline itself cannot be what holds the process open.
+    const timer = setTimeout(done, STDIN_DEADLINE_MS);
+    timer.unref?.();
+    process.stdin.on("data", onData);
+    process.stdin.once("end", () => {
+      clearTimeout(timer);
+      done();
+    });
+    process.stdin.once("error", () => {
+      clearTimeout(timer);
+      done();
+    });
+  });
 }
