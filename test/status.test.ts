@@ -5,6 +5,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { Channel } from "../src/channel.js";
 import { ssh } from "../src/channel.js";
 import { SCHEMA_VERSION } from "../src/export.js";
+import { asPaneId, asSessionId, asWindowId } from "../src/ids.js";
 import { status, statusWithCollect, tmuxStatus } from "../src/status.js";
 import { type NewEvent, openStore, type Store } from "../src/store.js";
 import type { AgentState, Driver, Event } from "../src/types.js";
@@ -27,9 +28,9 @@ afterEach(() => {
 function newEvent(agentId: string, state: AgentState, driver: Driver | null = "human"): NewEvent {
   return {
     agent_id: agentId,
-    session: "session",
-    window: agentId,
-    pane: `%${agentId}`,
+    session: asSessionId("session"),
+    window: asWindowId(agentId),
+    pane: asPaneId(`%${agentId}`),
     workstream: "murmur",
     role: null,
     cli: "pi",

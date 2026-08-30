@@ -1,5 +1,6 @@
 import { expect, test } from "vitest";
 import { type AgentView, attentionSort, foldAgent, isStale, type LiveCheck } from "../src/fold.js";
+import { asPaneId, asSessionId, asWindowId } from "../src/ids.js";
 import type { AgentState, Event } from "../src/types.js";
 
 const alive: LiveCheck = () => true;
@@ -16,9 +17,9 @@ function ev(state: AgentState, partial: Partial<Event> = {}): Event {
     seq: 1,
     ts: NOW,
     agent_id: "agent",
-    session: "session",
-    window: "window",
-    pane: "pane",
+    session: asSessionId("session"),
+    window: asWindowId("window"),
+    pane: asPaneId("pane"),
     session_name: null,
     window_name: null,
     agent_name: null,
@@ -49,9 +50,9 @@ function v(state: AgentState | null): AgentView {
     role: null,
     cli: null,
     driver: "human",
-    session: "session",
-    window: "window",
-    pane: "pane",
+    session: asSessionId("session"),
+    window: asWindowId("window"),
+    pane: asPaneId("pane"),
     session_name: null,
     window_name: null,
     agent_name: null,

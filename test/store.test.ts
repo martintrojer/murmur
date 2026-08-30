@@ -2,6 +2,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, test } from "vitest";
+import { asPaneId, asSessionId, asWindowId } from "../src/ids.js";
 import { openStore, type Store } from "../src/store.js";
 import type { Event } from "../src/types.js";
 
@@ -27,9 +28,9 @@ function remoteEvent(partial: Partial<Event> = {}): Event {
     seq: 1,
     ts: Date.now(),
     agent_id: "agent",
-    session: "session",
-    window: "window",
-    pane: "pane",
+    session: asSessionId("session"),
+    window: asWindowId("window"),
+    pane: asPaneId("pane"),
     session_name: null,
     window_name: null,
     agent_name: null,

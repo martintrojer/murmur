@@ -14,6 +14,7 @@ import {
   remoteSessionName,
 } from "../src/agents.js";
 import { ensureIdentity } from "../src/identity.js";
+import { asPaneId, asSessionId, asWindowId } from "../src/ids.js";
 import { tmux } from "../src/mux.js";
 import { status } from "../src/status.js";
 import { type NewEvent, openStore, type Store } from "../src/store.js";
@@ -36,9 +37,9 @@ afterEach(() => {
 
 const base: NewEvent = {
   agent_id: "remote-host:%9",
-  session: "$0",
-  window: "@9",
-  pane: "%9",
+  session: asSessionId("$0"),
+  window: asWindowId("@9"),
+  pane: asPaneId("%9"),
   workstream: "api",
   role: null,
   cli: "pi",
@@ -328,7 +329,10 @@ test("a dead remote tmux is no_tmux, and removes that host's agents", () => {
 });
 
 test("a window the peer no longer lists is window_gone, and drops one replica", () => {
-  store.ingest([replica(), replica({ agent_id: "remote-host:%8", seq: 2, ts: 2, pane: "%8" })]);
+  store.ingest([
+    replica(),
+    replica({ agent_id: "remote-host:%8", seq: 2, ts: 2, pane: asPaneId("%8") }),
+  ]);
   store.upsertPeer({ name: "p", target: "p", host_id: "remote-host" });
 
   // Peer answers, but @9 is not among its windows.
@@ -554,7 +558,7 @@ test("a local jump reports a failed select-window instead of claiming success", 
   const result = jumpToAgent(
     store,
     agent,
-    fakeMux({ liveWindows: () => new Set(["@9"]), attach: () => false }),
+    fakeMux({ liveWindows: () => new Set([asWindowId("@9")]), attach: () => false }),
   );
 
   expect(result).toMatchObject({ ok: false, reason: "attach_failed" });
@@ -567,7 +571,7 @@ test("a local jump to a live window succeeds", () => {
   const result = jumpToAgent(
     store,
     agent,
-    fakeMux({ liveWindows: () => new Set(["@9"]), attach: () => true }),
+    fakeMux({ liveWindows: () => new Set([asWindowId("@9")]), attach: () => true }),
   );
 
   expect(result).toEqual({ ok: true });

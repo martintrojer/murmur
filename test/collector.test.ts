@@ -5,6 +5,7 @@ import { afterEach, beforeEach, expect, test } from "vitest";
 import type { Channel } from "../src/channel.js";
 import { collect, describeFailure, MAX_CONCURRENT_PEERS } from "../src/collector.js";
 import { SCHEMA_VERSION } from "../src/export.js";
+import { asPaneId, asSessionId, asWindowId } from "../src/ids.js";
 import { openStore, type Store } from "../src/store.js";
 import type { Event } from "../src/types.js";
 
@@ -27,9 +28,9 @@ function event(seq: number, hostId = "remote-host"): Event {
     seq,
     ts: Date.now() + seq,
     agent_id: "agent",
-    session: "session",
-    window: "window",
-    pane: "pane",
+    session: asSessionId("session"),
+    window: asWindowId("window"),
+    pane: asPaneId("pane"),
     session_name: null,
     window_name: null,
     agent_name: null,

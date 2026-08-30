@@ -1,31 +1,39 @@
 import { execFileSync } from "node:child_process";
+import {
+  asPaneId,
+  asSessionId,
+  asWindowId,
+  type PaneId,
+  type SessionId,
+  type WindowId,
+} from "./ids.js";
 import type { AgentState } from "./types.js";
 
 export type Location = {
-  session: string;
-  window: string;
-  pane: string;
+  session: SessionId;
+  window: WindowId;
+  pane: PaneId;
   session_name: string | null;
   window_name: string | null;
 };
 
 export interface Mux {
   currentWindow(): Location | null;
-  liveWindows(): Set<string> | null;
-  livePanes(): Set<string> | null;
-  setState(window: string, state: AgentState | null): void;
+  liveWindows(): Set<WindowId> | null;
+  livePanes(): Set<PaneId> | null;
+  setState(window: WindowId, state: AgentState | null): void;
   // Reports whether the attach actually happened. runTmux swallows failures to
   // return null, and a jump that silently failed looked exactly like "enter did
   // nothing" -- the symptom the remote probe was added to prevent, reproduced
   // on the local path.
-  attach(session: string, window: string): boolean;
-  windowNames(): Map<string, string>;
-  windowForPane(pane: string): string | null;
-  panesInWindow(window: string): string[];
-  windowNamed(name: string): string | null;
-  selectWindow(window: string): boolean;
+  attach(session: SessionId, window: WindowId): boolean;
+  windowNames(): Map<WindowId, string>;
+  windowForPane(pane: PaneId): WindowId | null;
+  panesInWindow(window: WindowId): PaneId[];
+  windowNamed(name: string): WindowId | null;
+  selectWindow(window: WindowId): boolean;
   newWindow(name: string, command: string): boolean;
-  capture(pane: string, lines?: number): string | null;
+  capture(pane: PaneId, lines?: number): string | null;
   // --- remote-jump session seam -------------------------------------------
   // A remote attach lives in its own local session rather than a window, so it
   // can be full-screen (no local status bar) and prefix-free (no nested ^b).
@@ -86,8 +94,9 @@ export const tmux: Mux = {
     // login, a plain terminal, cron -- would then record itself as living in
     // some unrelated agent's pane and overwrite that agent's state. Falling
     // back to `display-message` here was exactly that bug.
-    const pane = process.env.TMUX_PANE;
-    if (!pane) return null;
+    const raw = process.env.TMUX_PANE;
+    if (!raw) return null;
+    const pane = asPaneId(raw);
 
     // One call for ids and names together. The names are recorded on every
     // event because a reader cannot resolve a remote window id against its own
@@ -102,8 +111,8 @@ export const tmux: Mux = {
     const [session, window, sessionName, windowName] = fields?.split("\t") ?? [];
     if (!session || !window) return null;
     return {
-      session,
-      window,
+      session: asSessionId(session),
+      window: asWindowId(window),
       pane,
       session_name: sessionName || null,
       window_name: windowName || null,
@@ -128,7 +137,7 @@ export const tmux: Mux = {
   liveWindows() {
     const out = runTmux(["list-windows", "-a", "-F", "#{window_id}"]);
     if (out === null) return null;
-    return new Set(out.split("\n").filter(Boolean));
+    return new Set(out.split("\n").filter(Boolean).map(asWindowId));
   },
 
   // Which of this host's PANES still exist.
@@ -144,7 +153,7 @@ export const tmux: Mux = {
   livePanes() {
     const out = runTmux(["list-panes", "-a", "-F", "#{pane_id}"]);
     if (out === null) return null;
-    return new Set(out.split("\n").filter(Boolean));
+    return new Set(out.split("\n").filter(Boolean).map(asPaneId));
   },
 
   setState(window, state) {
@@ -176,10 +185,10 @@ export const tmux: Mux = {
   // history, so they are resolved at render time rather than recorded.
   windowNames() {
     const out = runTmux(["list-windows", "-a", "-F", "#{window_id}\t#{window_name}"]);
-    const names = new Map<string, string>();
+    const names = new Map<WindowId, string>();
     for (const line of out?.split("\n") ?? []) {
       const [id, name] = line.split("\t");
-      if (id && name) names.set(id, name);
+      if (id && name) names.set(asWindowId(id), name);
     }
     return names;
   },
@@ -191,14 +200,14 @@ export const tmux: Mux = {
   // you focus the shell.
   panesInWindow(window) {
     const out = runTmux(["list-panes", "-t", window, "-F", "#{pane_id}"]);
-    return out?.split("\n").filter(Boolean) ?? [];
+    return out?.split("\n").filter(Boolean).map(asPaneId) ?? [];
   },
 
   windowNamed(name) {
     const out = runTmux(["list-windows", "-a", "-F", "#{window_id}\t#{window_name}"]);
     for (const line of out?.split("\n") ?? []) {
       const [id, windowName] = line.split("\t");
-      if (id && windowName === name) return id;
+      if (id && windowName === name) return asWindowId(id);
     }
     return null;
   },
@@ -259,7 +268,8 @@ export const tmux: Mux = {
   // The window a pane belongs to, for a pane murmur has no event for. Clearing
   // a badge is a tmux operation and does not require murmur to own the pane.
   windowForPane(pane) {
-    return runTmux(["display-message", "-t", pane, "-p", "#{window_id}"]) || null;
+    const out = runTmux(["display-message", "-t", pane, "-p", "#{window_id}"]);
+    return out ? asWindowId(out) : null;
   },
 
   capture(pane, lines) {

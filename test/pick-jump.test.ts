@@ -5,6 +5,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { Agent } from "../src/agents.js";
 import { isVisible, runPick } from "../src/cli/pick.js";
 import { ensureIdentity } from "../src/identity.js";
+import { asPaneId, asSessionId, asWindowId } from "../src/ids.js";
 import { type NewEvent, openStore, type Store } from "../src/store.js";
 
 let store: Store;
@@ -25,9 +26,9 @@ afterEach(() => {
 function event(over: Partial<NewEvent>): NewEvent {
   return {
     agent_id: `${hostId}:%1`,
-    session: "$0",
-    window: "@1",
-    pane: "%1",
+    session: asSessionId("$0"),
+    window: asWindowId("@1"),
+    pane: asPaneId("%1"),
     workstream: "murmur",
     role: null,
     cli: "pi",
@@ -81,8 +82,8 @@ test("a crew row revealed by alt-a can actually be jumped to", async () => {
   store.append(
     event({
       agent_id: crew,
-      window: "@9",
-      pane: "%9",
+      window: asWindowId("@9"),
+      pane: asPaneId("%9"),
       driver: "orchestrated",
       state: "working",
       // A local `working` event with no pid folds to `crashed`, which isVisible

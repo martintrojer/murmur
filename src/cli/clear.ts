@@ -1,5 +1,6 @@
 import type { Command } from "commander";
 import { loadIdentity } from "../identity.js";
+import { asPaneId, type PaneId, type SessionId, type WindowId } from "../ids.js";
 import { type Mux, tmux } from "../mux.js";
 import { openStore, type Store } from "../store.js";
 import type { Driver } from "../types.js";
@@ -10,9 +11,9 @@ type OwnedPane = {
   window_name: string | null;
   agent_name: string | null;
   pi_session: string | null;
-  session: string;
-  window: string;
-  pane: string;
+  session: SessionId;
+  window: WindowId;
+  pane: PaneId;
   workstream: string | null;
   role: string | null;
   cli: string | null;
@@ -50,8 +51,8 @@ const CLEARABLE = new Set(["blocked", "done", "crashed"]);
  * focusing the agent's own pane; wrongly clearing one loses the signal.
  */
 function windowHasAgent(
-  window: string,
-  focused: string,
+  window: WindowId,
+  focused: PaneId,
   hostId: string | undefined,
   mux: Mux,
   store: Store | undefined,
@@ -79,10 +80,13 @@ function windowHasAgent(
   }
 }
 
-export function clearPane(pane: string, mux: Mux = tmux): void {
+export function clearPane(raw: string, mux: Mux = tmux): void {
   let store: Store | undefined;
   try {
-    if (!pane) return;
+    if (!raw) return;
+    // argv is the boundary: a pane id arrives as a bare string from the tmux
+    // hook that invoked us.
+    const pane = asPaneId(raw);
 
     // The badge is a tmux window option, not murmur state, so clearing it never
     // needs murmur to know anything. Resolve the window up front: an

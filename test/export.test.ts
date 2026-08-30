@@ -9,6 +9,7 @@ import {
   reapDeadAgents,
   SCHEMA_VERSION,
 } from "../src/export.js";
+import { asPaneId, asSessionId, asWindowId, type PaneId } from "../src/ids.js";
 import { openStore, type Store } from "../src/store.js";
 import type { Event } from "../src/types.js";
 
@@ -28,9 +29,9 @@ afterEach(() => {
 function localEvent(partial: Partial<Omit<Event, "host_id" | "seq" | "ts">> = {}) {
   return {
     agent_id: "agent",
-    session: "session",
-    window: "window",
-    pane: "pane",
+    session: asSessionId("session"),
+    window: asWindowId("window"),
+    pane: asPaneId("pane"),
     session_name: null,
     window_name: null,
     agent_name: null,
@@ -170,11 +171,11 @@ test("an agent whose window is gone and which already said cleared is dropped", 
   // windows indefinitely, visible under --all forever, and the only way to get
   // rid of them was the manual `del` key. A window tmux says is gone needs no
   // human judgement, so it should not need a keystroke.
-  s.append(localEvent({ agent_id: "dead", pane: "%gone", state: "cleared" }));
-  s.append(localEvent({ agent_id: "alive", pane: "%here", state: "cleared" }));
+  s.append(localEvent({ agent_id: "dead", pane: asPaneId("%gone"), state: "cleared" }));
+  s.append(localEvent({ agent_id: "alive", pane: asPaneId("%here"), state: "cleared" }));
   const hostId = s.allEvents()[0]?.host_id ?? "";
 
-  clearDeadWindows(s, hostId, new Set(["@w"]), new Set(["%here"]));
+  clearDeadWindows(s, hostId, new Set([asWindowId("@w")]), new Set([asPaneId("%here")]));
 
   const remaining = new Set(s.allEvents().map((event) => event.agent_id));
   expect(remaining.has("dead")).toBe(false);
@@ -189,11 +190,11 @@ test("an unacknowledged state on a dead window is superseded, never deleted", ()
   // agent that died mid-task would simply disappear. They become a synthetic
   // `cleared` instead, which keeps the history and the reason.
   for (const state of ["blocked", "done", "crashed"]) {
-    s.append(localEvent({ agent_id: `dead-${state}`, pane: `%gone-${state}`, state }));
+    s.append(localEvent({ agent_id: `dead-${state}`, pane: asPaneId(`%gone-${state}`), state }));
   }
   const hostId = s.allEvents()[0]?.host_id ?? "";
 
-  clearDeadWindows(s, hostId, new Set(["@w"]), new Set(["%here"]));
+  clearDeadWindows(s, hostId, new Set([asWindowId("@w")]), new Set([asPaneId("%here")]));
 
   for (const state of ["blocked", "done", "crashed"]) {
     const events = s.allEvents().filter((event) => event.agent_id === `dead-${state}`);
@@ -214,11 +215,11 @@ test("housekeeping removes dead rows but authors nothing", () => {
   //
   // It must not author, though: synthesising a `cleared` is an authorship
   // decision that belongs with crash synthesis in export.
-  s.append(localEvent({ agent_id: "dead", pane: "%gone", state: "cleared" }));
-  s.append(localEvent({ agent_id: "blocked", pane: "%gone2", state: "blocked" }));
+  s.append(localEvent({ agent_id: "dead", pane: asPaneId("%gone"), state: "cleared" }));
+  s.append(localEvent({ agent_id: "blocked", pane: asPaneId("%gone2"), state: "blocked" }));
 
   const before = s.allEvents().length;
-  reapDeadAgents(s, new Set<string>());
+  reapDeadAgents(s, new Set<PaneId>());
   const after = s.allEvents();
 
   expect(after.some((event) => event.agent_id === "dead")).toBe(false);
@@ -239,9 +240,16 @@ test("an agent whose PANE is alive survives, even if its window id is stale", ()
   //
   // Ten live pi agents were deleted from the author's store in one sweep: 13
   // panes carried murmur's badge and only 3 still had events.
-  s.append(localEvent({ agent_id: "moved", pane: "%7", window: "@long-gone", state: "cleared" }));
+  s.append(
+    localEvent({
+      agent_id: "moved",
+      pane: asPaneId("%7"),
+      window: asWindowId("@long-gone"),
+      state: "cleared",
+    }),
+  );
 
-  reapDeadAgents(s, new Set(["%7"]));
+  reapDeadAgents(s, new Set([asPaneId("%7")]));
 
   expect(s.allEvents().some((event) => event.agent_id === "moved")).toBe(true);
 });
@@ -250,7 +258,7 @@ test("a sweep is abandoned when tmux cannot answer", () => {
   // null means "could not ask", which must never be read as "nothing exists".
   // Treating it as an empty set would delete every cleared agent on the host
   // the moment tmux was briefly unreachable.
-  s.append(localEvent({ agent_id: "safe", pane: "%1", state: "cleared" }));
+  s.append(localEvent({ agent_id: "safe", pane: asPaneId("%1"), state: "cleared" }));
 
   reapDeadAgents(s, null);
 

@@ -35,6 +35,14 @@ export {
 } from "./fold.js";
 export { glance } from "./glance.js";
 export { ensureIdentity, loadIdentity, type NodeIdentity } from "./identity.js";
+export {
+  asPaneId,
+  asSessionId,
+  asWindowId,
+  type PaneId,
+  type SessionId,
+  type WindowId,
+} from "./ids.js";
 export { type Mux, pidAlive, tmux } from "./mux.js";
 export { configDir, dbPath, stateDir } from "./paths.js";
 export { type Status, status } from "./status.js";

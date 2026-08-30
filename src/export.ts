@@ -1,5 +1,6 @@
 import { foldAgent, type LiveCheck } from "./fold.js";
 import { ensureIdentity, loadIdentity } from "./identity.js";
+import { asPaneId, asSessionId, asWindowId, type PaneId, type WindowId } from "./ids.js";
 import { tmux } from "./mux.js";
 import type { Store } from "./store.js";
 import type { Driver, Event } from "./types.js";
@@ -49,9 +50,9 @@ export function eventFromWire(wire: Record<string, unknown>): Event {
     seq: wire.seq as number,
     ts: wire.ts as number,
     agent_id: wire.agent_id as string,
-    session: wire.session as string,
-    window: wire.window as string,
-    pane: wire.pane as string,
+    session: asSessionId(wire.session as string),
+    window: asWindowId(wire.window as string),
+    pane: asPaneId(wire.pane as string),
     session_name: (wire.session_name as string | null | undefined) ?? null,
     window_name: (wire.window_name as string | null | undefined) ?? null,
     agent_name: (wire.agent_name as string | null | undefined) ?? null,
@@ -120,7 +121,7 @@ function synthesizeCrashes(store: Store, hostId: string, isAlive: LiveCheck): vo
  * Resolves identity and tmux itself because both are facts only the owning host
  * can know, and this must be a no-op on a node that has neither.
  */
-export function reapDeadAgents(store: Store, panes: Set<string> | null = tmux.livePanes()): void {
+export function reapDeadAgents(store: Store, panes: Set<PaneId> | null = tmux.livePanes()): void {
   const identity = loadIdentity();
   if (!identity || panes === null) return;
 
@@ -154,8 +155,8 @@ export function reapDeadAgents(store: Store, panes: Set<string> | null = tmux.li
 export function clearDeadWindows(
   store: Store,
   hostId: string,
-  live: Set<string> | null,
-  panes: Set<string> | null = tmux.livePanes(),
+  live: Set<WindowId> | null,
+  panes: Set<PaneId> | null = tmux.livePanes(),
 ): void {
   // null means tmux could not answer. An empty set means it did and there are
   // no windows. Conflating them would clear every agent on the host whenever
@@ -207,7 +208,7 @@ export function exportJsonl(
   store: Store,
   since: number,
   isAlive: LiveCheck,
-  live?: Set<string> | null,
+  live?: Set<WindowId> | null,
 ): string {
   const identity = ensureIdentity();
   synthesizeCrashes(store, identity.host_id, isAlive);

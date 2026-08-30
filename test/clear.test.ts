@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { beforeEach, expect, test } from "vitest";
 import { clearPane } from "../src/cli/clear.js";
 import { ensureIdentity } from "../src/identity.js";
+import { asPaneId, asSessionId, asWindowId } from "../src/ids.js";
 import type { Mux } from "../src/mux.js";
 import { openStore } from "../src/store.js";
 import { fakeMux } from "./helpers/fake-mux.js";
@@ -17,9 +18,9 @@ test("clearing a sibling pane does not clear the agent in the same window", () =
   const store = openStore();
   store.append({
     agent_id: `${identity.host_id}:%1`,
-    session: "$1",
-    window: "@1",
-    pane: "%1",
+    session: asSessionId("$1"),
+    window: asWindowId("@1"),
+    pane: asPaneId("%1"),
     workstream: "murmur",
     role: null,
     cli: "pi",
@@ -49,8 +50,8 @@ test("clearing a sibling pane does not clear the agent in the same window", () =
   const afterAgentPane = openStore();
   expect(afterAgentPane.allEvents().at(-1)).toMatchObject({
     agent_id: `${identity.host_id}:%1`,
-    pane: "%1",
-    window: "@1",
+    pane: asPaneId("%1"),
+    window: asWindowId("@1"),
     state: "cleared",
   });
   afterAgentPane.close();
@@ -68,16 +69,16 @@ test("a pane murmur does not own still gets its badge cleared", () => {
     setState: (window, state) => {
       cleared.push(state === null ? window : null);
     },
-    windowForPane: () => "@42",
+    windowForPane: () => asWindowId("@42"),
   });
   clearPane("%unknown", mux);
   expect(cleared).toEqual(["@42"]);
 });
 
 const NEW_EVENT = {
-  session: "$1",
-  window: "@1",
-  pane: "%1",
+  session: asSessionId("$1"),
+  window: asWindowId("@1"),
+  pane: asPaneId("%1"),
   session_name: null,
   window_name: null,
   agent_name: null,
@@ -105,14 +106,14 @@ test("a sibling shell pane does not clear the agent's badge", () => {
   // panes, so the branch was unreachable.
   const identity = ensureIdentity();
   const store = openStore();
-  store.append({ ...NEW_EVENT, agent_id: `${identity.host_id}:%agent`, pane: "%agent" });
+  store.append({ ...NEW_EVENT, agent_id: `${identity.host_id}:%agent`, pane: asPaneId("%agent") });
   store.close();
 
   const cleared: string[] = [];
   const mux: Mux = {
     ...NOOP_MUX,
-    windowForPane: () => "@1",
-    panesInWindow: () => ["%agent", "%shell"],
+    windowForPane: () => asWindowId("@1"),
+    panesInWindow: () => [asPaneId("%agent"), asPaneId("%shell")],
     setState: (window, state) => {
       if (state === null) cleared.push(window);
     },
@@ -132,8 +133,8 @@ test("an already-cleared row still clears a stale badge", () => {
   store.append({
     ...NEW_EVENT,
     agent_id: `${identity.host_id}:%p`,
-    pane: "%p",
-    window: "@5",
+    pane: asPaneId("%p"),
+    window: asWindowId("@5"),
     state: "cleared",
   });
   store.close();
@@ -141,8 +142,8 @@ test("an already-cleared row still clears a stale badge", () => {
   const cleared: string[] = [];
   const mux: Mux = {
     ...NOOP_MUX,
-    windowForPane: () => "@5",
-    panesInWindow: () => ["%p"],
+    windowForPane: () => asWindowId("@5"),
+    panesInWindow: () => [asPaneId("%p")],
     setState: (window, state) => {
       if (state === null) cleared.push(window);
     },

@@ -1,3 +1,4 @@
+import type { PaneId, SessionId, WindowId } from "./ids.js";
 import { type AgentState, DEFAULT_DRIVER, type Driver, type Event } from "./types.js";
 
 export type LiveCheck = (pid: number) => boolean;
@@ -11,9 +12,9 @@ export type AgentView = {
   role: string | null;
   cli: string | null;
   driver: Driver;
-  session: string;
-  window: string;
-  pane: string;
+  session: SessionId;
+  window: WindowId;
+  pane: PaneId;
   // Names as recorded by the authoring node, so a remote agent is labelled by
   // its own host's tmux rather than by whatever this host has at that id.
   session_name: string | null;

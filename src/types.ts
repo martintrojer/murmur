@@ -1,3 +1,5 @@
+import type { PaneId, SessionId, WindowId } from "./ids.js";
+
 export type AgentState = "working" | "blocked" | "done" | "crashed" | "cleared";
 
 export type Driver = "human" | "orchestrated";
@@ -9,9 +11,9 @@ export type Event = {
   seq: number;
   ts: number;
   agent_id: string;
-  session: string;
-  window: string;
-  pane: string;
+  session: SessionId;
+  window: WindowId;
+  pane: PaneId;
   // Human-readable names, recorded by the node that owns the pane. tmux ids are
   // stable and are what jumps; names are what a human recognises. They are
   // *recorded* rather than resolved at render time because a reader cannot look
