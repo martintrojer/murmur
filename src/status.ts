@@ -1,6 +1,7 @@
 import { type Channel, ssh } from "./channel.js";
 import { collect } from "./collector.js";
 import type { NodeIdentity } from "./identity.js";
+import { type Mux, tmux } from "./mux.js";
 import type { Store } from "./store.js";
 import {
   freshness,
@@ -112,9 +113,10 @@ export async function statusWithCollect(
   identity: NodeIdentity,
   now = Date.now(),
   channel: Channel = ssh,
+  mux: Mux = tmux,
 ): Promise<Status> {
   try {
-    await collect(store, channel, now);
+    await collect(store, channel, now, undefined, mux);
   } catch {
     // Total by construction: a read of whatever the cache already holds is
     // always better than no output, and this path has no one to tell.

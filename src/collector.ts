@@ -1,5 +1,5 @@
 import type { Channel } from "./channel.js";
-import { tmux } from "./mux.js";
+import { type Mux, tmux } from "./mux.js";
 import { parseSnapshot, SnapshotInvalidError } from "./snapshot.js";
 import type { Store } from "./store.js";
 import { STALENESS_MS } from "./view.js";
@@ -179,6 +179,7 @@ export async function collect(
   channel: Channel,
   now = Date.now(),
   deadline?: Promise<void>,
+  mux: Mux = tmux,
 ): Promise<CollectResult[]> {
   const results: CollectResult[] = [];
   let timer: NodeJS.Timeout | undefined;
@@ -267,7 +268,7 @@ export async function collect(
   // reconcile never. Idempotent, so `buildLocalSnapshot` calling it too is a
   // cheap repeat rather than a second policy.
   try {
-    store.reconcileLocal({ panes: tmux.livePanes(), now });
+    store.reconcileLocal({ panes: mux.livePanes(), now });
   } catch {
     // Housekeeping must not fail a command, and it must not report either.
   }

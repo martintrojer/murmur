@@ -73,6 +73,34 @@ function runTmux(args: string[]): string | null {
  * what it takes and what it produces are different things and the old name
  * `exactPane` read as though it took a pane.
  */
+/**
+ * The window name worth RECORDING, given tmux's own answer and whether tmux is
+ * renaming that window itself.
+ *
+ * Null while `automatic-rename` is on -- which is tmux's DEFAULT -- because the
+ * name is then just the foreground process. The picker's `agent` column showed
+ * `Python`, `node` and `zsh` for real agents: pi's own interpreter, labelled
+ * "agent".
+ *
+ * A name nobody chose is not a name, and recording it as one is worse than
+ * recording nothing: `agentLabel` prefers the window over the session, so a
+ * process name shadowed `hacking/murmur` -- the string the reader actually
+ * searches on. Dropped at the point of RECORDING rather than at render, so
+ * every surface, and every peer reading this node's snapshot, agrees on what
+ * counts as a name.
+ *
+ * Split out of `currentWindow` to be testable: that method shells out to a real
+ * tmux server, so the decision had no reachable seam and the format string was
+ * the only thing a test could have asserted on.
+ */
+export function chosenWindowName(
+  name: string | undefined,
+  autoRename: string | undefined,
+): string | null {
+  if (autoRename === "1") return null;
+  return name || null;
+}
+
 export function exactSession(session: string): string {
   return `=${session}`;
 }
@@ -111,16 +139,16 @@ export const tmux: Mux = {
       "-t",
       pane,
       "-p",
-      "#{session_id}\t#{window_id}\t#{session_name}\t#{window_name}",
+      "#{session_id}\t#{window_id}\t#{session_name}\t#{window_name}\t#{?automatic-rename,1,0}",
     ]);
-    const [session, window, sessionName, windowName] = fields?.split("\t") ?? [];
+    const [session, window, sessionName, windowName, autoRename] = fields?.split("\t") ?? [];
     if (!session || !window) return null;
     return {
       session: asSessionId(session),
       window: asWindowId(window),
       pane,
       session_name: sessionName || null,
-      window_name: windowName || null,
+      window_name: chosenWindowName(windowName, autoRename),
     };
   },
 

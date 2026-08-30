@@ -278,3 +278,32 @@ test("no filter key can collide with tmux's default prefix", () => {
     expect(key).not.toBe("ctrl-b");
   }
 });
+
+test("a row never spends two columns saying one thing", () => {
+  // Both the name and the stream column fall back to the tmux session name, so
+  // an unnamed pi -- no mu agent name, no `/name`, and a window tmux is
+  // auto-renaming -- printed `hacking/murmur   hacking/murmur` and spent
+  // thirteen columns saying nothing new.
+  const unnamed = {
+    ...base,
+    agent_name: null,
+    pi_session: null,
+    window_name: null,
+    workstream: null,
+    session_name: "hacking/murmur",
+  };
+  const row = label(pickerRow(unnamed, false, false));
+  const first = row.indexOf("hacking/murmur");
+  expect(first).toBeGreaterThan(-1);
+  expect(row.indexOf("hacking/murmur", first + 1)).toBe(-1);
+});
+
+test("a stream that adds a fact is still shown", () => {
+  // The dedup must not swallow a real workstream. mu's stream and the agent
+  // name are different facts and routinely both present.
+  const row = label(
+    pickerRow({ ...base, agent_name: "worker-1", workstream: "murmur" }, false, false),
+  );
+  expect(row).toContain("worker-1");
+  expect(row).toContain("murmur");
+});

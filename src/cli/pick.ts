@@ -7,7 +7,9 @@ import {
   jumpToAgent,
   terminalText,
 } from "../agents.js";
+import { ssh } from "../channel.js";
 import { glance } from "../glance.js";
+import { type Mux, tmux } from "../mux.js";
 import { status, statusWithCollect } from "../status.js";
 import { openStore, type Store } from "../store.js";
 import {
@@ -34,6 +36,17 @@ type PickOptions = { all?: boolean };
 type PickDeps = {
   fzf?: (args: string[], input: string, env: NodeJS.ProcessEnv) => string;
   jump?: (store: Store, agent: PaneView) => JumpResult;
+  /**
+   * The mux the pre-read collect reconciles against.
+   *
+   * Injectable because collect deletes any agent whose pane the mux does not
+   * list, and that is the right behaviour in production and fatal in a test: a
+   * test that claims `%9` in a temp database was reconciled against the REAL
+   * tmux server of whoever ran it. `npm run check` then passed on a machine
+   * with no tmux -- `livePanes()` returns null, which is a no-op -- and failed
+   * inside tmux, where the fixture pane genuinely does not exist.
+   */
+  mux?: Mux;
 };
 
 const spawnFzf: NonNullable<PickDeps["fzf"]> = (args, input, env) =>
@@ -303,7 +316,12 @@ export function pickerRow(
   // pi whose window is named `Python` was unfindable by typing `murmur`. A
   // session without an agent still has no place in this list.
   const group = agent.workstream ?? agent.session_name;
-  const workstream = group ? `${DIM}${terminalText(group)}${RESET}` : "";
+  // Never the same string twice in one row. Both columns fall back to the tmux
+  // session name, so an unnamed pi -- no mu agent name, no `/name`, a window
+  // name tmux is auto-renaming -- printed `hacking/murmur  hacking/murmur` and
+  // spent thirteen columns saying nothing. A blank cell is the honest answer:
+  // the name column already carries the only fact there is.
+  const workstream = group && group !== name ? `${DIM}${terminalText(group)}${RESET}` : "";
   // Two ages, and the one worth showing is how old the AGENT'S news is, not
   // how recently we reached its host. A peer we polled a second ago can be
   // serving a snapshot from three hours back — which read as fresh until this
@@ -434,7 +452,7 @@ export async function runPick(
   const jumpTo = deps.jump ?? jumpToAgent;
   const identity = requireIdentity();
   if (!identity) return;
-  const view = await statusWithCollect(store, identity);
+  const view = await statusWithCollect(store, identity, Date.now(), ssh, deps.mux ?? tmux);
   const agents = view.panes.filter((agent) => options.all || isVisible(agent));
   const hidden = view.panes.length - agents.length;
 
