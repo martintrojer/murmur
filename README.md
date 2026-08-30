@@ -131,6 +131,21 @@ The same four fields may arrive as a JSON object on stdin instead, which is
 opencode's plugin form; flags win over the payload, so the line above behaves
 identically either way.
 
+**A hook is not an interactive shell, so check that `murmur` resolves in it.**
+A notify hook inherits the PATH of whatever launched the harness, and `sh -l`
+does not fix that -- `/bin/sh` is not your login shell and does not read your
+zsh profile. A harness started from a terminal inherits a PATH with your npm
+prefix on it and works; one started by a launcher, a daemon or a GUI may not,
+and the failure is silent because a notify hook's output goes nowhere. Verify
+from inside the harness, not from your terminal:
+
+```bash
+murmur notify --source probe --message reachable && murmur status
+```
+
+If `murmur` is not reachable there, give the hook the absolute path
+(`command -v murmur` from your shell) rather than relying on PATH.
+
 `notify` is the one path where a process that does not own a pane may write
 about it, and it is deliberately narrow: it can only ever say `blocked`, and the
 row it writes carries no pid, so it makes no claim about any process being
