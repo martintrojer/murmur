@@ -5,6 +5,7 @@ import { afterEach, beforeEach, expect, test } from "vitest";
 import { asPaneId, asSessionId, asWindowId } from "../src/ids.js";
 import { openStore, type Store } from "../src/store.js";
 import type { Event } from "../src/types.js";
+import { builtArtifact } from "./helpers/built.js";
 
 const stores: Store[] = [];
 
@@ -141,7 +142,6 @@ test("concurrent writers do not lose events to lock contention", async () => {
   // OS processes are the only way to contend for the lock the way agents do.
   const { execFile } = await import("node:child_process");
   const { promisify } = await import("node:util");
-  const { existsSync } = await import("node:fs");
   const run = promisify(execFile);
   const stateDir = process.env.MURMUR_STATE_DIR ?? "";
 
@@ -150,14 +150,13 @@ test("concurrent writers do not lose events to lock contention", async () => {
   // nothing in one process can overlap. That means they import the built
   // artifact rather than src (whose `.js` specifiers need the build anyway).
   //
-  // Stated as a skip rather than left to fail confusingly: this test failed
-  // once mid-mutation-run because dist was being rebuilt underneath it, which
-  // looked like flakiness in the code under test.
-  const entry = join(process.cwd(), "dist", "index.js");
-  if (!existsSync(entry)) {
-    console.warn("skipping concurrency test: dist/index.js missing, run npm run build");
-    return;
-  }
+  // This used to console.warn-and-return, which covered the MISSING case and
+  // not the STALE one -- and stale is the dangerous half. A skip is at least
+  // visible in the output; a stale artifact passes green while testing code
+  // nobody wrote. `npm test` now builds first, so this only fires under a
+  // direct vitest run, and it fails with an instruction rather than a warning
+  // nobody reads.
+  const entry = builtArtifact("index.js");
 
   // Seed the identity once, so the workers race on appends rather than on
   // creating identity.json.

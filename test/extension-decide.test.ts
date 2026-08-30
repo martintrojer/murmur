@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test, vi } from "vitest";
 import { driverFromEnv, endState } from "../src/extension/decide.js";
+import { builtArtifact, runBuiltCli } from "./helpers/built.js";
 
 /**
  * Wait until `condition` holds, or fail loudly.
@@ -38,24 +39,22 @@ test("driver is orchestrated only under a supervisor", () => {
   expect(driverFromEnv({})).toBe("human");
 });
 
+// Shells out to the BUILT cli on purpose: `link pi` writes a shim that
+// re-exports the install, so the artifact is the subject, not an
+// implementation detail. `builtArtifact` fails with "run npm run build" if dist
+// is missing or older than src, rather than letting a stale build produce a
+// confusing assertion diff.
 function linkPi(home: string, ...args: string[]): string {
-  return execFileSync(
-    process.execPath,
-    [join(process.cwd(), "dist", "cli.js"), "link", "pi", ...args],
-    { env: { ...process.env, MURMUR_PI_HOME: home }, encoding: "utf8" },
-  );
+  return runBuiltCli(["link", "pi", ...args], { ...process.env, MURMUR_PI_HOME: home });
 }
 
 /** As above, but with a state dir of its own, so identity presence is controlled. */
 function linkPiWithState(home: string, stateDir: string, ...args: string[]): string {
-  return execFileSync(
-    process.execPath,
-    [join(process.cwd(), "dist", "cli.js"), "link", "pi", ...args],
-    {
-      env: { ...process.env, MURMUR_PI_HOME: home, MURMUR_STATE_DIR: stateDir },
-      encoding: "utf8",
-    },
-  );
+  return runBuiltCli(["link", "pi", ...args], {
+    ...process.env,
+    MURMUR_PI_HOME: home,
+    MURMUR_STATE_DIR: stateDir,
+  });
 }
 
 function installedExtension(home: string): string {
@@ -390,7 +389,7 @@ test("link warns when the node has no identity, since the extension would record
   expect(linkPiWithState(home, stateDir)).toContain("murmur init");
 
   // And is silent once the node has one.
-  execFileSync(process.execPath, [join(process.cwd(), "dist", "cli.js"), "init"], {
+  execFileSync(process.execPath, [builtArtifact("cli.js"), "init"], {
     env: { ...process.env, MURMUR_STATE_DIR: stateDir },
     stdio: "ignore",
   });

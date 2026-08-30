@@ -1,4 +1,3 @@
-import { execFileSync } from "node:child_process";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,6 +10,7 @@ import { asPaneId, asSessionId, asWindowId } from "../src/ids.js";
 import { VERSION } from "../src/index.js";
 import { openStore } from "../src/store.js";
 import type { Peer } from "../src/types.js";
+import { runBuiltCli } from "./helpers/built.js";
 
 beforeEach(() => {
   process.env.MURMUR_STATE_DIR = mkdtempSync(join(tmpdir(), "murmur-peerver-"));
@@ -179,12 +179,17 @@ test("only a schema mismatch is flagged; a murmur version difference is shown pl
   expect(cell({ murmur_version: "0.1.4", schema_version: OURS }).text).not.toContain("schema");
 });
 
-/** Run the real CLI against a scratch state dir, so the table is the shipped one. */
+/**
+ * Run the real CLI against a scratch state dir, so the table is the shipped one.
+ *
+ * `runBuiltCli` rather than a bare execFileSync: this test executes dist/, so a
+ * stale build silently tests the PREVIOUS version of the table. That is exactly
+ * how this test passed in one checkout and failed in another on identical
+ * source, reporting "expected NAME TARGET HOSTNAME... to contain VERSION" --
+ * which reads as a formatting bug and says nothing about the build.
+ */
 function cli(stateDir: string, ...args: string[]): string {
-  return execFileSync(process.execPath, [join(process.cwd(), "dist", "cli.js"), ...args], {
-    env: { ...process.env, MURMUR_STATE_DIR: stateDir },
-    encoding: "utf8",
-  });
+  return runBuiltCli(args, { ...process.env, MURMUR_STATE_DIR: stateDir });
 }
 
 test("peer list stays exactly as narrow as today when nothing has been collected", () => {

@@ -20,7 +20,8 @@
   "files": ["dist", "README.md", "ARCHITECTURE.md", "CHANGELOG.md"],
   "scripts": {
     "build": "tsup",
-    "test": "vitest run",
+    "test": "npm run build && vitest run",
+    "test:only": "vitest run",
     "lint": "biome check --error-on-warnings src test",
     "lint:fix": "biome check --write src test",
     "format": "biome format --write src test",
