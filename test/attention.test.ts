@@ -200,8 +200,9 @@ test("a payload naming agent fields lands nowhere in the agents table", () => {
 });
 
 test("a running agent with blocked attention is a valid state, not a contradiction", () => {
-  // The two axes are independent, so this pane is BOTH. Under the folded enum it
-  // could only be one, which is why a `blocked` write had to destroy `running`.
+  // The two axes are independent, so this pane is BOTH at once: `activity` lives
+  // on the agent row and `blocked` is its own attention row, and a notifier
+  // writing one cannot disturb the other.
   liveRunningAgent();
   notify({ source: "codex", message: "needs input" });
 

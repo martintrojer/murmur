@@ -66,9 +66,7 @@ test("a codex notification records blocked for the pane the hook ran in", () => 
 });
 
 test("a notifier cannot say anything except blocked, and cannot name a process", () => {
-  // The old exception was narrow by CARE: notify wrote a row with `pid: null`
-  // and `state: "blocked"`, and the safety came from those two values being
-  // chosen correctly at one call site. Now it is narrow by CONSTRUCTION --
+  // Narrow by CONSTRUCTION rather than by care at the call site:
   // `AttentionRequest` has no state field, no pid field and no owner metadata
   // field, so a payload naming a state and a pid cannot reach either.
   for (const attempt of [
@@ -80,7 +78,17 @@ test("a notifier cannot say anything except blocked, and cannot name a process",
     const pane = store.localPanes()[0];
     expect(pane?.attention.map((entry) => entry.kind)).toEqual(["blocked"]);
     expect(pane?.agent).toBeNull();
-    expect(JSON.stringify(pane)).not.toContain("4242");
+    // A closed key set, not a substring search for the pid: `requested_at` is a
+    // wall clock, so any digit sequence appears in it eventually and a
+    // `not.toContain` on the serialised row fails at random times of day.
+    // Asserting the shape says the stronger thing anyway -- there is no field
+    // for a pid, a state or an activity, so no value can land in one.
+    expect(Object.keys(pane?.attention[0] ?? {}).sort()).toEqual([
+      "kind",
+      "message",
+      "requested_at",
+      "source",
+    ]);
   }
 });
 

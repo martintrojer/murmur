@@ -21,9 +21,8 @@ export type RenderState = "crashed" | "blocked" | "done" | "running" | "idle";
  * THE single ordering table: which state matters most, for sorting and for
  * choosing one word to show.
  *
- * `status.ts` and `pick.ts` import this rather than declaring their own copies.
- * Three near-identical tables previously disagreed about whether `crashed` or
- * `blocked` led, so two surfaces sorted the same list differently.
+ * `status.ts` and `pick.ts` import this rather than declaring their own copies,
+ * so no two surfaces can sort one list differently.
  */
 export const RENDER_PRIORITY: readonly RenderState[] = [
   "crashed",
@@ -34,13 +33,28 @@ export const RENDER_PRIORITY: readonly RenderState[] = [
 ];
 
 /**
+ * The attention kinds only a human can answer, and the second table both
+ * surfaces must agree on.
+ *
+ * `blocked` means waiting for an answer an orchestrator cannot give -- mu places
+ * work, it cannot choose between two approaches. `crashed` means the process
+ * died, which a supervisor may or may not retry. Everything else about an
+ * orchestrated agent is its supervisor's business.
+ *
+ * `pick.ts` uses it to decide which crew rows are visible by default and
+ * `status.ts` to decide which crew states reach the status bar. They were two
+ * literals in two files answering one question, which is how a row that needed a
+ * human became one a human could not see.
+ */
+export const NEEDS_HUMAN: readonly AttentionKind[] = ["blocked", "crashed"];
+
+/**
  * One pane, as every surface reads it: address, the three independent facts,
  * owner metadata, and ages.
  *
  * Local and remote panes are the same type, built by the same mapping, because
  * `Store.localPanes()` and a peer's cached snapshot both return
- * `SnapshotPane[]`. The old model had one fold for local and the same fold with
- * `() => true` for remote, and three of the audited bugs lived in that seam.
+ * `SnapshotPane[]`. One mapping means local and remote cannot drift apart.
  */
 export type PaneView = {
   // address
@@ -176,8 +190,7 @@ function paneView(pane: SnapshotPane, source: ViewSource): PaneView {
  * Every pane this node knows about: its own, plus one cached snapshot per peer.
  *
  * `identity` is non-null because every caller is a command that already requires
- * `murmur init`. The optional chaining that used to hang off it classed local
- * panes as remote whenever identity happened to be absent.
+ * `murmur init`, so no pane can be misclassified as remote by an absent one.
  *
  * No liveness is probed here, for local or remote. A remote pane's `activity` is
  * whatever its own node last said; a stale node keeps its last-known fields
@@ -231,8 +244,8 @@ const ORDER = new Map<RenderState, number>(RENDER_PRIORITY.map((state, index) =>
  * keypress that was aimed at it.
  *
  * Presentation only. No caller may read meaning into the position of a row --
- * `panes` order in a snapshot carries none either (§6 rule 4), so a reader sorts
- * for itself rather than trusting what it was served.
+ * pane order in a snapshot carries none either, so a reader sorts for itself
+ * rather than trusting what it was served.
  */
 export function viewSort(views: PaneView[]): PaneView[] {
   return [...views].sort((left, right) => {

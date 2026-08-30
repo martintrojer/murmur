@@ -89,15 +89,10 @@ test("focus acknowledges every kind of attention on the pane", () => {
 });
 
 test("focus cannot touch the agent in the pane, whatever it is doing", () => {
-  // The whole `CLEARABLE` whitelist, the resolver call and the pid probe existed
-  // to stop a focus hook overwriting a running agent -- because focus used to
-  // write a `cleared` EVENT, which superseded whatever the agent had said. 50 of
-  // 84 turns on one agent were wiped that way, several within seconds of
-  // starting.
-  //
-  // None of that machinery is needed now, and this is why: focus can only run
-  // `DELETE FROM attention WHERE pane = ?`. There is no state it must refuse to
-  // clear, because there is nothing it can clear except attention. Asserted for
+  // Focus can only run `DELETE FROM attention WHERE pane = ?`. There is no state
+  // it must refuse to clear, because there is nothing it can clear except
+  // attention -- which is what keeps a focus hook from wiping the report of a
+  // running agent, as it once did for 50 of 84 turns on one agent. Asserted for
   // a RUNNING agent with a live pid, which is the case that used to be destroyed.
   const before = read((store) => {
     const claim = store.claimAgent({
@@ -139,9 +134,8 @@ test("a sibling pane that still wants attention keeps the badge lit", () => {
   // The badge is a WINDOW option while "the user looked" is only true of one
   // pane, so focusing a shell next to a finished agent must not wipe its badge.
   //
-  // The question is now asked of ATTENTION rather than of "any non-cleared
-  // state", which is the fix: a busy agent next door is not a reason to keep an
-  // attention badge lit, and it used to be.
+  // The question is asked of ATTENTION only: a busy agent next door is not a
+  // reason to keep an attention badge lit.
   seed((store) => {
     store.requestAttention({
       kind: "done",

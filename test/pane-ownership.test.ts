@@ -17,14 +17,10 @@ import { builtArtifact } from "./helpers/built.js";
  * inherited, so it can tell that it did. The inheritance is the mechanism, and
  * a mock replaces exactly the thing under test.
  *
- * Observed damage, on the author's own pane %244: six distinct pids had written
- * `working`, one alive. The parent's row folded off a dead child's pid and the
- * agent showed as idle while it was working, plus five doubled `cleared` pairs
- * 0-1s apart -- two processes each correctly firing once.
+ * Observed damage, on the author's own pane %244: six distinct pids reporting
+ * for one pane, one alive, and the agent reading as idle while it was working.
  *
- * What changed: none of this is defended by an environment marker any more.
- * `MURMUR_PANE_OWNER`, `ownsPane`, `ownerClaim` and `mayReport` are all gone,
- * replaced by `agents.pane UNIQUE` plus one liveness probe inside
+ * The defence is `agents.pane UNIQUE` plus one liveness probe inside
  * `claimAgent`'s transaction. A second live process in one pane is REFUSED by
  * the database, which needs no environment transport and so cannot be defeated
  * by a process launched in an unusual way.
@@ -216,12 +212,12 @@ test("a live owner is not displaced, and the nested process writes nothing", asy
       runInPane(pane);
     }
 
-    // The owner's row survives byte-for-byte. Before the fix this pane had six
-    // reporting pids and the agent read as idle while it was working.
+    // The owner's row survives byte-for-byte. On the real pane this was six
+    // reporting pids and an agent that read as idle while it was working.
     expect(agentFor(pane)).toEqual(owned);
 
-    // And a nested agent_end -- which produced five doubled `cleared` pairs on
-    // the real pane, erasing the agent from every HUD -- writes nothing either.
+    // And a nested agent_end -- which erased the agent from every surface on the
+    // real pane -- writes nothing either.
     runInPane(pane, { state: "end" });
     expect(agentFor(pane)).toEqual(owned);
     expect(attentionFor(pane)).toEqual([]);
@@ -231,14 +227,9 @@ test("a live owner is not displaced, and the nested process writes nothing", asy
 });
 
 test("an owner's real child process is refused with nothing passed to it", async () => {
-  // The case the environment marker existed for, now handled with no
-  // environment at all. The owner spawns the child itself, so the child gets
-  // the default environment and no arguments about ownership -- and it is still
+  // An owner's own child, with no environment arrangement of any kind: the child
+  // gets the default environment and no arguments about ownership, and is still
   // refused, because the refusal comes from the database and the owner is alive.
-  //
-  // Deleting the publish line used to leave every other test in this file green,
-  // since they all handed the claim to the child themselves. There is no publish
-  // line to delete now, which is the point.
   const pane = rig("new-window", "-P", "-F", "#{pane_id}", "-d", "sleep 600");
 
   const owner = runInPane(pane, { spawnChild: true, holdMs: 3_000 });

@@ -198,9 +198,8 @@ test("crew agents are hidden unless they need a human", () => {
   // retry a worker that died. Those rows needed a human and were the ones a
   // human could not see.
   //
-  // The question is asked of ATTENTION now, not of a folded state, so a crew
-  // agent that is busy AND blocked is visible -- which the old single-state
-  // version could not express.
+  // The question is asked of ATTENTION, independently of activity, so a crew
+  // agent that is busy AND blocked is visible.
   const crew = (attention: PaneView["attention"]) =>
     isVisible({ ...base, driver: "orchestrated", attention });
   const human = (attention: PaneView["attention"]) =>

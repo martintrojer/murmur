@@ -151,7 +151,7 @@ test("a stale node keeps its last-known panes verbatim, with no liveness inferre
   // The whole reason a failed fetch retains the document. The reader has no pid
   // to probe and does not invent one: `activity` stays whatever that node last
   // said, and the only thing that changes is freshness -- a property of the
-  // NODE, stated explicitly rather than folded into the pane's own state.
+  // NODE, carried in its own field rather than mixed into the pane's state.
   const identity = createIdentity("this-node");
   const s = store();
   s.addPeer("dev", "dev");
@@ -305,10 +305,8 @@ test("peers are returned ordered by the name the operator typed", () => {
 
 test("the store exposes no reader-side mutation of remote state", () => {
   // The forbidden shapes, asserted as a closed key set rather than as prose. A
-  // reader holds one snapshot per peer and evicts nothing: `forgetReplica`,
-  // `forgetHost`, watermark rewind and `ingest` were all compensation for a
-  // reader that could be wrong on its own, and re-adding any of them would put
-  // that back.
+  // reader holds one snapshot per peer and evicts nothing, so there is no
+  // per-agent eviction, no rewind and no ingest for a reader to be wrong with.
   expect(Object.keys(store()).sort()).toEqual([
     "acknowledgePane",
     "addPeer",

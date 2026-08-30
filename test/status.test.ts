@@ -140,8 +140,8 @@ test("counts group by render state, and attention beats activity", () => {
   const result = status(store, IDENTITY);
 
   expect(result.counts).toEqual({ crashed: 1, blocked: 1, done: 1, running: 1, idle: 1 });
-  // Both facts survive on the row that carries both, which is the point of not
-  // folding them: a running agent CAN be waiting on a human.
+  // Both facts survive on the row that carries both, which is the point of
+  // keeping them separate: a running agent CAN be waiting on a human.
   const blocked = result.panes.find((pane) => pane.pane === "%2");
   expect(blocked).toMatchObject({ activity: "running", attention: ["blocked"] });
 });

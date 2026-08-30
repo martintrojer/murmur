@@ -96,9 +96,9 @@ export const tmux: Mux = {
     if (!raw) return null;
     const pane = asPaneId(raw);
 
-    // One call for ids and names together. The names are recorded on every
-    // event because a reader cannot resolve a remote window id against its own
-    // tmux, so they have to travel with the event.
+    // One call for ids and names together. The names travel with every row a
+    // snapshot carries, because a reader cannot resolve a remote session or
+    // window id against its own tmux.
     const fields = runTmux([
       "display-message",
       "-t",
@@ -120,8 +120,7 @@ export const tmux: Mux = {
   // Which of this host's PANES still exist. The only liveness question tmux is
   // ever asked, and the one that matches how an agent is addressed: a pane keeps
   // its id when it moves between windows, so a recorded window id can be gone
-  // while the agent is very much alive. Sweeping on windows deleted ten live
-  // agents once, which is why `liveWindows` no longer exists.
+  // while the agent is very much alive.
   //
   // null means tmux could not answer; an empty set means it did and there are
   // none. Conflating the two would delete every agent on the host the moment
@@ -209,7 +208,7 @@ export const tmux: Mux = {
     return runTmux(args) !== null;
   },
 
-  // The window a pane belongs to, for a pane murmur has no event for. Clearing
+  // The window a pane belongs to, for a pane murmur holds no row for. Clearing
   // a badge is a tmux operation and does not require murmur to own the pane.
   windowForPane(pane) {
     const out = runTmux(["display-message", "-t", pane, "-p", "#{window_id}"]);

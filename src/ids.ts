@@ -7,15 +7,15 @@
  * sweep keyed on window liveness deleted ten live agents, and a window cached
  * at extension startup badged the window a moved pane had left.
  *
- * An agent IS a pane. `agent_id` is `host:pane`, and a pane keeps its id across
- * `move-pane`, `break-pane`, and a window closed and reopened. A session and a
- * window are only where that pane currently lives, and both may differ between
- * two events for the same agent. So the rule the brands enforce is:
+ * An agent is addressed by its PANE, which keeps its id across `move-pane`,
+ * `break-pane`, and a window closed and reopened. A session and a window are
+ * only where that pane currently lives, and both may differ between two reports
+ * from one agent. So the rule the brands enforce is:
  *
  *   only a pane may decide whether an agent exists.
  *
  * Branding is a compile-time fiction: at runtime these are the same strings
- * tmux printed, which is what keeps the wire format and every stored row
+ * tmux printed, which is what keeps the snapshot document and every stored row
  * byte-identical.
  */
 

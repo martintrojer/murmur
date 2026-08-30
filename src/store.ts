@@ -6,7 +6,7 @@ import type { NodeIdentity } from "./identity.js";
 import type { PaneId } from "./ids.js";
 import { asPaneId, asSessionId, asWindowId } from "./ids.js";
 import { pidAlive } from "./mux.js";
-import { dbPath, stateDir } from "./paths.js";
+import { dbPath } from "./paths.js";
 import type {
   ActivityUpdate,
   AgentClaim,
@@ -29,10 +29,9 @@ import { RENDER_PRIORITY } from "./view.js";
 /**
  * The storage version. Any change to any table bumps it.
  *
- * There is ONE version strategy, not two: a mismatch salvages the peer names
- * and targets a human typed, deletes the file, and recreates the schema. No
- * ALTER TABLE anywhere, so there is no additive path to forget to use — which
- * is the fragility the dual-strategy store had.
+ * ONE version strategy: a mismatch salvages the peer names and targets a human
+ * typed, deletes the file, and recreates the schema. No ALTER TABLE anywhere, so
+ * there is no additive path to forget to use.
  */
 const SCHEMA_USER_VERSION = 3;
 
@@ -164,24 +163,6 @@ type PeerDbRow = {
   snapshot_version: number | null;
 };
 
-/**
- * Delete every trace of the pre-rewrite event log, once per open.
- *
- * Best effort and unconditional: `events.db` is not read, not migrated and not
- * written by any code path, so a file left behind is dead weight that a future
- * reader could mistake for state. The sidecars go too — a stale -wal against a
- * missing main file is a documented way to confuse sqlite.
- */
-function removeLegacyLog(): void {
-  for (const suffix of ["", "-wal", "-shm"]) {
-    try {
-      rmSync(`${stateDir()}/events.db${suffix}`, { force: true });
-    } catch {
-      // A read-only state dir is not a reason to fail opening the store.
-    }
-  }
-}
-
 /** Peer names and targets: the two fields a human typed, and all we salvage. */
 function salvagePeers(path: string): { name: string; target: string }[] {
   try {
@@ -260,7 +241,6 @@ function attentionOrder(left: SnapshotAttention, right: SnapshotAttention): numb
 export function openStore(): Store {
   const path = dbPath();
   mkdirSync(dirname(path), { recursive: true });
-  removeLegacyLog();
 
   const salvaged = salvagePeers(path);
   if (needsReset(path)) {

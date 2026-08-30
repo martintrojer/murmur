@@ -22,10 +22,10 @@ import type { Driver } from "../types.js";
  * So agent_start/agent_end always pair, and settled arrives exactly once, last,
  * ~60ms after the final agent_end.
  *
- * The two axes are now independent, which is what changed here. `agent_start`
- * and `agent_end` write ACTIVITY (running / stopped) and nothing else;
- * `agent_settled` may raise ATTENTION and never touches activity. There is no
- * last-writer-wins fold to reason about, so the table is short:
+ * The two axes are independent. `agent_start` and `agent_end` write ACTIVITY
+ * (running / stopped) and nothing else; `agent_settled` may raise ATTENTION and
+ * never touches activity. Nothing resolves one against the other, so the table
+ * is short:
  *
  *   pane      driver         agent_start  agent_end  agent_settled
  *   --------  -------------  -----------  ---------  -----------------
@@ -53,8 +53,8 @@ import type { Driver } from "../types.js";
  * Whether `agent_settled` raises attention, and of which kind. Null means say
  * nothing.
  *
- * Narrowed to `"done" | null` with the deletion of `cleared`: an owner reports
- * that it finished, and only a notifier can report that someone is wanted.
+ * `"done" | null` is the whole range: an owner reports that it finished, and only
+ * a notifier can report that someone is wanted.
  */
 export function settledState(focused: boolean, muManaged: boolean): "done" | null {
   if (muManaged) return null;

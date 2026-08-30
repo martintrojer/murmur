@@ -73,13 +73,11 @@ test("every environment variable src/ reads is one the rig controls", () => {
       const path = join(dir, entry.name);
       if (entry.isDirectory()) walk(path);
       else if (entry.name.endsWith(".ts")) {
-        // Widened past `process.env.X` on purpose, because the original pattern
-        // could not see the two reads that caused the second half of the
-        // incident. `MURMUR_PANE_OWNER` is a string constant
-        // (decide.ts: OWNER_ENV) indexed as `env[OWNER_ENV]`, and TMUX /
-        // TMUX_PANE / XDG_* reach src/ both as `process.env.TMUX_PANE` and as
-        // `env.TMUX_PANE` on a passed-in environment. All three shapes now
-        // count as "src/ reads this".
+        // Widened past `process.env.X` on purpose: TMUX / TMUX_PANE / XDG_*
+        // reach src/ both as `process.env.TMUX_PANE` and as `env.TMUX_PANE` on a
+        // passed-in environment, and a name indexed through a constant is
+        // invisible to the narrow pattern. All three shapes count as "src/ reads
+        // this".
         for (const match of readFileSync(path, "utf8").matchAll(
           /(?:\benv\.|["'`])((?:MURMUR|MU|TMUX|XDG)[A-Z0-9_]*)/g,
         )) {

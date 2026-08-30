@@ -14,20 +14,20 @@ import type { Location } from "../types.js";
  * `type`, the flag is `--event-type`. Both consumers are already written against
  * those exact names, and this verb exists to keep them working.
  */
-export type NotifyInput = {
+type NotifyInput = {
   source?: string;
   title?: string;
   eventType?: string;
   message?: string;
 };
 
-export type NotifyPayload = Record<string, unknown>;
+type NotifyPayload = Record<string, unknown>;
 
 /**
  * Resolve the four fields, flags beating the stdin payload.
  *
  * Flags win so the codex hook line behaves identically whether or not something
- * also arrives on stdin -- the legacy script's documented rule, kept.
+ * also arrives on stdin, which is what both consumers were written against.
  *
  * `message` falls back through title then event type before the generic
  * "attention": a notification whose text is a bare placeholder is worse than
@@ -98,19 +98,15 @@ export function parsePayload(raw: string): NotifyPayload {
  *
  * WHY THIS EXISTS. pi reports from inside itself, through the extension. codex
  * and opencode have no such hook -- they can only run a command when something
- * happens. `murmur notify` is that command, and it is the whole reason the
- * legacy agent-attention script cannot simply be deleted: without it those two
- * harnesses never show `blocked` again, and because the status bar keeps working
- * for pi agents, nothing looks broken.
+ * happens. `murmur notify` is that command; without it those two harnesses never
+ * show `blocked`, and because the status bar keeps working for pi agents, nothing
+ * looks broken.
  *
- * WHAT IT CANNOT DO, and this is now structural rather than careful. The only
- * thing it may write is an `AttentionRequest`, which has no field for an
- * agent_id, an owner_pid, an activity, or any owner metadata. So the incident
- * this verb caused -- three `blocked` rows replacing `working` on panes
- * %250-%252 and nulling agent_name, workstream, role and driver while all three
- * pi processes were alive -- is not a bug that was fixed, it is a sentence that
- * can no longer be said. `attention` is keyed on (pane, kind) and the agents
- * table is untouched by every statement this path runs.
+ * WHAT IT CANNOT DO, structurally. The only thing it may write is an
+ * `AttentionRequest`, which has no field for an agent_id, an owner_pid, an
+ * activity, or any owner metadata. `attention` is keyed on (pane, kind) and the
+ * agents table is untouched by every statement this path runs, so a notifier
+ * corrupting a live agent's row is unsayable rather than merely guarded against.
  *
  * `blocked` only, hard-coded: an external process cannot know that an agent
  * started, finished or crashed, so those stay the owner's alone. A harness can
@@ -122,8 +118,8 @@ export function parsePayload(raw: string): NotifyPayload {
  *
  * And the pane comes from the harness's own environment. The codex and opencode
  * hooks run as children of the agent process, in its pane, so $TMUX_PANE names
- * exactly the pane whose agent wants attention -- the same resolution the legacy
- * script used. `--pane` overrides it for a notifier that runs elsewhere.
+ * exactly the pane whose agent wants attention. `--pane` overrides it for a
+ * notifier that runs elsewhere.
  */
 export function runNotify(
   store: Store,
@@ -163,11 +159,11 @@ export function runNotify(
  * neither of which passes a pane. Their hooks run as children of the agent
  * process, so `$TMUX_PANE` -- which `currentWindow` reads, and which tmux sets
  * for every process in a pane -- names exactly the pane whose agent wants
- * attention. Same resolution the legacy script used.
+ * attention.
  *
- * `--pane` is kept because the legacy interface had it and this verb exists to
- * be a drop-in, but it is deliberately implemented WITHOUT adding a
- * pane-to-session lookup to the Mux interface. `currentWindow` already resolves
+ * `--pane` exists for a notifier that runs outside the pane it is reporting on,
+ * and is deliberately implemented WITHOUT adding a pane-to-session lookup to the
+ * Mux interface. `currentWindow` already resolves
  * a full location for the caller's own pane, and `--pane` is only meaningful
  * when it names a pane in the same tmux server, so the flag narrows an existing
  * answer rather than fetching a new one:
@@ -223,7 +219,7 @@ export function registerNotify(program: Command): void {
 }
 
 /** How long to wait for a piped payload before proceeding on flags alone. */
-export const STDIN_DEADLINE_MS = 250;
+const STDIN_DEADLINE_MS = 250;
 
 /**
  * Whatever is on stdin, or "" when nothing arrives in time.

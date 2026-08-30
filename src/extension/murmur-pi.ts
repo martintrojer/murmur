@@ -224,9 +224,9 @@ export default function murmurPi(pi: ExtensionAPI): void {
    *
    * The boolean is what the badge is gated on. It has to be, because the badge
    * is the only part of a report a human sees directly: painting it before the
-   * write, as this used to, is how a silently non-reporting extension looked
-   * healthy for the life of a process. A window whose agent row belongs to
-   * someone else must not carry this process's glyph.
+   * write is how a silently non-reporting extension looks healthy for the life
+   * of a process. A window whose agent row belongs to someone else must not
+   * carry this process's glyph.
    */
   const report = async (activity: Activity, location: Location): Promise<boolean> => {
     try {

@@ -4,6 +4,7 @@ import type { AttentionKind } from "../src/types.js";
 import {
   age,
   freshness,
+  NEEDS_HUMAN,
   type PaneView,
   RENDER_PRIORITY,
   renderState,
@@ -16,10 +17,9 @@ import {
  *
  * `status.test.ts` owns what the surfaces print and `peer-cache.test.ts` owns
  * what a peer contributes. This file owns the pure functions themselves --
- * ordering, one-word rendering, freshness and age -- because those are where the
- * old fold's compensations lived, and each claim here is a claim about what the
- * view CANNOT do: infer liveness, reorder equal rows differently on two runs, or
- * let a duration be turned into a verdict anywhere else.
+ * ordering, one-word rendering, freshness and age. Each claim here is a claim
+ * about what the view CANNOT do: infer liveness, reorder equal rows differently
+ * on two runs, or let a duration be turned into a verdict anywhere else.
  */
 
 function view(over: Partial<PaneView> = {}): PaneView {
@@ -69,10 +69,9 @@ test("renderState picks one word by priority, and attention beats activity", () 
 });
 
 test("RENDER_PRIORITY is the one ordering table and every render state is in it", () => {
-  // The three near-identical copies that used to exist disagreed about whether
-  // `crashed` or `blocked` led, so two surfaces sorted one list two ways. A
-  // state missing from the table would sort by a fallback and reappear as the
-  // same class of bug.
+  // One table, so no two surfaces can disagree about whether `crashed` or
+  // `blocked` leads. A state missing from it would sort by a fallback, which is
+  // how a row moves under the keypress aimed at it.
   expect([...RENDER_PRIORITY]).toEqual(["crashed", "blocked", "done", "running", "idle"]);
   const states = new Set(RENDER_PRIORITY);
   for (const attention of [["crashed"], ["blocked"], ["done"], []] as AttentionKind[][]) {
@@ -80,6 +79,24 @@ test("RENDER_PRIORITY is the one ordering table and every render state is in it"
       expect(states.has(renderState(view({ activity, attention })))).toBe(true);
     }
   }
+});
+
+test("NEEDS_HUMAN is the one table deciding which crew states reach a human", () => {
+  // The second shared table, and the one whose duplication was load-bearing: the
+  // picker's default visibility and the status bar's crew counts must answer
+  // "which orchestrated states does a human have to see" identically, or a
+  // blocked crew agent is counted in the status bar and hidden from the list you
+  // open to act on it.
+  expect([...NEEDS_HUMAN]).toEqual(["blocked", "crashed"]);
+
+  // Every entry names an attention kind, not a render state. A `running` or
+  // `idle` here would ask a human to answer a description rather than a request.
+  const kinds = new Set<AttentionKind>(["done", "blocked", "crashed"]);
+  for (const kind of NEEDS_HUMAN) expect(kinds.has(kind)).toBe(true);
+
+  // `done` is deliberately absent: a supervisor consumes a finished worker's
+  // result, so nobody has to acknowledge it.
+  expect(NEEDS_HUMAN).not.toContain("done");
 });
 
 test("viewSort orders by render priority, then by the newest news", () => {

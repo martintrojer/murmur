@@ -52,36 +52,28 @@ import { afterAll } from "vitest";
 /**
  * Deleted outright: every variable whose absence is the safe answer.
  *
- * The store path the extension imports, the retention horizon, the four MU_*
- * vars that decide whether an agent reports as orchestrated or human -- and the
- * three that make the suite believe it is an agent in a pane.
+ * The store path the extension imports, the four MU_* vars that decide whether
+ * an agent reports as orchestrated or human, and the two that make the suite
+ * believe it is an agent in a pane.
  *
- * TMUX, TMUX_PANE and MURMUR_PANE_OWNER are the second half of the incident.
+ * TMUX and TMUX_PANE are the second half of the incident.
  * `tmux.currentWindow()` reads $TMUX_PANE and nothing else, by design (asking
  * tmux answers for whichever pane the server thinks is active, which is the
  * bug that made it the only signal). Inherited, it names the pane running
  * `npm test`, so `runNotify` with no --pane resolved a REAL agent's pane: the
  * notify-stdin tests wrote `blocked` rows and set tmux window badges for panes
  * %250/%251/%252 while the pi processes owning them were alive and working.
- * MURMUR_PANE_OWNER travels the same way and would make a test look nested.
  *
  * Tests that need a pane pass one explicitly -- `vi.stubEnv`, `fakeMux`, or a
  * child env -- and pane-ownership.test.ts stands up its own private tmux
  * server. None of them wants the ambient value.
  */
-// MURMUR_RETENTION_MS and MURMUR_PANE_OWNER no longer exist in production --
-// there is no retention horizon and no environment-borne ownership claim. They
-// stay in this list deliberately: the rig's job is to make the suite independent
-// of the developer's shell, and a stale export of a variable murmur once read
-// costs nothing to keep clearing while a forgotten one costs a corrupted run.
 const CLEARED = [
   "MURMUR_STORE_MODULE",
-  "MURMUR_RETENTION_MS",
   "MU_MANAGED_AGENT",
   "MU_AGENT_NAME",
   "MU_WORKSTREAM",
   "MU_ROLE",
-  "MURMUR_PANE_OWNER",
   "TMUX",
   "TMUX_PANE",
 ] as const;

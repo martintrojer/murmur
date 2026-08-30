@@ -66,13 +66,9 @@ test("removePeer drops the peer and reports whether it existed", () => {
 
 test("peer add refuses a host already configured under another name", () => {
   // Found in use: `peer add bubba2 bubba` happily created a second peer for a
-  // node already configured as `bubba`. Events dedupe on (host_id, seq) so the
-  // agent list looked right, which is what made it easy to miss - meanwhile
-  // every command paid two ssh round-trips to the same box.
-  //
-  // The old version of this test inserted one peer and then reimplemented the
-  // duplicate lookup in its own assertion, so it never ran the production
-  // branch: disabling that branch entirely left it green.
+  // node already configured as `bubba`. Both peers serve the same host's
+  // snapshot, so the agent list looked right and every command quietly paid two
+  // ssh round-trips to the same box.
   //
   // Nothing dedupes for you any more either. Under the event model two names for
   // one node merely doubled the ssh traffic; now each name holds its own cached

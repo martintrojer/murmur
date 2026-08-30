@@ -61,9 +61,8 @@ test("collect replaces a peer's cached snapshot whole", async () => {
   const channel: Channel = {
     exec: async (target, argv) => {
       expect(target).toBe("dev.example");
-      // Bare `murmur export`. There is no `--since`, here or anywhere: the
-      // document is complete, so there is no watermark to send and no second
-      // "refetch from zero" round trip to get wrong.
+      // Bare `murmur export`, which takes no options: the document is complete,
+      // so there is nothing to ask for and no second round trip.
       expect(argv).toEqual(["murmur", "export"]);
       return snapshot([pane("%1"), pane("%2")]);
     },
@@ -86,10 +85,9 @@ test("collect replaces a peer's cached snapshot whole", async () => {
 });
 
 test("a pane present before and absent after is gone from the cache", async () => {
-  // The property that replaces incremental sync: a successful fetch is the whole
-  // truth about that node, so absence in it means absence. Under the event model
-  // this needed a synthetic tombstone event, and a missing one left a dead agent
-  // in every peer's HUD forever.
+  // The property that makes incremental sync unnecessary: a successful fetch is
+  // the whole truth about that node, so absence in it means absence. No
+  // tombstone has to be transmitted for a pane to disappear everywhere.
   store.addPeer("dev", "dev");
   await collect(store, { exec: async () => snapshot([pane("%1"), pane("%2")]) }, 1_000);
 
@@ -135,7 +133,7 @@ test("an invalid snapshot is rejected before storage and reads as reachable-but-
       ),
     ],
     ["a duplicate pane", snapshot([pane("%1"), pane("%1")])],
-    ["an unknown top-level key", snapshot([pane("%1")], "REMOTE", { epoch: "x" } as never)],
+    ["an unknown top-level key", snapshot([pane("%1")], "REMOTE", { extra: "x" } as never)],
     ["a missing key", '{"murmur_snapshot":1,"host_id":"H","panes":[]}'],
     ["not JSON at all", "murmur: command not found"],
     ["an empty pane entry", snapshot([{ ...pane("%1"), agent: null, attention: [] }])],

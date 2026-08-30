@@ -33,11 +33,9 @@ function fail(path: string, detail: string): never {
 /**
  * Exactly these keys, no more and no fewer.
  *
- * Unknown keys are rejected rather than carried, which is the opposite of the
- * old model's `extra` round-tripping. Nothing is coerced or defaulted either:
- * validation happens BEFORE storage, so no unknown value can reach a sort, a
- * count or a render path. An unknown state that sorted as NaN is what this
- * closes.
+ * Unknown keys are rejected rather than carried, and nothing is coerced or
+ * defaulted: validation happens BEFORE storage, so no unknown value can reach a
+ * sort, a count or a render path.
  */
 function object(value: unknown, path: string, keys: readonly string[]): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {

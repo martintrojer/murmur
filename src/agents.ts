@@ -73,7 +73,7 @@ export type Runner = (
   inherit?: boolean,
 ) => { status: number | null; stdout: string; failed: boolean };
 
-export const spawnRunner: Runner = (file, args, inherit = false) => {
+const spawnRunner: Runner = (file, args, inherit = false) => {
   const result = spawnSync(file, args, {
     encoding: "utf8",
     timeout: 10_000,
@@ -93,11 +93,8 @@ export type JumpResult =
   | { ok: true }
   | {
       ok: false;
-      // Local to this process: the picker prints `message` and nothing else, so
-      // no reason code here is stored, folded or sent over the wire. (The
-      // `window_gone` string in export.ts IS on the wire and stays as it is.)
-      // That is what made renaming this one a vocabulary fix rather than a
-      // schema change.
+      // Local to this process: the picker prints `message` and nothing else, and
+      // no reason code here is ever stored or published in a snapshot.
       reason: "no_peer" | "unreachable" | "no_tmux" | "pane_gone" | "attach_failed";
       message: string;
     };
@@ -105,12 +102,9 @@ export type JumpResult =
 /**
  * Jump to a pane, wherever it lives.
  *
- * NEVER MUTATES STATE ON FAILURE, and that is the change from the old version.
- * A failed probe used to delete the replica and rewind a watermark, so one
- * keypress on a healthy agent could remove it -- and for a local pane the delete
- * was unrecoverable. A failure is now a report: a reason and a message, nothing
- * written. The next collect reconciles either way, and only the owning node can
- * author facts about its own panes.
+ * NEVER MUTATES STATE ON FAILURE. A failure is a report: a reason and a message,
+ * nothing written. The next collect reconciles either way, and only the owning
+ * node can author facts about its own panes.
  */
 export function jumpToAgent(
   store: Store,

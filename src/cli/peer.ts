@@ -129,8 +129,8 @@ export function peerAddDecision(input: {
   // word, and the first successful collect fills in who it is.
   if (!snapshot) return null;
 
-  // Adding yourself would fold your own events back in as a "remote" host and
-  // collect over ssh to reach a database you already hold.
+  // Adding yourself would list this node's own panes twice and collect over ssh
+  // to reach a database you already hold.
   if (snapshot.host_id === selfHostId) {
     return `${target} is this node; not adding it as a peer\n`;
   }
@@ -171,8 +171,7 @@ export function registerPeer(program: Command): void {
         // check.
         let snapshot: Snapshot | null = null;
         try {
-          // Bare `murmur export`, with no `--since`: the flag no longer exists,
-          // here or in the collector.
+          // Bare `murmur export`: it takes no options, here or in the collector.
           snapshot = parseSnapshot(await ssh.exec(target, ["murmur", "export"]));
         } catch {
           snapshot = null;
@@ -192,10 +191,9 @@ export function registerPeer(program: Command): void {
         }
 
         store.addPeer(name, target);
-        // The probe already parsed a valid document, and it used to be thrown
-        // away: recording it here means `peer list` can name the host, its
-        // version and its snapshot version immediately rather than after the
-        // first collect.
+        // The probe already parsed a valid document, so recording it here means
+        // `peer list` can name the host, its version and its snapshot version
+        // immediately rather than after the first collect.
         if (snapshot) {
           store.replacePeerSnapshot(name, { ok: true, snapshot, at: Date.now() });
         }
@@ -343,8 +341,8 @@ export function registerPeer(program: Command): void {
         );
 
         // Named, not just marked in the row: the table cell says WHAT differs
-        // and this says what to do about it. Only for a real schema mismatch,
-        // which is the only case where events genuinely do not flow.
+        // and this says what to do about it. Only for a real snapshot-version
+        // mismatch, which is the only case where state genuinely cannot sync.
         const incompatible = rows.filter((row) => row.version?.incompatible);
         if (incompatible.length > 0) {
           process.stdout.write(

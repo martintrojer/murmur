@@ -42,10 +42,9 @@ test("agent_settled asks for a human only when unseen and not mu-managed", () =>
   expect(settledState(true, true)).toBeNull();
 });
 
-// `endState` is gone with `cleared`: agent_end now writes activity `stopped`
-// unconditionally, and there is no per-focus, per-driver decision left to make
-// about it. The focus and driver rules survive only where they belong, on
-// whether attention is raised at all.
+// agent_end writes activity `stopped` unconditionally: there is no per-focus,
+// per-driver decision to make about it. The focus and driver rules live only
+// where they belong, on whether attention is raised at all.
 
 test("driver is orchestrated only under a supervisor", () => {
   expect(driverFromEnv({ MU_MANAGED_AGENT: "1" })).toBe("orchestrated");
@@ -95,7 +94,7 @@ test("link pi re-exports the install rather than copying it, so upgrades apply",
 test("the shim pins the store path, which the extension cannot resolve itself", () => {
   // A bare "@martintrojer/murmur/extension-store" specifier cannot resolve from
   // ~/.pi/agent/extensions -- not even for a global install. The failure is
-  // silent: the import throws, getStore swallows it, and every append no-ops
+  // silent: the import throws, getStore swallows it, and every state report no-ops
   // while the tmux badge still paints. Verified against a real pi: with the
   // path unpinned the store module never loaded.
   const home = mkdtempSync(join(tmpdir(), "murmur-link-"));
@@ -142,7 +141,7 @@ test("re-linking reports an inlined copy it replaced, and stays quiet otherwise"
   expect(linkPi(home)).toContain("Replaced an inlined copy");
 });
 
-test("a failed append closes the store it is dropping", async () => {
+test("a failed write closes the store it is dropping", async () => {
   // Regression: the catch assigned `store = null` without closing, so a
   // recurring transient write failure leaked one SQLite connection and its WAL
   // read state per event, inside a pi process that can run for days. The next
@@ -196,7 +195,7 @@ test("a failed append closes the store it is dropping", async () => {
   // one handler that awaits its queue.
   await handlers.get("session_shutdown")?.();
 
-  // One handle opened, and the failed append closed it rather than orphaning
+  // One handle opened, and the failed write closed it rather than orphaning
   // it. Before the fix this was opened=1, closed=0.
   expect(opened).toBe(1);
   expect(closed).toBe(1);
@@ -214,10 +213,10 @@ test("a transient write failure does not silence the agent for the rest of its l
   // dropStore assigned that same `null` after a failed write. So one transient
   // failure -- a lock held by a concurrent writer is enough -- latched the
   // cache off, and every later event was dropped for the life of the process.
-  // Silently: the tmux badge is set before the append, so the window still
+  // Silently: the tmux badge is set before the write, so the window still
   // looked right while the log went nowhere.
   let opened = 0;
-  const appended: string[] = [];
+  const reports: string[] = [];
   let failNext = true;
 
   vi.doMock("@martintrojer/murmur/extension-store", () => ({
@@ -233,7 +232,7 @@ test("a transient write failure does not silence the agent for the rest of its l
             failNext = false;
             throw new Error("database is locked");
           }
-          appended.push(update.activity);
+          reports.push(update.activity);
           return true;
         },
         releaseAgent: () => true,
@@ -261,18 +260,18 @@ test("a transient write failure does not silence the agent for the rest of its l
   const handlers = new Map<string, () => void | Promise<void>>();
   murmurPi({ on: (event, handler) => handlers.set(event, handler) });
 
-  // First turn: the append throws and the handle is dropped. Waited on the
+  // First turn: the write throws and the handle is dropped. Waited on the
   // observable effect (the store was opened) rather than on a timer.
   await handlers.get("agent_start")?.();
   await until(() => opened === 1, "first store open");
-  expect(appended).toEqual([]);
+  expect(reports).toEqual([]);
 
   // Second turn: this is the assertion that failed before the fix. The store
   // must be reopened and the event recorded, not skipped because a previous
   // write failed.
   await handlers.get("agent_start")?.();
-  await until(() => appended.length > 0, "second turn's write");
-  expect(appended).toEqual(["running"]);
+  await until(() => reports.length > 0, "second turn's write");
+  expect(reports).toEqual(["running"]);
   expect(opened).toBe(2);
 
   vi.doUnmock("@martintrojer/murmur/extension-store");
@@ -333,10 +332,8 @@ test("a pane moved to another window keeps its identity and stops badging the ol
   //
   // Resolving the window once at startup broke two things at once: the badge was
   // painted on the window the agent had left, and every later write recorded a
-  // window the agent was no longer in, so a jump went to the wrong place. The
-  // third symptom -- a window-keyed sweep deleting the agent -- is gone with
-  // `liveWindows` itself.
-  const appended: { window: string; agent_id: string }[] = [];
+  // window the agent was no longer in, so a jump went to the wrong place.
+  const reports: { window: string; agent_id: string }[] = [];
   const badges: [string, string | null][] = [];
 
   vi.doMock("@martintrojer/murmur/extension-store", () => ({
@@ -344,7 +341,7 @@ test("a pane moved to another window keeps its identity and stops badging the ol
     openStore: () => ({
       claimAgent: () => ({ outcome: "claimed", agent_id: "a1" }),
       setActivity: (update: { agent_id: string; location: { window: string } }) => {
-        appended.push({ window: update.location.window, agent_id: update.agent_id });
+        reports.push({ window: update.location.window, agent_id: update.agent_id });
         return true;
       },
       releaseAgent: () => true,
@@ -373,20 +370,20 @@ test("a pane moved to another window keeps its identity and stops badging the ol
   const handlers = new Map<string, () => void | Promise<void>>();
   murmurPi({ on: (event, handler) => handlers.set(event, handler) });
   await handlers.get("agent_start")?.();
-  await until(() => appended.length === 1, "first turn's append");
+  await until(() => reports.length === 1, "first turn's write");
 
   // The pane is moved to another window between turns.
   window = "@2";
   await handlers.get("agent_start")?.();
-  await until(() => appended.length === 2, "second turn's append");
+  await until(() => reports.length === 2, "second turn's write");
 
-  // The second event records the NEW window, not the startup one.
-  expect(appended.map((event) => event.window)).toEqual(["@1", "@2"]);
+  // The second report records the NEW window, not the startup one.
+  expect(reports.map((report) => report.window)).toEqual(["@1", "@2"]);
 
   // One agent row throughout: the pane is the address and the agent_id belongs
   // to the PROCESS, so neither changes when the window does. A new id here would
   // make the moved agent a second row and orphan the first.
-  expect(new Set(appended.map((event) => event.agent_id))).toEqual(new Set(["a1"]));
+  expect(new Set(reports.map((report) => report.agent_id))).toEqual(new Set(["a1"]));
 
   // The old window's badge is cleared, or a `running` glyph sits forever on a
   // window with no agent. Nothing else can clear it: the badge belongs to the
@@ -428,17 +425,17 @@ test("session_shutdown does not permanently silence the extension, because /relo
   // for /reload, and for session switch, resume and fork, then keeps using the
   // same extension instance. Every later event was dropped while the tmux badge
   // still painted, so the agent looked fine and reported nothing.
-  const appended: string[] = [];
+  const reports: string[] = [];
 
   vi.doMock("@martintrojer/murmur/extension-store", () => ({
     loadIdentity: () => ({ host_id: "H", display_name: "h" }),
     openStore: () => ({
       claimAgent: () => ({ outcome: "claimed", agent_id: "a1" }),
       setActivity: (update: { activity: string }) => {
-        appended.push(update.activity);
+        reports.push(update.activity);
         return true;
       },
-      requestAttention: (request: { kind: string }) => appended.push(request.kind),
+      requestAttention: (request: { kind: string }) => reports.push(request.kind),
       releaseAgent: () => true,
       close: () => {},
     }),
@@ -467,24 +464,24 @@ test("session_shutdown does not permanently silence the extension, because /relo
   // rebinds, then fires session_start. Extensions clean up in the first and
   // reestablish in the second.
   await handlers.get("agent_start")?.();
-  await until(() => appended.length === 1, "first turn");
+  await until(() => reports.length === 1, "first turn");
   await handlers.get("session_shutdown")?.();
   await handlers.get("session_start")?.();
   await handlers.get("agent_start")?.();
-  await until(() => appended.length === 2, "turn after reload");
+  await until(() => reports.length === 2, "turn after reload");
 
   // The turn after the reload must be recorded. Before the fix this was one
   // turn and then silence. session_shutdown itself writes no activity now -- it
   // RELEASES the agent row, which is not a state anyone reports -- so the
   // sequence is one entry per real turn.
-  expect(appended).toEqual(["running", "running"]);
+  expect(reports).toEqual(["running", "running"]);
 
   // And it must keep working across repeated reloads, not just the first.
   await handlers.get("session_shutdown")?.();
   await handlers.get("session_start")?.();
   await handlers.get("agent_start")?.();
-  await until(() => appended.length === 3, "turn after a second reload");
-  expect(appended).toEqual(["running", "running", "running"]);
+  await until(() => reports.length === 3, "turn after a second reload");
+  expect(reports).toEqual(["running", "running", "running"]);
 
   vi.doUnmock("@martintrojer/murmur/extension-store");
   vi.doUnmock("../src/mux.js");
@@ -499,17 +496,17 @@ test("session_start re-arms an extension that gave up, so a reload is a real rec
   // effect until the agent was restarted, and /reload would look like it did
   // nothing.
   let identity: { host_id: string; display_name: string } | null = null;
-  const appended: string[] = [];
+  const reports: string[] = [];
 
   vi.doMock("@martintrojer/murmur/extension-store", () => ({
     loadIdentity: () => identity,
     openStore: () => ({
       claimAgent: () => ({ outcome: "claimed", agent_id: "a1" }),
       setActivity: (update: { activity: string }) => {
-        appended.push(update.activity);
+        reports.push(update.activity);
         return true;
       },
-      requestAttention: (request: { kind: string }) => appended.push(request.kind),
+      requestAttention: (request: { kind: string }) => reports.push(request.kind),
       releaseAgent: () => true,
       close: () => {},
     }),
@@ -536,8 +533,8 @@ test("session_start re-arms an extension that gave up, so a reload is a real rec
 
   // No identity: the extension gives up permanently, by design.
   await handlers.get("agent_start")?.();
-  await until(() => appended.length > 0, "an append that should not happen");
-  expect(appended).toEqual([]);
+  await until(() => reports.length > 0, "a write that should not happen");
+  expect(reports).toEqual([]);
 
   // The user runs `murmur init` and reloads.
   //
@@ -549,9 +546,9 @@ test("session_start re-arms an extension that gave up, so a reload is a real rec
   identity = { host_id: "H", display_name: "h" };
   await handlers.get("session_start")?.();
   await handlers.get("agent_start")?.();
-  await until(() => appended.includes("running"), "write after init + reload");
+  await until(() => reports.includes("running"), "write after init + reload");
 
-  expect(appended).toContain("running");
+  expect(reports).toContain("running");
 
   vi.doUnmock("@martintrojer/murmur/extension-store");
   vi.doUnmock("../src/mux.js");
@@ -567,10 +564,10 @@ test("session_start re-arms an extension that gave up, so a reload is a real rec
  */
 async function driveExtension(options: { focused: boolean; muManaged?: boolean }): Promise<{
   handlers: Map<string, () => void | Promise<void>>;
-  appended: string[];
+  reports: string[];
   badges: (string | null)[];
 }> {
-  const appended: string[] = [];
+  const reports: string[] = [];
   const badges: (string | null)[] = [];
 
   vi.doMock("node:child_process", () => ({
@@ -582,10 +579,10 @@ async function driveExtension(options: { focused: boolean; muManaged?: boolean }
     openStore: () => ({
       claimAgent: () => ({ outcome: "claimed", agent_id: "a1" }),
       setActivity: (update: { activity: string }) => {
-        appended.push(update.activity);
+        reports.push(update.activity);
         return true;
       },
-      requestAttention: (request: { kind: string }) => appended.push(request.kind),
+      requestAttention: (request: { kind: string }) => reports.push(request.kind),
       releaseAgent: () => true,
       close: () => {},
     }),
@@ -614,7 +611,7 @@ async function driveExtension(options: { focused: boolean; muManaged?: boolean }
 
   const handlers = new Map<string, () => void | Promise<void>>();
   murmurPi({ on: (event, handler) => handlers.set(event, handler) });
-  return { handlers, appended, badges };
+  return { handlers, reports, badges };
 }
 
 function unmockExtension(): void {
@@ -625,27 +622,25 @@ function unmockExtension(): void {
 }
 
 test("an unfocused agent that settles asks for a human, which is what blocked means", async () => {
-  // The bug this closes: NOTHING in production ever emitted `blocked`. The
-  // state was in the enum, in the CLEARABLE whitelist, in the status counts and
-  // behind an alt-b picker filter, and no code path produced it -- because
-  // murmur subscribed to agent_start and agent_end and not to `agent_settled`,
-  // the one event that means "no retry, compaction or queued continuation will
-  // run". Verified against pi 0.84.3 that agent_settled really fires, and that
-  // it fires last: start, end, settled, with settled about 60ms after end.
-  const { handlers, appended, badges } = await driveExtension({ focused: false });
+  // Completion has to come from `agent_settled`, the one event that means "no
+  // retry, compaction or queued continuation will run". Subscribing to
+  // agent_start and agent_end alone meant nothing in production ever reported a
+  // finished run. Verified against pi 0.84.3 that agent_settled really fires,
+  // and that it fires last: start, end, settled, ~60ms after end.
+  const { handlers, reports, badges } = await driveExtension({ focused: false });
 
   await handlers.get("agent_start")?.();
-  await until(() => appended.length === 1, "the turn's running");
+  await until(() => reports.length === 1, "the turn's running");
   await handlers.get("agent_end")?.();
-  await until(() => appended.length === 2, "the turn's stopped");
+  await until(() => reports.length === 2, "the turn's stopped");
   await handlers.get("agent_settled")?.();
-  await until(() => appended.length === 3, "the settle's done attention");
+  await until(() => reports.length === 3, "the settle's done attention");
 
   // Two axes, written separately, and the order between them no longer decides
-  // anything: activity went running then stopped, and attention is `done`. Under
-  // the event model this was one last-writer-wins sequence, so `blocked` HAD to
-  // be last or the fold reported the wrong thing. Nothing here depends on order.
-  expect(appended).toEqual(["running", "stopped", "done"]);
+  // anything: activity went running then stopped, and attention is `done`. They
+  // are separate rows in separate tables, so nothing here depends on which
+  // landed last.
+  expect(reports).toEqual(["running", "stopped", "done"]);
   expect(badges).toEqual(["running", null, "done"]);
 
   unmockExtension();
@@ -656,18 +651,18 @@ test("a focused agent that settles says nothing, because the user is already the
   // agent_end has already written activity `stopped`, which is the whole of what
   // a finished run means here; an attention row on top would be a request aimed
   // at a human who is already reading the pane.
-  const { handlers, appended, badges } = await driveExtension({ focused: true });
+  const { handlers, reports, badges } = await driveExtension({ focused: true });
 
   await handlers.get("agent_start")?.();
-  await until(() => appended.length === 1, "the turn's running");
+  await until(() => reports.length === 1, "the turn's running");
   await handlers.get("agent_end")?.();
-  await until(() => appended.length === 2, "the turn's stopped");
+  await until(() => reports.length === 2, "the turn's stopped");
   await handlers.get("agent_settled")?.();
   // Waits for something that must not arrive, so the assertion is not just
   // "the write had not happened yet".
-  await until(() => appended.length === 3, "a write that must not happen");
+  await until(() => reports.length === 3, "a write that must not happen");
 
-  expect(appended).toEqual(["running", "stopped"]);
+  expect(reports).toEqual(["running", "stopped"]);
   expect(badges).toEqual(["running", null]);
 
   unmockExtension();
@@ -679,16 +674,16 @@ test("an orchestrated agent that settles stays out of the human's status bar", a
   // ORCHESTRATED `blocked` in the status bar and pick.ts un-hides crew rows for
   // it, so emitting here would put every settling worker in front of a human.
   // Orchestrated blocked stays reserved for an outside notifier.
-  const { handlers, appended } = await driveExtension({ focused: false, muManaged: true });
+  const { handlers, reports } = await driveExtension({ focused: false, muManaged: true });
 
   await handlers.get("agent_start")?.();
-  await until(() => appended.length === 1, "the turn's running");
+  await until(() => reports.length === 1, "the turn's running");
   await handlers.get("agent_end")?.();
-  await until(() => appended.length === 2, "the turn's stopped");
+  await until(() => reports.length === 2, "the turn's stopped");
   await handlers.get("agent_settled")?.();
-  await until(() => appended.length === 3, "a write that must not happen");
+  await until(() => reports.length === 3, "a write that must not happen");
 
-  expect(appended).toEqual(["running", "stopped"]);
+  expect(reports).toEqual(["running", "stopped"]);
 
   unmockExtension();
 });
@@ -704,16 +699,16 @@ test("a new run after a settle cannot be masked by the attention it left", async
   // `running` activity cannot overwrite each other, whatever order they arrive
   // in -- a running agent with unacknowledged attention is a valid state that
   // surfaces show as both.
-  const { handlers, appended } = await driveExtension({ focused: false });
+  const { handlers, reports } = await driveExtension({ focused: false });
 
   await handlers.get("agent_start")?.();
   await handlers.get("agent_end")?.();
   await handlers.get("agent_settled")?.();
-  await until(() => appended.length === 3, "the first run, settled");
+  await until(() => reports.length === 3, "the first run, settled");
   await handlers.get("agent_start")?.();
-  await until(() => appended.length === 4, "the next run's running");
+  await until(() => reports.length === 4, "the next run's running");
 
-  expect(appended).toEqual(["running", "stopped", "done", "running"]);
+  expect(reports).toEqual(["running", "stopped", "done", "running"]);
 
   unmockExtension();
 });
@@ -724,21 +719,21 @@ test("agent_settled still reports after a /reload, because session_shutdown is n
   // same extension instance -- so a handler that does not survive the
   // shutdown/start pair silently stops reporting for the life of the process
   // while the tmux badge still paints.
-  const { handlers, appended } = await driveExtension({ focused: false });
+  const { handlers, reports } = await driveExtension({ focused: false });
 
   await handlers.get("agent_start")?.();
   await handlers.get("agent_end")?.();
   await handlers.get("agent_settled")?.();
-  await until(() => appended.length === 3, "the first run, settled");
+  await until(() => reports.length === 3, "the first run, settled");
 
   await handlers.get("session_shutdown")?.();
   await handlers.get("session_start")?.();
   await handlers.get("agent_start")?.();
   await handlers.get("agent_end")?.();
   await handlers.get("agent_settled")?.();
-  await until(() => appended.length === 6, "the run after the reload, settled");
+  await until(() => reports.length === 6, "the run after the reload, settled");
 
-  expect(appended).toEqual(["running", "stopped", "done", "running", "stopped", "done"]);
+  expect(reports).toEqual(["running", "stopped", "done", "running", "stopped", "done"]);
 
   unmockExtension();
 });
@@ -748,11 +743,9 @@ test("a refused claim means no report and no badge, for the life of the process"
   // launched inside an agent pane resolves the PARENT's pane and, with the
   // extension linked globally, used to write as the parent agent.
   //
-  // The whole defence is now one `claimAgent` answer. `MURMUR_PANE_OWNER`,
-  // `ownsPane`, `ownerClaim` and `mayReport` are deleted: they needed the
-  // environment as transport, so a process launched in a way that dropped it was
-  // undefended, and the marker's own staleness rules were a second thing to get
-  // right. A refusal from the database needs neither.
+  // The whole defence is one `claimAgent` answer, decided in the database. No
+  // environment marker carries ownership, so a process launched in a way that
+  // drops its environment is defended just as well as one that does not.
   const writes: string[] = [];
   const badges: (string | null)[] = [];
 

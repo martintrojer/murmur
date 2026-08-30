@@ -99,11 +99,9 @@ function ok(stdout = ""): ReturnType<Runner> {
 }
 
 /**
- * A jump that failed must have written NOTHING. The old jump path deleted
- * replicas and rewound watermarks on a probe failure, so one keypress on a
- * healthy agent could remove it -- and for a local pane the delete was
- * unrecoverable, since there was no peer row whose watermark could be rewound.
- * Only the owning node may author about its own panes.
+ * A jump that failed must have written NOTHING: one keypress on a healthy agent
+ * must not be able to remove it. Only the owning node may author facts about its
+ * own panes, and a jump is a read.
  */
 function snapshotOfEverything(): string {
   return JSON.stringify({ panes: store.localPanes(), peers: store.peers() });
@@ -119,11 +117,11 @@ test("agentLabel prefers a human name over any tmux id", () => {
     session_name: "murmur",
     window_name: "nvim",
     agent_name: "reviewer-1",
-    pi_session: "audit the fold",
+    pi_session: "review the picker",
   });
 
   expect(agentLabel(agent)).toBe("reviewer-1");
-  expect(agentLabel({ ...agent, agent_name: null })).toBe("audit the fold");
+  expect(agentLabel({ ...agent, agent_name: null })).toBe("review the picker");
   expect(agentLabel({ ...agent, agent_name: null, pi_session: null })).toBe("nvim");
   expect(agentLocation(agent)).toBe("murmur:nvim");
 });
@@ -509,8 +507,9 @@ test("a local pane that MOVED window is still jumped to, and nothing is written"
     store,
     localView(),
     fakeMux({
-      // The pane's recorded window is gone; the pane itself is not. There is no
-      // `liveWindows` left to ask, which is the structural half of this fix.
+      // The pane's recorded window is gone; the pane itself is not. Panes are
+      // the only liveness question tmux is asked, which is the structural half
+      // of this fix.
       livePanes: () => new Set([asPaneId("%9")]),
       attach: (session, window) => {
         attempted.push(`${session}:${window}`);

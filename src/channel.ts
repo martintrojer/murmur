@@ -69,11 +69,10 @@ export interface Channel {
 }
 
 // Node's execFile defaults to a 1 MiB stdout ceiling and rejects with
-// ERR_CHILD_PROCESS_STDIO_MAXBUFFER past it, killing the child. An export is
-// now the peer's whole CURRENT state rather than its history, so it is bounded
-// by live pane count -- a few hundred bytes per pane, on a machine that cannot
-// hold thousands of panes. The ceiling is far less likely to be reached than it
-// was against an unbounded event log.
+// ERR_CHILD_PROCESS_STDIO_MAXBUFFER past it, killing the child. An export is the
+// peer's whole current state, bounded by live pane count -- a few hundred bytes
+// per pane, on a machine that cannot hold thousands of panes -- so the ceiling
+// is out of reach in practice.
 //
 // It is kept generous anyway, because the failure mode is bad out of proportion
 // to its likelihood: a peer whose document exceeds the buffer fails identically

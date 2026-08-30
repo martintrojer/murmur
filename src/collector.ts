@@ -27,7 +27,7 @@ export const MAX_CONCURRENT_PEERS = 8;
 //
 // Four seconds: under a 5s tick, and above one full wave (a 3s exec ceiling
 // plus overhead) so a single wave is never cut short by the deadline itself.
-export const COLLECT_DEADLINE_MS = 4_000;
+const COLLECT_DEADLINE_MS = 4_000;
 
 /**
  * Runs `task` over `items` with at most `limit` in flight, preserving input
@@ -134,8 +134,7 @@ export function describeFailure(peer: string, message: string): string {
  * because better-sqlite3 is synchronous and a stable order keeps the result list
  * aligned with `store.peers()`.
  *
- * One round trip per peer, and there is no second "refetch from zero" trip
- * because there is no watermark to be wrong: the document is complete, so what
+ * One round trip per peer, and never a second: the document is complete, so what
  * arrives either replaces the cache entirely or does not touch it.
  */
 export async function collect(

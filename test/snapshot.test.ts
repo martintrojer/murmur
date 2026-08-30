@@ -15,8 +15,7 @@ import { builtArtifact } from "./helpers/built.js";
  *
  * The claims here are about the document rather than about the tables:
  * everything murmur knows about a node is in it, absence from it is absence,
- * and nothing partially valid can be read back out of one. That is what pays
- * for deleting the watermark, the epoch and the delta form -- a reader needs no
+ * and nothing partially valid can be read back out of one. A reader needs no
  * state of its own to interpret a snapshot, so there is no state for it to hold
  * wrongly.
  *
@@ -120,11 +119,10 @@ test("a built snapshot validates as one, and survives serialisation unchanged", 
   });
 });
 
-test("the document is complete: no seq, epoch, watermark or delta field anywhere", () => {
-  // Stated as a shape assertion rather than as prose, because the deleted
-  // concepts came back through fields before: `extra` round-tripping meant an
-  // unknown key survived a hop, so a reader could act on something no writer
-  // here had ever agreed to.
+test("the document carries exactly the keys it declares, and no others", () => {
+  // A closed key set, asserted as a shape rather than as prose: an unknown key
+  // that survived a hop would let a reader act on something no writer here ever
+  // agreed to.
   const s = store();
   s.claimAgent({ location: location("%1"), owner_pid: process.pid, meta: META, now: 1 });
 
@@ -151,10 +149,6 @@ test("the document is complete: no seq, epoch, watermark or delta field anywhere
     "window",
     "window_name",
   ]);
-  const text = JSON.stringify(built);
-  for (const gone of ["seq", "epoch", "watermark", "synthetic", "since", "schema_version"]) {
-    expect(text).not.toContain(gone);
-  }
 });
 
 test("panes are emitted sorted by pane id, and order carries no meaning", () => {
@@ -325,10 +319,10 @@ test("nothing is coerced, defaulted or carried through", () => {
       "a missing murmur_version",
       { murmur_snapshot: 1, host_id: "H", display_name: "d", generated_at: 1, panes: [] },
     ],
-    ["an unknown top-level key", { ...base, epoch: 3 }],
+    ["an unknown top-level key", { ...base, extra: 3 }],
     ["panes as an object", { ...base, panes: {} }],
     ["a pane missing window_name", { ...base, panes: [{ ...pane, window_name: undefined }] }],
-    ["an unknown pane key", { ...base, panes: [{ ...pane, seq: 4 }] }],
+    ["an unknown pane key", { ...base, panes: [{ ...pane, rank: 4 }] }],
     ["an empty pane id", { ...base, panes: [{ ...pane, pane: "" }] }],
     ["a duplicate pane", { ...base, panes: [pane, pane] }],
     [
@@ -398,21 +392,20 @@ test("murmur export prints exactly one snapshot document and nothing else", () =
   const { stdout, status } = runExport({ MURMUR_STATE_DIR: dir });
 
   expect(status).toBe(0);
-  // One line, one document. Not JSONL: a reader that split on newlines and
-  // parsed each line is exactly the reader this rewrite deleted, and a second
-  // line here would silently resurrect it.
+  // One line, one document. A second line would let a reader split on newlines
+  // and parse each piece, which is a reader that can act on half a document.
   expect(stdout.trimEnd().split("\n")).toHaveLength(1);
   const parsed: Snapshot = parseSnapshot(stdout);
   expect(parsed).toMatchObject({ murmur_snapshot: 1, display_name: "exporter", panes: [] });
 });
 
-test("murmur export takes no options: --since is gone from the CLI, not just unused", () => {
+test("murmur export takes no options: an unknown flag is rejected, not ignored", () => {
   const dir = process.env.MURMUR_STATE_DIR as string;
   createIdentity("exporter");
 
   const rejected = (() => {
     try {
-      execFileSync(process.execPath, [builtArtifact("cli.js"), "export", "--since", "0"], {
+      execFileSync(process.execPath, [builtArtifact("cli.js"), "export", "--verbose"], {
         env: { ...process.env, MURMUR_STATE_DIR: dir },
         encoding: "utf8",
         stdio: ["ignore", "pipe", "pipe"],
@@ -423,9 +416,9 @@ test("murmur export takes no options: --since is gone from the CLI, not just unu
     }
   })();
 
-  // An accepted-and-ignored flag is the dangerous shape: an old peer asking for
-  // a delta would be served a full document that it then treats as "everything
-  // new since N", and every unchanged pane reads as gone.
+  // An accepted-and-ignored flag is the dangerous shape: a caller that believes
+  // it asked for something narrower would read a full document as though it were
+  // the answer to its own question.
   expect(rejected).toBe(true);
 });
 

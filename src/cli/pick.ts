@@ -10,7 +10,14 @@ import {
 import { glance } from "../glance.js";
 import { status, statusWithCollect } from "../status.js";
 import { openStore, type Store } from "../store.js";
-import { age, type PaneView, RENDER_PRIORITY, type RenderState, renderState } from "../view.js";
+import {
+  age,
+  NEEDS_HUMAN,
+  type PaneView,
+  RENDER_PRIORITY,
+  type RenderState,
+  renderState,
+} from "../view.js";
 import { requireIdentity } from "./identity-guard.js";
 
 type PickOptions = { all?: boolean };
@@ -24,7 +31,7 @@ type PickOptions = { all?: boolean };
  * rows revealed by alt-a looked selectable but could not be jumped to for
  * exactly as long as this seam did not exist.
  */
-export type PickDeps = {
+type PickDeps = {
   fzf?: (args: string[], input: string, env: NodeJS.ProcessEnv) => string;
   jump?: (store: Store, agent: PaneView) => JumpResult;
 };
@@ -76,11 +83,8 @@ const DIM = "\u001b[2m";
 const RESET = "\u001b[0m";
 
 // The order the prompt COUNTS appear in: RENDER_PRIORITY, imported rather than
-// restated. This file and status.ts each used to declare their own copy, and
-// fold.ts a third that disagreed about whether `crashed` or `blocked` led -- so
-// two surfaces sorted one list two ways and neither was wrong on its own terms.
-// One table now, and the disagreement is gone rather than documented.
-const URGENCY = RENDER_PRIORITY;
+// restated, so this file and status.ts cannot disagree about whether `crashed`
+// or `blocked` leads.
 
 /**
  * Marks the picker as showing orchestrated agents, at the front of the prompt.
@@ -98,20 +102,11 @@ const CREW_MARK = "crew ";
  * a `done` worker needs no acknowledgement from you, and a `working` one asks
  * for nothing. `--all` shows them.
  *
- * `blocked` and `crashed` are the exceptions, and neither is cosmetic:
- *
- * - `blocked` means waiting for an answer, and an orchestrator cannot answer a
- *   question meant for a human. mu places work; it cannot choose between two
- *   approaches. So a blocked crew agent is waiting on YOU.
- * - `crashed` means the process died. A supervisor may retry it or may not, and
- *   a worker that died without anyone noticing is exactly the thing this tool
- *   exists to surface.
- *
- * Hiding these behind a flag meant the rows that needed a human were the ones a
+ * The exceptions are `NEEDS_HUMAN` in view.ts, shared with the status bar's
+ * count rule so the two surfaces cannot disagree about which crew rows matter.
+ * Hiding those behind a flag meant the rows that needed a human were the ones a
  * human could not see.
  */
-const NEEDS_HUMAN = ["blocked", "crashed"] as const;
-
 export function isVisible(agent: PaneView): boolean {
   return agent.driver === "human" || NEEDS_HUMAN.some((kind) => agent.attention.includes(kind));
 }
@@ -279,8 +274,8 @@ export function pickerRow(
   const glyph = GLYPH[state] ?? "?";
   const marker = current ? `${BOLD}\u25c6${RESET}` : " "; // ◆ you are here
   // Richest name first: mu names its agents, pi names its sessions, tmux names
-  // windows. All three travel on the event, recorded by the node that owns the
-  // pane, so this reads the same for a local and a remote agent.
+  // windows. All three travel in the snapshot, recorded by the node that owns
+  // the pane, so this reads the same for a local and a remote agent.
   const name = agent.agent_name ?? agent.pi_session ?? agentLabel(agent);
   // Local and remote must be tellable apart at a glance. Two hostnames in one
   // dim column means you have to know your own machine's name to read the list
@@ -305,16 +300,14 @@ export function pickerRow(
   //
   // The session name is also what the tms picker shows and what you have
   // trained yourself to search on: a session called `hacking/murmur` holding a
-  // pi whose window is named `Python` was unfindable by typing `murmur`. This
-  // is the one thing tms had that murmur did not, and folding whole sessions
-  // into this list was the wrong way to get it -- a session without an agent
-  // has no place here.
+  // pi whose window is named `Python` was unfindable by typing `murmur`. A
+  // session without an agent still has no place in this list.
   const group = agent.workstream ?? agent.session_name;
   const workstream = group ? `${DIM}${terminalText(group)}${RESET}` : "";
   // Two ages, and the one worth showing is how old the AGENT'S news is, not
   // how recently we reached its host. A peer we polled a second ago can be
-  // serving events from three hours back — which read as fresh until this
-  // column existed. `unreachable` is the other axis: the replica itself is old.
+  // serving a snapshot from three hours back — which read as fresh until this
+  // column existed. `unreachable` is the other axis: the cache itself is old.
   // Both attention and activity, simultaneously. A running agent with `blocked`
   // attention is a real and expected state, and the row has room to say so
   // rather than picking one word and hiding the other.
@@ -463,7 +456,7 @@ export async function runPick(
     const state = renderState(agent);
     counts.set(state, (counts.get(state) ?? 0) + 1);
   }
-  const prompt = URGENCY.filter((state) => counts.get(state))
+  const prompt = RENDER_PRIORITY.filter((state) => counts.get(state))
     .map((state) => `${COLOUR[state]}${GLYPH[state]}${counts.get(state)}${RESET}`)
     .join(" ");
   const basePrompt = `${prompt}${prompt ? "  " : ""}`;
@@ -506,7 +499,7 @@ export async function runPick(
       "--exact",
       // `begin` ranks earlier match positions higher, so `scratch` puts the
       // scratch workstream above a row that merely mentions it. `index` is the
-      // empty-query fallback and preserves the attention order the fold
+      // empty-query fallback and preserves the attention order `viewSort`
       // produced, which is the whole point of the list.
       "--tiebreak",
       "begin,index",
@@ -623,7 +616,7 @@ export async function runPick(
 }
 
 /** Print the row list only, for fzf's `reload` binding. */
-export async function runRows(store: Store, options: PickOptions = {}): Promise<void> {
+async function runRows(store: Store, options: PickOptions = {}): Promise<void> {
   const identity = requireIdentity();
   if (!identity) return;
   const view = await statusWithCollect(store, identity);

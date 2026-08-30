@@ -42,8 +42,8 @@ function shim(entry: string, storePath: string): string {
 //
 // The store path is set here rather than resolved by the extension. A bare
 // specifier cannot resolve from ~/.pi/agent/extensions, and the failure is
-// silent: the import throws, the extension swallows it, and every event is
-// dropped while the tmux badge still paints.
+// silent: the import throws, the extension swallows it, and every state report
+// is dropped while the tmux badge still paints.
 //
 // A dynamic import, not \`export ... from\`: ESM hoists static re-exports above
 // this assignment, so the extension loaded before the variable was set and read
@@ -81,8 +81,8 @@ export function registerLink(program: Command): void {
       // Identity is `init`-generated state by design, and the extension reads
       // it with loadIdentity rather than creating one -- an agent must not
       // decide what this node is called. But the consequence is silent: with no
-      // identity the extension loads, registers its handlers, and drops every
-      // event, while the tmux badge still paints. Linking is the moment to say
+      // identity the extension loads, registers its handlers, and reports
+      // nothing, while the tmux badge still paints. Linking is the moment to say
       // so, since it is the only time a human is looking at this path.
       const identityMissing = loadIdentity() === null;
 

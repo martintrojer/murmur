@@ -4,6 +4,7 @@ import type { NodeIdentity } from "./identity.js";
 import type { Store } from "./store.js";
 import {
   freshness,
+  NEEDS_HUMAN,
   type PaneView,
   paneViews,
   RENDER_PRIORITY,
@@ -35,14 +36,12 @@ function emptyCounts(): Counts {
 }
 
 export function tmuxStatus(view: Status): string {
-  // Orchestrated agents are counted for `blocked` and `crashed` only.
-  //
-  // Hiding crew is right for the rest: a supervisor consumes a `done` worker's
-  // result, so nobody needs to acknowledge it, and `running` asks for nothing.
-  // But `blocked` means waiting for an answer only a human can give -- mu places
-  // work, it cannot decide between two approaches -- and `crashed` means a
-  // worker died, which a supervisor may or may not retry.
-  const needsHuman = new Set<RenderState>(["blocked", "crashed"]);
+  // Orchestrated agents are counted for the states only a human can answer, and
+  // hidden for the rest: a supervisor consumes a `done` worker's result, so
+  // nobody needs to acknowledge it, and `running` asks for nothing. The list is
+  // `NEEDS_HUMAN` in view.ts, shared with the picker's visibility rule so the
+  // status bar and the list cannot disagree about which crew rows matter.
+  const needsHuman = new Set<string>(NEEDS_HUMAN);
   const total = (state: RenderState): number =>
     view.counts[state] + (needsHuman.has(state) ? view.orchestrated_counts[state] : 0);
   return RENDER_PRIORITY.filter((state) => total(state) > 0)
@@ -55,8 +54,7 @@ export function tmuxStatus(view: Status): string {
  * to collect first (see `statusWithCollect`).
  *
  * `identity` is required rather than resolved here, because every caller is a
- * command that already fails without one. The optional chaining that used to
- * hang off a nullable identity classed local panes as remote.
+ * command that already fails without one.
  */
 export function status(store: Store, identity: NodeIdentity, now = Date.now()): Status {
   const counts = emptyCounts();

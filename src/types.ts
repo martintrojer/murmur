@@ -5,9 +5,9 @@ import type { PaneId, SessionId, WindowId } from "./ids.js";
  *
  * `activity` is what the pane's own process says it is doing. `attention` is
  * whether a human is wanted. `freshness` (src/view.ts) is how recently we
- * reached the node that reported. They are never folded into one enum, and
- * there is no `cleared`: absence of an attention row IS "nothing to see", and
- * absence of an agent row IS "no agent here".
+ * reached the node that reported. They are three independent fields, never one
+ * enum, and absence carries meaning: no attention row means "nothing to see",
+ * no agent row means "no agent here".
  */
 export type Activity = "running" | "stopped";
 export type AttentionKind = "done" | "blocked" | "crashed";
@@ -25,9 +25,8 @@ export const DEFAULT_DRIVER: Driver = "human";
  *
  * `pane` is the address and is stable for the life of the pane; `session` and
  * `window` are only where that pane currently is, and both change under
- * move-pane and break-pane. Reading a window id as evidence about existence
- * deleted ten live agents once, which is what the brands in ./ids.js exist to
- * prevent.
+ * move-pane and break-pane. Only a pane may decide whether an agent exists,
+ * which is what the brands in ./ids.js enforce.
  */
 export type Location = {
   session: SessionId;
@@ -45,54 +44,6 @@ export type AgentMeta = {
   role: string | null;
   cli: string;
   driver: Driver;
-};
-
-export type AgentRow = AgentMeta & {
-  /**
-   * A UUID minted per PROCESS INSTANCE, not derived from the pane.
-   *
-   * So a replacement owner is a different row, and a late write from the
-   * previous owner matches nothing and is silently ineffective rather than
-   * destructive.
-   */
-  agent_id: string;
-  pane: PaneId;
-  /**
-   * Local only. Never in a snapshot, never on the wire: a remote pid names a
-   * process in another machine's table, so keeping it local makes remote
-   * liveness inference unrepresentable rather than merely discouraged.
-   */
-  owner_pid: number;
-  activity: Activity;
-  session: SessionId;
-  window: WindowId;
-  session_name: string | null;
-  window_name: string | null;
-  claimed_at: number;
-  updated_at: number;
-};
-
-/**
- * One attention request, addressed by pane.
- *
- * No `agent_id`, no `owner_pid`, no activity, no owner metadata: an attention
- * writer structurally cannot address an agent's identity. That is the whole fix
- * for the live-store corruption where `murmur notify` replaced a working
- * agent's row and nulled its name, workstream, role and driver.
- *
- * It carries its own location so an attention-only pane -- a codex agent murmur
- * never instrumented -- is listable and jumpable with no agent row.
- */
-export type AttentionRow = {
-  pane: PaneId;
-  kind: AttentionKind;
-  message: string;
-  source: string;
-  session: SessionId;
-  window: WindowId;
-  session_name: string | null;
-  window_name: string | null;
-  requested_at: number;
 };
 
 export type PeerRecord = {
@@ -151,6 +102,10 @@ export type SnapshotAttention = {
   requested_at: number;
 };
 
+/**
+ * Whether a pid is still running. A parameter everywhere it is consulted, so a
+ * test needs no process table.
+ */
 export type LiveCheck = (pid: number) => boolean;
 
 export type AgentClaim = {

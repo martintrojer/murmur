@@ -10,9 +10,8 @@ import { openStore, type Store } from "../store.js";
  * so a window holding an agent and a shell must not lose the badge when you
  * focus the shell.
  *
- * This is the same question `windowHasAgent` asked, with the answer now coming
- * from attention rather than from "any non-cleared state" -- which is the fix: a
- * busy agent next door is not a reason to keep an ATTENTION badge lit.
+ * The question is asked of ATTENTION only: a busy agent next door is not a
+ * reason to keep an attention badge lit.
  *
  * Fails safe by keeping the badge: if tmux or the store cannot answer we say
  * yes. Wrongly keeping a badge is recoverable by focusing the pane; wrongly
@@ -36,10 +35,8 @@ function siblingWantsAttention(window: WindowId, focused: PaneId, mux: Mux, stor
  * That is the whole write path. There is no state focus must refuse to clear,
  * because attention is the only thing focus can address: `acknowledgePane` is a
  * single `DELETE FROM attention WHERE pane = ?` and cannot touch an agent's
- * activity, its identity or its owner metadata. The old `CLEARABLE` whitelist,
- * the resolver call and the metadata copy-forward all existed to keep a focus
- * hook from overwriting a running agent, and none of them is needed once the
- * hook has nothing to overwrite with.
+ * activity, its identity or its owner metadata. A focus hook has nothing to
+ * overwrite a running agent with.
  *
  * Best effort, silent and total: this runs inside the tmux server.
  */
