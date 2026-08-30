@@ -145,6 +145,14 @@ export function describeFailure(peer: string, message: string): string {
   return `${peer}: ${detail}`;
 }
 
+/** Re-read a peer's whole log, for when its epoch says our watermark is stale. */
+async function refetchFromZero(
+  channel: Channel,
+  peer: { target: string },
+): Promise<{ envelope: Envelope; events: Event[] }> {
+  return parseJsonl(await channel.exec(peer.target, ["murmur", "export", "--since", "0"]));
+}
+
 function parseJsonl(output: string): { envelope: Envelope; events: Event[] } {
   const lines = output.trim().split("\n");
   const envelope = JSON.parse(lines.shift() ?? "") as Envelope;
@@ -199,10 +207,33 @@ export async function collect(
     const fetches = await mapSettled(
       peers,
       MAX_CONCURRENT_PEERS,
-      async (peer) =>
-        parseJsonl(
+      async (peer) => {
+        const first = parseJsonl(
           await channel.exec(peer.target, ["murmur", "export", "--since", String(peer.watermark)]),
-        ),
+        );
+        // The peer's log is a different incarnation from the one our watermark
+        // indexes, so the watermark is meaningless: its seqs restarted at 1 and
+        // are all BELOW what we asked for. Ask again from zero.
+        //
+        // A second round trip, and only on the collect that first notices --
+        // which is a wipe, so roughly never. Re-reading a peer from zero is
+        // already the recovery this codebase uses elsewhere (removePeer,
+        // forgetReplica, a salvaged peer after our own reset) and is cheap
+        // because ingest is idempotent on (host_id, seq).
+        //
+        // Only when BOTH epochs are known. A null on either side means "no
+        // information": an older peer sends no epoch, and a peer we have never
+        // successfully collected from has none stored. Treating unknown as
+        // changed would re-read every peer on every collect, forever.
+        if (
+          peer.epoch !== null &&
+          first.envelope.epoch !== undefined &&
+          first.envelope.epoch !== peer.epoch
+        ) {
+          return { ...(await refetchFromZero(channel, peer)), reset: true };
+        }
+        return { ...first, reset: false };
+      },
       bounded,
     );
     for (const [index, peer] of peers.entries()) {
@@ -214,13 +245,20 @@ export async function collect(
         // outcome for a host that did not answer in time.
         if (!fetch) throw new Error("collect deadline passed before this peer answered");
         if (fetch.status === "rejected") throw fetch.reason;
-        const { envelope, events } = fetch.value;
+        const { envelope, events, reset } = fetch.value;
+        // Drop the old incarnation's rows BEFORE ingesting the new ones, and
+        // this ordering is the whole of it. `ingest` is INSERT OR IGNORE on
+        // (host_id, seq), and a wiped peer re-uses seq 1..n for DIFFERENT
+        // agents -- so without the delete the stale rows win on primary-key
+        // conflict and the new incarnation is silently discarded. Re-reading
+        // from zero alone does not fix this hole; it makes it quieter.
+        if (reset) store.forgetHost(envelope.host_id);
         const ingested = store.ingest(events);
         const origin = events.filter((event) => event.host_id === envelope.host_id);
-        const watermark = origin.reduce(
-          (highest, event) => Math.max(highest, event.seq),
-          peer.watermark,
-        );
+        // A reset restarts the peer's seqs, so the old watermark is not a floor
+        // any more -- keeping it would leave us permanently past a shorter log.
+        const floor = reset ? 0 : peer.watermark;
+        const watermark = origin.reduce((highest, event) => Math.max(highest, event.seq), floor);
         store.upsertPeer({
           name: peer.name,
           target: peer.target,
@@ -241,7 +279,12 @@ export async function collect(
           // author again. And the count includes rows from other origins that
           // this peer merely relayed, which say nothing about whether this
           // peer's tmux is back.
-          tmux_down_at: watermark > peer.watermark ? null : peer.tmux_down_at,
+          tmux_down_at: watermark > floor ? null : peer.tmux_down_at,
+          // Remember which incarnation this watermark indexes. Undefined (an
+          // older peer that sends no epoch) is stored as null: "still unknown",
+          // which is what keeps the comparison above from firing on every
+          // collect against a node that will never send one.
+          epoch: envelope.epoch ?? null,
         });
         results.push({ peer: peer.name, ok: true, ingested });
       } catch (error) {

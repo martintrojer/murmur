@@ -63,4 +63,13 @@ export type Peer = {
   fetched_at: number | null;
   /** When a jump last found this peer's tmux server down. Null once it answers. */
   tmux_down_at: number | null;
+  /**
+   * The incarnation of the peer's log that `watermark` indexes.
+   *
+   * A watermark is only meaningful within one incarnation: if the peer's store
+   * is wiped it keeps its host_id and restarts `seq` at 1, and our watermark
+   * then points past its whole log. Null means we have never seen an epoch from
+   * this peer, which is also what an older peer's envelope implies.
+   */
+  epoch: string | null;
 };

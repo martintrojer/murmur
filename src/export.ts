@@ -12,6 +12,29 @@ export type Envelope = {
   host_id: string;
   display_name: string;
   exported_at: number;
+  /**
+   * Which incarnation of this node's log the seqs below belong to.
+   *
+   * `host_id` answers "which node" and survives a store wipe on purpose --
+   * it lives in its own file. That is exactly what makes a wipe undetectable
+   * without this field: the node keeps its identity, restarts `seq` at 1, and a
+   * peer holding a watermark of 3 asks `--since 3` and is told nothing is new.
+   * Two blocked agents can sit invisible indefinitely, with no detection and no
+   * recovery path.
+   *
+   * So a watermark is only meaningful WITHIN an epoch, and this is the field
+   * that lets a reader notice the pair has changed.
+   *
+   * Optional on the type, and that is a compatibility statement rather than
+   * laziness: an old node's envelope simply lacks it, and a reader must treat
+   * that as "unknown" rather than as a change. Adding it needs no
+   * SCHEMA_VERSION bump precisely because it is additive and ignorable in both
+   * directions -- and a bump would be actively harmful here, since
+   * `resetIfStale` deletes every local events.db on a version change. Bumping
+   * the wire to announce a wipe-detection field would itself cause the wipe it
+   * exists to make survivable. There is a test for that.
+   */
+  epoch?: string;
 };
 
 const EVENT_FIELDS = new Set([
@@ -238,6 +261,7 @@ export function exportJsonl(
     host_id: identity.host_id,
     display_name: identity.display_name,
     exported_at: Date.now(),
+    epoch: store.epoch(),
   };
   const lines = [
     JSON.stringify(envelope),

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { rmSync } from "node:fs";
 import Database from "better-sqlite3";
 import { ensureIdentity } from "./identity.js";
@@ -132,6 +133,16 @@ export interface Store {
    */
   latestForAgent(hostId: string, agentId: string): Event | null;
   maxSeq(hostId: string): number;
+  /**
+   * This database's incarnation id, minted when the file is created.
+   *
+   * Not identity: `host_id` says WHICH NODE, and deliberately survives a wipe
+   * because it lives in its own file. This says WHICH LOG, and must not
+   * survive, because `seq` is only meaningful within one. A reset keeps the
+   * host_id and restarts seq at 1, which is precisely the pair a peer cannot
+   * distinguish from "nothing new" -- see the epoch comment in export.ts.
+   */
+  epoch(): string;
   prune(horizonMs?: number): number;
   peers(): Peer[];
   /**
@@ -193,7 +204,12 @@ export function openStore(): Store {
       -- state, not an event: this node cannot author facts about another
       -- node's agents, and a jump is a local observation, not something the
       -- peer said. Cleared by the next successful collect.
-      tmux_down_at INTEGER
+      tmux_down_at INTEGER,
+      -- The incarnation of the peer's LOG that our watermark indexes. When the
+      -- peer reports a different one, its seqs restarted and the watermark is
+      -- meaningless, so we re-read from zero. NULL means we have never seen an
+      -- epoch from it, which is also what an older peer's envelope implies.
+      epoch TEXT
     );
   `);
 
@@ -203,6 +219,27 @@ export function openStore(): Store {
   } catch {
     // Already present.
   }
+
+  // Additive migration: a peers table predating epoch tracking. A NULL epoch
+  // means "never seen one", which is what an old peer's envelope also implies,
+  // so the two cases converge without special handling.
+  try {
+    database.exec("ALTER TABLE peers ADD COLUMN epoch TEXT");
+  } catch {
+    // Already present.
+  }
+
+  // The incarnation id for THIS database file.
+  //
+  // Stored in the db rather than beside identity.json, because that is what
+  // makes it correct by construction: the wipe that resets `seq` is the same
+  // wipe that takes this row with it, so a new log cannot inherit an old log's
+  // epoch even if someone adds a new reason to reset. Nothing has to remember
+  // to bump it -- `resetIfStale` deletes the file and the next open mints a new
+  // one. Peers survive the wipe and are restored at watermark 0, but their
+  // `epoch` column is about the REMOTE log and is untouched by ours.
+  database.exec("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+  database.prepare("INSERT OR IGNORE INTO meta (key, value) VALUES ('epoch', ?)").run(randomUUID());
 
   // Put back the peers the wipe took, at watermark 0 so the next collect
   // re-reads each one from the start.
@@ -291,6 +328,13 @@ export function openStore(): Store {
         .get(hostId, agentId) as EventRow | undefined;
       return row ? toEvent(row) : null;
     },
+    epoch() {
+      return (
+        database.prepare("SELECT value FROM meta WHERE key = 'epoch'").get() as
+          | { value: string }
+          | undefined
+      )?.value as string;
+    },
     maxSeq(hostId) {
       return (selectMaxSeq.get(hostId) as { seq: number }).seq;
     },
@@ -327,15 +371,16 @@ export function openStore(): Store {
         | undefined;
       database
         .prepare(`
-          INSERT INTO peers (name, target, host_id, display_name, watermark, fetched_at, tmux_down_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?)
+          INSERT INTO peers (name, target, host_id, display_name, watermark, fetched_at, tmux_down_at, epoch)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(name) DO UPDATE SET
             target = excluded.target,
             host_id = excluded.host_id,
             display_name = excluded.display_name,
             watermark = excluded.watermark,
             fetched_at = excluded.fetched_at,
-            tmux_down_at = excluded.tmux_down_at
+            tmux_down_at = excluded.tmux_down_at,
+            epoch = excluded.epoch
         `)
         .run(
           peer.name,
@@ -345,6 +390,7 @@ export function openStore(): Store {
           peer.watermark !== undefined ? peer.watermark : (current?.watermark ?? 0),
           peer.fetched_at !== undefined ? peer.fetched_at : (current?.fetched_at ?? null),
           peer.tmux_down_at !== undefined ? peer.tmux_down_at : (current?.tmux_down_at ?? null),
+          peer.epoch !== undefined ? peer.epoch : (current?.epoch ?? null),
         );
     },
     removePeer(name) {
