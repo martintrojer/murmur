@@ -209,7 +209,14 @@ export function openStore(): Store {
       -- peer reports a different one, its seqs restarted and the watermark is
       -- meaningless, so we re-read from zero. NULL means we have never seen an
       -- epoch from it, which is also what an older peer's envelope implies.
-      epoch TEXT
+      epoch TEXT,
+      -- What the peer last said it was running. Peer-reported metadata, like
+      -- display_name: recorded at collect time, null until it answers once.
+      -- schema_version is stored too because it is the field the collector
+      -- actually enforces, so it is the only honest basis for flagging a
+      -- pairing as incompatible.
+      murmur_version TEXT,
+      schema_version INTEGER
     );
   `);
 
@@ -227,6 +234,16 @@ export function openStore(): Store {
     database.exec("ALTER TABLE peers ADD COLUMN epoch TEXT");
   } catch {
     // Already present.
+  }
+
+  // Additive migrations: a peers table predating version reporting. Separate
+  // statements because one failing ALTER must not skip the next.
+  for (const column of ["murmur_version TEXT", "schema_version INTEGER"]) {
+    try {
+      database.exec(`ALTER TABLE peers ADD COLUMN ${column}`);
+    } catch {
+      // Already present.
+    }
   }
 
   // The incarnation id for THIS database file.
@@ -371,8 +388,8 @@ export function openStore(): Store {
         | undefined;
       database
         .prepare(`
-          INSERT INTO peers (name, target, host_id, display_name, watermark, fetched_at, tmux_down_at, epoch)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          INSERT INTO peers (name, target, host_id, display_name, watermark, fetched_at, tmux_down_at, epoch, murmur_version, schema_version)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(name) DO UPDATE SET
             target = excluded.target,
             host_id = excluded.host_id,
@@ -380,7 +397,9 @@ export function openStore(): Store {
             watermark = excluded.watermark,
             fetched_at = excluded.fetched_at,
             tmux_down_at = excluded.tmux_down_at,
-            epoch = excluded.epoch
+            epoch = excluded.epoch,
+            murmur_version = excluded.murmur_version,
+            schema_version = excluded.schema_version
         `)
         .run(
           peer.name,
@@ -391,6 +410,12 @@ export function openStore(): Store {
           peer.fetched_at !== undefined ? peer.fetched_at : (current?.fetched_at ?? null),
           peer.tmux_down_at !== undefined ? peer.tmux_down_at : (current?.tmux_down_at ?? null),
           peer.epoch !== undefined ? peer.epoch : (current?.epoch ?? null),
+          peer.murmur_version !== undefined
+            ? peer.murmur_version
+            : (current?.murmur_version ?? null),
+          peer.schema_version !== undefined
+            ? peer.schema_version
+            : (current?.schema_version ?? null),
         );
     },
     removePeer(name) {

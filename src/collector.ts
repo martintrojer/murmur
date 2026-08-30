@@ -153,13 +153,28 @@ async function refetchFromZero(
   return parseJsonl(await channel.exec(peer.target, ["murmur", "export", "--since", "0"]));
 }
 
+/**
+ * Thrown when a peer's wire schema is newer than this node understands.
+ *
+ * A distinct error type rather than a bare Error because the envelope is still
+ * WORTH RECORDING when this fires. The refusal is exactly the pairing an
+ * operator needs to see in `peer list`, and before this the throw happened
+ * before `upsertPeer` ran -- so the peer row kept host_id, display_name and
+ * version all null, and the one case the version column exists for was the one
+ * case it could not explain. Verified against a real store before changing it.
+ */
+class SchemaTooNewError extends Error {
+  constructor(readonly envelope: Envelope) {
+    super(`unsupported schema version ${envelope.schema_version} (supports ${SCHEMA_VERSION})`);
+    this.name = "SchemaTooNewError";
+  }
+}
+
 function parseJsonl(output: string): { envelope: Envelope; events: Event[] } {
   const lines = output.trim().split("\n");
   const envelope = JSON.parse(lines.shift() ?? "") as Envelope;
   if (envelope.schema_version > SCHEMA_VERSION) {
-    throw new Error(
-      `unsupported schema version ${envelope.schema_version} (supports ${SCHEMA_VERSION})`,
-    );
+    throw new SchemaTooNewError(envelope);
   }
   return {
     envelope,
@@ -285,9 +300,30 @@ export async function collect(
           // which is what keeps the comparison above from firing on every
           // collect against a node that will never send one.
           epoch: envelope.epoch ?? null,
+          // What it is running, for `peer list`. Reported, never enforced:
+          // `schema_version` is the only field the collector reasons about, and
+          // a murmur version differing is worth showing but is not by itself a
+          // problem. Undefined from an older peer stores as null, i.e. unknown.
+          murmur_version: envelope.murmur_version ?? null,
+          schema_version: envelope.schema_version,
         });
         results.push({ peer: peer.name, ok: true, ingested });
       } catch (error) {
+        // A peer refused for being too new still told us who it is and what it
+        // runs, and that is the whole point of recording it: this is the pairing
+        // `peer list` needs to explain. Everything else is left alone --
+        // fetched_at in particular, so a refused peer renders stale rather than
+        // freshly synced, which an existing test pins.
+        if (error instanceof SchemaTooNewError) {
+          store.upsertPeer({
+            name: peer.name,
+            target: peer.target,
+            host_id: error.envelope.host_id,
+            display_name: error.envelope.display_name,
+            murmur_version: error.envelope.murmur_version ?? null,
+            schema_version: error.envelope.schema_version,
+          });
+        }
         // Reported through the return value, never printed here. `collect` runs
         // from `murmur status` on every status-bar tick, and from `pick` inside
         // a display-popup, so a single sleeping laptop wrote to stderr forever

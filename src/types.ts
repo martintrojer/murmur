@@ -72,4 +72,23 @@ export type Peer = {
    * this peer, which is also what an older peer's envelope implies.
    */
   epoch: string | null;
+  /**
+   * The murmur version this peer last reported, or null if never heard from.
+   *
+   * Peer-reported metadata recorded at collect time, the same category as
+   * `display_name` -- not reader state like `tmux_down_at`. Null means "never
+   * successfully asked", which is the common case in this tool and must render
+   * as unknown rather than as a value.
+   */
+  murmur_version: string | null;
+  /**
+   * The wire schema version this peer last reported.
+   *
+   * Stored beside the murmur version because it is the one the collector
+   * actually enforces, so it is the only honest basis for calling a pairing
+   * incompatible. Recorded even when the peer is REFUSED for being too new:
+   * that refusal is precisely the case an operator needs to see, and a row that
+   * records nothing about it explains nothing.
+   */
+  schema_version: number | null;
 };

@@ -1,3 +1,4 @@
+import { createRequire } from "node:module";
 import { foldAgent, type LiveCheck } from "./fold.js";
 import { ensureIdentity, loadIdentity } from "./identity.js";
 import { asPaneId, asSessionId, asWindowId, type PaneId, type WindowId } from "./ids.js";
@@ -6,6 +7,18 @@ import type { Store } from "./store.js";
 import type { Driver, Event } from "./types.js";
 
 export const SCHEMA_VERSION = 2;
+
+/**
+ * This node's murmur version, for the envelope.
+ *
+ * Read from the manifest rather than restated, for the reason index.ts already
+ * gives: two copies of one fact drift, and npm bumps the manifest. Read here
+ * rather than imported from index.ts because index.ts imports this module, and
+ * a cycle through the SDK entry point to fetch a string is not worth it.
+ */
+const MURMUR_VERSION: string = (
+  createRequire(import.meta.url)("../package.json") as { version: string }
+).version;
 
 export type Envelope = {
   schema_version: number;
@@ -35,6 +48,20 @@ export type Envelope = {
    * exists to make survivable. There is a test for that.
    */
   epoch?: string;
+  /**
+   * The murmur version that produced this envelope.
+   *
+   * `schema_version` says whether the events can be PARSED; this says what code
+   * produced them. They answer different questions and neither implies the
+   * other: two nodes on schema 2 can run different murmur versions with
+   * different behaviour, which is the pairing that was previously invisible.
+   *
+   * Reported, not enforced. The collector's only hard rule stays
+   * `schema_version`, because that is the one it can reason about; a version
+   * string is for a human to look at. Optional for the same additive reason as
+   * `epoch`: an older node sends none, and that must read as "unknown".
+   */
+  murmur_version?: string;
 };
 
 const EVENT_FIELDS = new Set([
@@ -262,6 +289,7 @@ export function exportJsonl(
     display_name: identity.display_name,
     exported_at: Date.now(),
     epoch: store.epoch(),
+    murmur_version: MURMUR_VERSION,
   };
   const lines = [
     JSON.stringify(envelope),

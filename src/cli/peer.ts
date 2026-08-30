@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type { Command } from "commander";
 import { hasWarmSocket, ssh } from "../channel.js";
 import { STALENESS_MS } from "../collector.js";
-import type { Envelope } from "../export.js";
+import { type Envelope, SCHEMA_VERSION } from "../export.js";
 import { age, isStale } from "../fold.js";
 import { loadIdentity } from "../identity.js";
 import { openStore } from "../store.js";
@@ -47,6 +47,47 @@ export function lastSeen(fetchedAt: number | null, now: number): string {
   if (fetchedAt === null) return "never";
   if (!isStale(fetchedAt, now, STALENESS_MS)) return "just now";
   return `${age(now - fetchedAt)} ago`;
+}
+
+/**
+ * What to show in the VERSION column, and whether the pairing is a problem.
+ *
+ * The distinction the task turns on, and it is drawn from what the code
+ * actually enforces rather than from taste:
+ *
+ *   - a differing SCHEMA_VERSION is a hard incompatibility. `parseJsonl`
+ *     refuses a peer whose schema is higher than ours, so events genuinely do
+ *     not flow. That is a fact about behaviour, and it is the only thing marked.
+ *   - a differing murmur version is worth SHOWING and nothing more. Two nodes
+ *     on schema 2 running 0.1.3 and 0.1.4 interoperate fine; marking that would
+ *     cry wolf on every patch release and train the operator to ignore the
+ *     column that is supposed to mean something.
+ *
+ * So the mark answers "can these two exchange events?", not "are these two
+ * byte-identical?". A peer we have never heard from is `unknown` and is NOT a
+ * mismatch: absence of information is not evidence of incompatibility, and a
+ * down or asleep peer is the common case here, not an exception.
+ */
+export function versionCell(
+  peer: Pick<Peer, "murmur_version" | "schema_version">,
+  ours = SCHEMA_VERSION,
+): { text: string; incompatible: boolean } {
+  // Never successfully asked. Renders like the other never-seen columns rather
+  // than inventing a value.
+  if (peer.murmur_version === null && peer.schema_version === null) {
+    return { text: "unknown", incompatible: false };
+  }
+  // Answered, but from a build too old to say what it is. Distinct from never
+  // having answered: this one is reachable and talking.
+  const version = peer.murmur_version ?? "unreported";
+  const incompatible = peer.schema_version !== null && peer.schema_version !== ours;
+  // The schema number appears ONLY when it is the problem. In the normal case it
+  // is noise -- every peer would read "0.1.4 (schema 2)" -- and in the abnormal
+  // case it is the whole explanation, so it earns its width exactly then.
+  return {
+    text: incompatible ? `${version} (schema ${peer.schema_version} \u2260 ${ours})` : version,
+    incompatible,
+  };
 }
 
 export function formatTable(rows: string[][]): string {
@@ -233,6 +274,16 @@ export function registerPeer(program: Command): void {
             // never dials, so a host that is down or does not exist answers in
             // ~16ms. Measured.
             ssh: hasWarmSocket(target) ? "warm" : "cold",
+            // What it is running, or undefined when nothing is known -- either
+            // because the host is not a peer yet, or because it is a peer that
+            // has never answered. Undefined is what drops the column, so the
+            // test is "has anything told us", not "is this configured": a fleet
+            // of asleep peers must not buy a column of "unknown".
+            version:
+              entry === undefined ||
+              (entry.murmur_version === null && entry.schema_version === null)
+                ? undefined
+                : versionCell(entry),
           };
         });
 
@@ -255,19 +306,45 @@ export function registerPeer(program: Command): void {
         // Without --all every row would read "yes", which is a column that says
         // nothing.
         const showPeerColumn = rows.some((row) => !row.peer);
+        // Same rule as the PEER column, for the same reason: a column every row
+        // answers "unknown" to is width spent on nothing. With zero successful
+        // collects -- the common case, and one the task calls out -- the table
+        // stays exactly as narrow as it is today.
+        const showVersionColumn = rows.some((row) => row.version !== undefined);
         process.stdout.write(
           formatTable([
-            ["NAME", "TARGET", ...(showPeerColumn ? ["PEER"] : []), "HOSTNAME", "LAST SEEN", "SSH"],
+            [
+              "NAME",
+              "TARGET",
+              ...(showPeerColumn ? ["PEER"] : []),
+              "HOSTNAME",
+              ...(showVersionColumn ? ["VERSION"] : []),
+              "LAST SEEN",
+              "SSH",
+            ],
             ...rows.map((row) => [
               row.name,
               row.target,
               ...(showPeerColumn ? [row.peer ? "yes" : "-"] : []),
               row.hostname ?? "unknown",
+              ...(showVersionColumn ? [row.version?.text ?? "-"] : []),
               row.last_seen ?? "-",
               row.ssh,
             ]),
           ]),
         );
+
+        // Named, not just marked in the row: the table cell says WHAT differs
+        // and this says what to do about it. Only for a real schema mismatch,
+        // which is the only case where events genuinely do not flow.
+        const incompatible = rows.filter((row) => row.version?.incompatible);
+        if (incompatible.length > 0) {
+          process.stdout.write(
+            `\n${incompatible.length} peer${incompatible.length === 1 ? "" : "s"} on an incompatible wire schema; events will not sync until murmur versions match: ${incompatible
+              .map((row) => row.name)
+              .join(", ")}\n`,
+          );
+        }
 
         const addable = rows.filter((row) => !row.peer).length;
         if (addable > 0) {
