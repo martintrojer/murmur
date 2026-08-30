@@ -17,28 +17,68 @@ spends most of its effort refusing to solve harder problems nearby.
 ## The shape
 
 ```
-pi agent ──in-process── murmur store ── events.db   (one per node)
+pi agent ──in-process── murmur store ── state.db   (one per node)
                                             │
-                              ssh murmur export --since N
+                                    ssh murmur export
                                             │
-                                   collector ── fold ── picker
-                                                          │
-                                        jump: local switch, or ssh -t
+                                collector ── view ── picker
+                                                       │
+                                     jump: local switch, or ssh -t
 ```
 
-Each node keeps an append-only SQLite log describing only its own agents. Any
-node pulls its peers' logs over ssh and folds the union into one
-attention-sorted picker. No daemon, no listening socket, no master node.
+Each node keeps one SQLite database describing the current state of its own
+panes. `murmur export` prints that state as a single complete JSON document — a
+**snapshot**. Any node pulls its peers' snapshots over ssh, caches one per peer,
+and renders the union as an attention-sorted list. No daemon, no listening
+socket, no master node.
 
 murmur observes and connects. It does not place work. That is an orchestrator's
 job, and mixing the two is how you end up owning scheduling, credentials and
 artifact movement.
 
+## The model in one page
+
+Three facts, independent, each with exactly one writer:
+
+| Fact | Meaning | Stored as | Written by |
+| --- | --- | --- | --- |
+| **activity** | is a process working in this pane | `agents.activity` = `running` \| `stopped` | the pane's owning process only |
+| **attention** | does someone need to look at this pane | rows in `attention`, kind `done` \| `blocked` \| `crashed` | owner (`done`), external notifier (`blocked`), local reconciliation (`crashed`) |
+| **freshness** | how recently we reached the node that reported | `peers.fetched_at` | the collector |
+
+They are never folded into one enum, and no stored value spans two of them.
+There is no `cleared`: absence of an attention row *is* "nothing to see", and
+absence of an agent row *is* "no agent here". The words a surface paints
+(`crashed`, `blocked`, `done`, `running`, `idle`) are derived at read time by
+`renderState` and stored nowhere.
+
+Why three and not one. A crashed agent on an unreachable host is crashed *and*
+stale, on different axes; a running agent that a notifier flagged as blocked is
+both, and the picker shows both. Every attempt to collapse these produced a
+question with no answer, and one of them shipped: a focus hook that could
+overwrite an agent's state replaced `working` with `blocked` on live panes and
+nulled the owner metadata while all three processes were running. The fix is
+structural — `attention` has no column an agent field could live in.
+
+Identity and address are separated:
+
+- **node identity** — `identity.json`, `{host_id, display_name}`. Created only
+  by `murmur init`, and only by it. Survives a store wipe.
+- **agent identity** — a random UUID minted per *process instance* when it
+  claims a pane. It is not derived from the pane, so a new process in the same
+  pane is a different agent, and a late write from a replaced owner matches no
+  row.
+- **pane** — the *address*. `UNIQUE` in `agents`, part of the primary key in
+  `attention`. One top-level instrumented agent per pane, enforced by SQLite.
+
+Truth about a node lives only on that node. Other nodes hold one opaque,
+validated snapshot per peer, replaced whole or not at all.
+
 ## Why this is not a distributed system
 
-It is single-writer-per-partition replication. Each node authors only events
-about its own agents, so no two nodes ever write about the same thing. Merging
-is a UNION.
+It is single-writer-per-partition caching. Each node owns the state of its own
+panes and publishes it; no other node writes about them, ever. Merging is a
+concatenation of one local read and one cached document per peer.
 
 Calling it "distributed" invites machinery the problem does not have: consensus,
 conflict resolution, vector clocks, leader election. If a change starts to need
@@ -47,30 +87,23 @@ broken somewhere.
 
 Three consequences worth stating, because each is easy to violate by accident:
 
-- **A node may not author events about another node's agents.** Not even
-  corrections. A reader that learns something (a jump proving a pane is gone)
-  records it as *reader state*, or deletes its replica. It does not write an
-  event.
-- **Only a pane's owner may report for that pane.** The same rule one level
-  down, and it was violated from the first commit until it was found in use.
-  `agent_id` is `host:pane`, the extension resolves its pane from `$TMUX_PANE`,
-  and `$TMUX_PANE` is inherited — so any pi started inside an agent's pane loaded
-  the globally linked extension, resolved the *parent's* pane, and wrote events
-  as that agent. One pane accumulated six distinct reporting pids, of which one
-  was alive; the live agent's row folded off a dead child's pid and read idle
-  while it was working. A nested run therefore reports nothing at all: no store
-  opened, no handler registered, no badge painted. Silence is correct for a
-  process with nothing true to say.
-
-  `murmur notify` is the one deliberate exception, and it is narrow by
-  construction rather than by convention: it can only ever say `blocked`, and
-  its row carries no pid, so it makes no claim about any process being alive.
-  `working`, `done` and `crashed` stay the pane owner's alone. That is what
-  makes an outside-in attention path safe for harnesses that cannot report from
-  inside themselves.
-- **`host_id` is the origin, watermarks are keyed by peer.** These are the same
-  thing today, and differ the moment anything gossips. Free to preserve now,
-  expensive to retrofit.
+- **A node may not write state about another node's panes.** Not even
+  corrections. A reader that learns something — a jump proving a pane is gone —
+  *reports* it and writes nothing. The next collect reconciles, because the
+  owning node is the one that reconciles.
+- **Only a pane's own process may report for that pane.** `claimAgent` answers
+  `refused` to a second live claimant, and a refused caller registers no
+  handlers, writes nothing and paints no badge. This replaced an environment
+  marker and three helper functions: a nested pi inherits `$TMUX_PANE` and used
+  to report *as* the pane's real agent, so one pane accumulated six reporting
+  pids of which one was alive, and the live agent read idle while it worked.
+  Silence is correct for a process with nothing true to say.
+- **`murmur notify` is the one deliberate exception, and it is narrow by
+  construction.** Its whole request type is `{kind, location, message, source}`
+  — there is no `agent_id`, no pid, no activity and no metadata field, so it
+  cannot say anything about a process being alive even by accident. It is also
+  restricted to `blocked` by the callers that use it; `running`, `done` and
+  `crashed` remain the owner's and reconciliation's.
 
 ## A tmux pane is the agent's address
 
@@ -78,16 +111,15 @@ Everything below assumes agents run inside tmux. A pane is how murmur names an
 agent and how a jump reaches one.
 
 An agent IS a pane. A session and a window are only where that pane currently
-lives: `agent_id` is `host:pane`, and a pane keeps its id across `move-pane`,
-`break-pane`, and a window closed and reopened, while the window on an agent's
-last event goes stale as a matter of course. So **only a pane may decide whether
-an agent exists** — a window id is location, never evidence of life. tmux says
-the same thing with its sigils, `$25` / `@75` / `%89`, and the three ids are
-branded types (`SessionId`, `WindowId`, `PaneId`) so that passing one where
-another is meant does not compile.
+lives: a pane keeps its id across `move-pane`, `break-pane`, and a window closed
+and reopened, while a recorded window id goes stale as a matter of course. So
+**only a pane may decide whether an agent exists** — a window id is location,
+never evidence of life. tmux says the same thing with its sigils, `$25` / `@75`
+/ `%89`, and the three ids are branded types (`SessionId`, `WindowId`, `PaneId`)
+so that passing one where another is meant does not compile.
 
 The extension resolves its pane from `$TMUX_PANE` and returns early without one,
-so a pi started in a plain terminal writes no events and never appears in the
+so a pi started in a plain terminal records nothing and never appears in the
 picker. That is the honest outcome rather than a gap: with no pane there is no
 address, and a row you cannot jump to is worse than no row.
 
@@ -95,87 +127,86 @@ Two nearby calls look contradictory and are not:
 
 - `currentWindow()` answers "which pane am I in", so only `$TMUX_PANE` can tell
   it. Asking tmux instead reports whichever pane the server considers active,
-  which would let a non-tmux pi record itself in an unrelated agent's pane and
-  overwrite that agent's state.
+  which would let a non-tmux pi record itself in an unrelated agent's pane.
 - `livePanes()` answers "which panes exist on this host", which is server-wide
-  and correct from anywhere. Export runs over ssh with no pane of its own and
-  still has to see the panes. `liveWindows()` is the same question about
-  windows, and the sweep takes it only as proof that tmux could answer at all.
+  and correct from anywhere. `export` runs over ssh with no pane of its own and
+  still has to see the panes.
 
-Both return `null` for "could not tell", which is deliberately distinct from an
-empty set. Conflating them clears every agent on the host the moment tmux is
-unreachable.
+`livePanes()` returns `null` for "could not tell", which is deliberately
+distinct from an empty set, and `reconcileLocal` treats `null` as no evidence
+and writes nothing. Conflating them deletes every agent on the host the moment
+tmux is unreachable.
 
-The rule binds the JUMP as well as the sweep, and that took two goes to learn.
-A local jump asks `livePanes()`, and the remote probe is `tmux list-panes -a -F
-'#{pane_id}'` — not `list-windows`, because no answer about windows can say
-whether a pane exists. Both paths DELETE the row when the probe says gone, so
-asking about windows there condemned healthy agents on one keypress, and for a
-local agent the delete is unrecoverable: `forgetReplica` rewinds a peer's
-watermark to let the rows come back, and a local agent has no peer row.
+The rule binds the JUMP as well as reconciliation, and that took two goes to
+learn. A local jump asks `livePanes()`, and the remote probe is `tmux list-panes
+-a -F '#{pane_id}'` — not `list-windows`, because no answer about windows can
+say whether a pane exists. Asking about windows there condemned healthy agents
+on one keypress. **A failed jump now mutates nothing**: it returns a
+`JumpResult` with a reason and a message, and `pane_gone` is a report rather
+than a deletion. That is the same single-writer rule one level down — the jump
+runs on the reader, and only the owning node may retire a pane.
 
-The remote jump inherits the same requirement, since it is `ssh -t <host> tmux
+The remote jump inherits the tmux requirement, since it is `ssh -t <host> tmux
 attach`. tmux must be running on the far side, which is why a dead remote tmux
-server gets its own diagnosis rather than being reported as an unreachable
-host.
+server gets its own diagnosis rather than being reported as an unreachable host.
 
 The brands (`src/ids.ts`) are phantom types on `string`, so they cost nothing at
 runtime and are applied at the edges: `asPaneId` and friends are called where a
 bare string arrives — argv, a tmux query, the wire — and everything inside deals
-in branded values. What that prevents is the mix-up that deleted ten live
-agents: `panes.has(event.window)` is now a compile error, `Argument of type
-'WindowId' is not assignable to parameter of type 'PaneId'`.
+in branded values. What that prevented was the mix-up that deleted ten live
+agents: comparing a `WindowId` against a set of pane ids is a compile error.
 
 What it does NOT buy, since that bounds how far the types can be trusted: both
-jump paths compared a `WindowId` against a `Set<WindowId>`, which is internally
-coherent and compiles cleanly. Branding stops you MIXING the three ids; it
-cannot stop you asking the wrong one a question. That second half is the more
-useful sentence — a type system polices which noun you passed, never whether the
-question was worth asking, and the jump bug was a well-typed wrong question.
-Only a test that moves a pane out from under a recorded window catches it.
+jump paths once compared a `WindowId` against a `Set<WindowId>`, which is
+internally coherent and compiles cleanly. Branding stops you MIXING the three
+ids; it cannot stop you asking the wrong one a question. A type system polices
+which noun you passed, never whether the question was worth asking. Only a test
+that moves a pane out from under a recorded window catches that.
 
 The badge also has to be cleared from outside, which is why `murmur clear --pane
-<id>` exists and why tmux hooks call it. The status bar and the `tms` picker read
-a window option, so it outlives the agent unless something clears it — and the
-agent cannot, because "you looked at it" is an event only the multiplexer sees.
-Hooks run in the tmux server with no `$TMUX_PANE`, so the pane id is passed
-explicitly: the badge belongs to the window, the looking belongs to one pane.
+<id>` exists and why tmux hooks call it. The status bar and the picker read a
+tmux window option, so it outlives the agent unless something clears it — and
+the agent cannot, because "you looked at it" is an event only the multiplexer
+sees. Hooks run in the tmux server with no `$TMUX_PANE`, so the pane id is
+passed explicitly: the badge belongs to the window, the looking belongs to one
+pane.
 
-## The six units
+## The units
 
 | Unit | Does | Depends on |
 | ---- | ---- | ---------- |
 | `identity` | Read/create this node's `{host_id, display_name}` | state dir |
-| `store` | Append, query, ingest, prune. **The only module touching SQL** | `identity` |
-| `fold` | **Pure.** Events in, agent states out | nothing |
+| `store` | Claim, report, reconcile, cache. **The only module touching SQL** | `identity` (as a parameter) |
+| `snapshot` | **Pure.** `parseSnapshot`: validate one document, totally | nothing |
+| `view` | **Pure.** `SnapshotPane[]` in, `PaneView[]` out | `store` (types) |
 | `channel` | Seam: `exec(target, argv) -> stdout`. One impl: ssh | OS |
-| `collector` | Pull each peer, ingest, advance watermark | `channel`, `store` |
-| `mux` | Seam: window/pane queries, set state, attach. One impl: tmux | OS |
+| `collector` | Fetch each peer, validate, replace its cache whole | `channel`, `store` |
+| `mux` | Seam: window/pane queries, badge, attach. One impl: tmux | OS |
 
-`fold` being pure and `store` being the only SQL is the boundary that carries
-the design. Attention ordering and staleness live in `fold`, retention in
-`store`, and crash synthesis in `export` — which is where the authoring node
-runs, per idea 2 below. All are testable without a machine, a network or a
-multiplexer.
+`view` and `snapshot` being pure and `store` being the only SQL is the boundary
+that carries the design. All three are testable without a machine, a network or
+a multiplexer.
 
-**One resolver answers "what is this agent doing".** `resolveState(events,
-isAlive)` in `fold` is the only place that turns stored rows into a state, with
-`viewState(view)` for callers that already hold a folded agent. It exists
-because fourteen sites across six files once derived some part of that question
-independently, and the seams between them shipped six bugs — the worst being a
-dead-pid `working` row that `fold` read as `crashed`, `export` wrote a synthetic
-`crashed` for, and `clear` saw as raw `working` and refused to clear. Callers
-format; they do not decide. The resolved vocabulary is `working | blocked | done
-| crashed | idle`, and `idle` rather than `cleared` or null is the point: a
-stored row can say `cleared`, a resolved agent cannot.
+**One local read.** `Store.localPanes()` is the only way to read local state,
+and it returns `SnapshotPane[]` — the same shape a peer's cached snapshot holds.
+So `paneViews` maps one type to `PaneView` exactly once, and a local pane and a
+remote pane travel the same code path, differing only in the `host_id`, `local`
+and freshness fields the caller supplies. There is no `agentForPane`, no
+`attentionFor`, no `agents()`: it was the proliferation of narrow reads that let
+`clear` and the extension each derive their own idea of what a pane's state was,
+across fourteen sites and six shipped bugs.
 
-The liveness probe is injected rather than imported, which keeps the resolver
-testable and lets the caller choose — a local agent is probed with `pidAlive`, a
-remote one with `() => true`, because a remote pid names a process in another
-machine's table. It fails CLOSED: `pidAlive` reports death only on `ESRCH`, so a
-probe that cannot answer says alive, which resolves to `working`, which is not
-clearable. An unanswerable pid must never promote a live agent into a clearable
-one.
+`owner_pid` is not in that shape. It is local-only, never in a snapshot and
+never on the wire, which makes remote liveness inference *unrepresentable*
+rather than discouraged. A remote pid names a process in another machine's table.
+
+The `Store` interface is closed, and adding a method is a contract change. Some
+shapes are forbidden outright, each because it once let a writer say something
+it had no standing to say: anything that takes a row and writes it (`append`,
+`ingest`, `put`), any log read, any partial-row or column-map update, any
+activity write keyed on pane alone rather than on `agent_id` plus `owner_pid`,
+any attention method that accepts an agent field, and any escape hatch exposing
+the database handle.
 
 Two seams exist with exactly one implementation each: `channel` (ssh) and `mux`
 (tmux). Defined so a second backend is possible; not designed for one that does
@@ -185,177 +216,357 @@ command rather than an interface to implement.
 
 ## The data model
 
-One append-only table. Sole author per `host_id`. Primary key `(host_id, seq)`,
-which is what makes ingest idempotent. A re-read after a partial failure is
-free.
+Three tables in `state.db`, all `STRICT`, `user_version = 3`. `agents` and
+`attention` are local truth; `peers` is a cache of other nodes.
 
-| Column | Notes |
-| ------ | ----- |
-| `host_id` | UUID of the **origin** node, not the node we fetched from |
-| `seq` | Monotonic per `host_id`. The watermark unit |
-| `ts` | Wall clock. Display ordering only |
-| `agent_id` | Stable for the agent's life. Identity, distinct from location |
-| `pane` | **Identity.** The `agent_id` component. Never changes |
-| `session`, `window` | Current **location**. May change between events |
-| `session_name`, `window_name` | Recorded by the author; ids are machine-local |
-| `agent_name`, `pi_session` | Richer than tmux, and not derivable from it |
-| `workstream`, `role`, `cli` | Nullable. Grouping and display |
-| `driver` | `human \| orchestrated`. **Per agent, not per node** |
-| `kind` | `state` today. Discriminator for future kinds |
-| `state` | `working \| blocked \| done \| crashed \| cleared` |
-| `message`, `pid`, `synthetic`, `reason` | Detail |
-| `extra` | JSON. Unknown fields, preserved verbatim |
+```sql
+CREATE TABLE agents (
+  agent_id     TEXT    NOT NULL PRIMARY KEY,   -- a UUID per process instance
+  pane         TEXT    NOT NULL UNIQUE,        -- the address
+  owner_pid    INTEGER NOT NULL CHECK (owner_pid > 0),
+  activity     TEXT    NOT NULL CHECK (activity IN ('running', 'stopped')),
+  session      TEXT    NOT NULL,               -- location, may change
+  window       TEXT    NOT NULL,
+  session_name TEXT, window_name TEXT,
+  agent_name   TEXT, pi_session TEXT, workstream TEXT, role TEXT,
+  cli          TEXT    NOT NULL,
+  driver       TEXT    NOT NULL CHECK (driver IN ('human', 'orchestrated')),
+  claimed_at   INTEGER NOT NULL,
+  updated_at   INTEGER NOT NULL
+) STRICT;
 
-**Who writes each state**, since "it is in the enum" is not the same as "something
-produces it", and `blocked` sat in the enum unproduced for months while the
-picker, the status counts and the clear whitelist all carried machinery for it:
+CREATE TABLE attention (
+  pane         TEXT    NOT NULL,
+  kind         TEXT    NOT NULL CHECK (kind IN ('done', 'blocked', 'crashed')),
+  message      TEXT    NOT NULL,
+  source       TEXT    NOT NULL,
+  session      TEXT    NOT NULL,               -- its own location: see below
+  window       TEXT    NOT NULL,
+  session_name TEXT, window_name TEXT,
+  requested_at INTEGER NOT NULL,
+  PRIMARY KEY (pane, kind)
+) STRICT;
 
-| state | written by | on |
+CREATE TABLE peers (
+  name TEXT NOT NULL PRIMARY KEY, target TEXT NOT NULL,
+  host_id TEXT, display_name TEXT,
+  snapshot TEXT, snapshot_at INTEGER,          -- the whole document, their clock
+  fetched_at INTEGER, last_attempt_at INTEGER, last_error TEXT,
+  murmur_version TEXT, snapshot_version INTEGER
+) STRICT;
+```
+
+Schema facts that are load-bearing, and the reason each is in the schema rather
+than in a comment:
+
+1. **`agents.pane` is `UNIQUE`.** "One top-level instrumented agent per pane" is
+   enforced by SQLite, not by a caller.
+2. **`agents.agent_id` is a UUID, not `host:pane`.** A replacement owner is a
+   different row, so a late write from the previous owner matches nothing and is
+   silently ineffective rather than destructive.
+3. **`owner_pid` is local-only**, per the previous section.
+4. **`attention` has no `agent_id` and no `owner_pid` column.** An attention
+   writer structurally cannot address an agent's identity, activity or metadata.
+   This is the whole fix for the live-corruption incident described above.
+5. **`PRIMARY KEY (pane, kind)`.** Kinds coexist: a `crashed` row is not
+   clobbered by a later `blocked`, and "focus clears all attention for the pane"
+   is one `DELETE ... WHERE pane = ?`.
+6. **`attention` carries its own location.** An attention-only pane — a codex
+   agent murmur never instrumented — is listable and jumpable with no agent row.
+   `attention.pane` deliberately does not reference `agents.pane`; a constraint
+   saying otherwise would make that case unrepresentable.
+7. **`peers.snapshot` is one TEXT column** holding the validated document.
+   Whole-peer atomic replacement is therefore structural: there is no partial
+   apply to get wrong.
+8. **`CHECK` constraints on `activity`, `driver`, `kind`.** An unknown value
+   cannot reach storage, so no sort, count or render path needs a fallback
+   branch. An unknown state that sorted as `NaN` was a real bug.
+
+No index beyond the declared keys: both local tables are bounded by the number
+of live panes on one machine.
+
+**Who writes each fact**, since "it is in the enum" is not the same as
+"something produces it" — `blocked` sat in an enum unproduced for months while
+three surfaces carried machinery for it:
+
+| Fact | Written by | On |
 | --- | --- | --- |
-| `working` | pi extension | `agent_start`, with the reporting pid |
-| `done` | pi extension | `agent_end`, when the pane is unfocused |
-| `blocked` | pi extension | `agent_settled`, when the pane is unfocused |
-| `blocked` | `murmur notify` | an outside-in call, no pid |
-| `cleared` | pi extension | `agent_end` when focused, and `session_shutdown` |
-| `cleared` | `murmur clear` | focus, and only over a request for attention |
-| `cleared` | `reconcileDeadAgents` | the authoring node, pane gone (`synthetic`) |
-| `crashed` | `synthesizeCrashes` | the authoring node, pid gone (`synthetic`) |
+| `activity = running` | pi extension | `agent_start` |
+| `activity = stopped` | pi extension | `agent_end` |
+| attention `done` | pi extension | `agent_settled`, pane unfocused, `driver = human` |
+| attention `blocked` | `murmur notify` | an outside-in call from another harness |
+| attention `crashed` | `reconcileLocal` | pane alive, owner pid gone, activity was `running` |
+| (row removed) | `releaseAgent` | `session_shutdown` |
+| (attention removed) | `acknowledgePane` | `murmur clear`, i.e. tmux focus |
 
-Nothing writes `crashed` from inside an agent, for the obvious reason. Both
-`blocked` rows carry no pid: the run that authored them has ended, so a pid there
-would be a claim about a process that may already be gone.
+Nothing writes `crashed` from inside an agent, for the obvious reason.
 
-**Unknown data round-trips.** A node ingesting an unknown `kind` or unknown
-fields stores them in `extra` and re-exports them unchanged. Without this, an old
-node in a future replication path silently truncates data — invisible from both
-ends, and only reachable against a version you do not control.
+**Versioning is one strategy, not two.** On open, if `user_version` is not 3,
+murmur salvages `SELECT name, target FROM peers` — the two fields a human typed
+— deletes the database and its `-wal`/`-shm` sidecars, recreates the schema, and
+re-inserts those peers with every observed column `NULL`. There is no
+`ALTER TABLE` anywhere and no additive path to forget to use. Any change to any
+table bumps the version and costs a rebuild, which is affordable precisely
+because nothing here is history: everything in the file is either current state
+or a cache.
 
-**A watermark is only meaningful within an epoch.** The export envelope carries
-`schema_version`, `host_id`, `display_name`, `exported_at`, and two optional
-fields. `epoch` names which incarnation of a node's log the sequence numbers
-belong to: `host_id` lives in its own file and deliberately survives a store
-wipe, which is exactly what made a wipe undetectable — the node keeps its
-identity, restarts `seq` at 1, and a peer holding a watermark of 3 asks
-`--since 3` and is told nothing is new, leaving blocked agents invisible
-indefinitely. `murmur_version` says what code produced the envelope, which
-`schema_version` does not: two nodes on the same schema can run different
-murmur versions with different behaviour. It is reported, not enforced — the
-collector's only hard rule stays `schema_version`, because that is the one it
-can reason about.
+**Identity is never minted by the store.** `openStore()` takes no arguments and
+does not read `identity.json`. `createIdentity` is called only by `murmur init`;
+`setDisplayName` backs `murmur init --name` on an existing node and keeps its
+`host_id`. Every command that needs a `host_id` — `export`, `collect`, `status`,
+`pick`, `peer` — calls `loadIdentity()` and fails with `murmur is not initialised
+on this node; run: murmur init`. A node that came into existence as a side
+effect of a status-bar tick has an identity nobody chose.
 
-Both are optional on the type, and that is a compatibility statement rather
-than laziness: an older node sends neither, and a reader must read that as
-"unknown" rather than as a change. Adding them needed no `SCHEMA_VERSION` bump
-precisely because they are additive and ignorable in both directions — and a
-bump would have been actively harmful, since a version change deletes every
-local `events.db`. Bumping the wire to announce a wipe-detection field would
-itself cause the wipe it exists to make survivable.
+`notify` and `clear` are absent from that list as a consequence of the model
+rather than as an exemption: both address a pane, and `attention` is keyed on
+pane alone, so neither reads `identity.json` and neither can fail for want of an
+identity.
 
-Deliberately absent: a generic `put`/`del` op-log (that needs conflict
-resolution, which single-writer partitioning lets us skip, and it would simply
-*be* `mu`), task/DAG structure (observing a task graph means owning it), and any
-hybrid logical clock (nothing depends on cross-node causality; clock skew
-affects display order only).
+**Transactions.** `claimAgent` and `reconcileLocal` are `IMMEDIATE`: both read
+then write, and a deferred transaction would start as a reader and fail
+`SQLITE_BUSY_SNAPSHOT` on upgrade — measured at 5 of 8 concurrent writers
+failing. Everything else is a single statement, atomic by construction.
+`localPanes` is a deferred read transaction, so a pane cannot appear with an
+agent and without the attention that was there when the agent was read.
+`buildLocalSnapshot` is two transactions rather than one, because a write
+transaction held open across the read would serialise every focus hook on the
+machine behind an export.
 
-**An event log, not a state snapshot.** Current state is a fold over the log,
-which buys three things: there is no state table that can disagree with the log,
-incremental sync is a watermark ("everything after N", idempotent), and history
-is not optional, because the picker's preview shows recent events, so the
-protocol has to ship events rather than derived state.
+Deliberately absent from the model: a generic `put`/`del` op-log (that needs
+conflict resolution, which single-writer partitioning lets us skip, and it would
+simply *be* `mu`), task/DAG structure (observing a task graph means owning it),
+and any hybrid logical clock (nothing depends on cross-node causality; clock
+skew affects display order only).
 
 **TypeScript, on install-story grounds.** pi is an npm package, so every node
 running agents already has Node and npm. Python would mean inventing a
 cross-machine install story for the ecosystem that handles it worst, on machines
-where the system interpreter is least yours to touch. "Keep the working script"
-is weaker than it looks: those lines worked because dotfiles symlinked them, so
-a second machine means packaging them either way.
+where the system interpreter is least yours to touch.
 
-## Four ideas to understand before changing anything
+## The snapshot
 
-Everything else is mechanical. Idea 4 is the newest and the one most often
-rediscovered the hard way, so it is stated with the other three rather than
-left to be found.
+`murmur export` takes no options and prints one complete document. There is no
+`--since`, no watermark, no delta form and no JSONL.
 
-### 1. State and freshness are different axes, and freshness is two
+```jsonc
+{
+  "murmur_snapshot": 1,
+  "host_id": "1d2ee96e-3a94-41b2-90fa-5f1ee2f04276",  // from identity.json
+  "display_name": "mtrojer-mac",
+  "murmur_version": "0.1.4",         // read from package.json, never restated
+  "generated_at": 1788105698997,     // this node's clock at build time
+  "panes": [
+    {
+      "pane": "%250",
+      "session": "$25",
+      "window": "@75",
+      "session_name": "hacking/murmur",
+      "window_name": "worker-1",
+      "agent": {
+        "agent_id": "c0ffee00-1111-2222-3333-444444444444",
+        "activity": "running",
+        "agent_name": "worker-1",
+        "pi_session": null,
+        "workstream": "murmur",
+        "role": null,
+        "cli": "pi",
+        "driver": "orchestrated",
+        "claimed_at": 1788105600000,
+        "updated_at": 1788105690000
+      },
+      "attention": [
+        { "kind": "blocked", "message": "needs input", "source": "codex",
+          "requested_at": 1788105680000 }
+      ]
+    }
+  ]
+}
+```
 
-`stale` is not an agent state. The enum stays `working | blocked | done |
-crashed | cleared`.
+Rules, each of which a reader depends on:
 
-- **state** — what the agent is doing. Authored by the agent, in the log.
-- **freshness** — how current our replica is. Known only by the reader.
+1. **The document is complete, so absence is absence.** A peer that answers has
+   said everything it knows, and a pane present in the previous fetch and
+   missing from this one is gone. This is what makes whole replacement correct.
+2. `owner_pid` is absent, on purpose. A reader has no pid to probe.
+3. A pane with `"agent": null` is an attention-only pane: valid, listable,
+   jumpable. A pane with `"agent": null` and `"attention": []` is not emitted.
+4. `panes` order is presentation-only. Emitted sorted by pane id so the output
+   diffs cleanly; readers sort for themselves.
+5. `generated_at` is the *producing* node's clock. What it is not is when the
+   reader fetched it — see freshness below.
 
-Putting `stale` in the enum produces unanswerable questions: is a crashed agent
-on an unreachable host `crashed` or `stale`? Both, on different axes.
+`buildLocalSnapshot` reconciles before it reads, which is what makes the
+document authoritative: a snapshot built from unreconciled rows would publish
+agents whose panes are gone, and a reader has no way to tell.
 
-Freshness then splits again, and missing this shipped a bug:
+**Validation is total and strict**, and happens before storage.
+`parseSnapshot` rejects an unknown key, a missing key, a wrong type, a
+`murmur_snapshot` other than `1`, an unknown `activity`, `driver` or `kind`, a
+duplicate pane, and a pane that is neither an agent nor an attention. Nothing is
+coerced, defaulted or carried through. The error names the first failing path
+(`panes[3].attention[0].kind`), and the collector turns it into a failed fetch:
+a peer that answers with a bad document is **reachable but broken** and visibly
+so, not silently stale.
+
+**Forward compatibility is not offered**, and that is the honest report rather
+than a shortcut. A higher `murmur_snapshot` is rejected like any other wrong
+value, because a reader that carried fields it did not understand would be
+guessing about state a human acts on. A version mismatch is an operator-visible
+pairing problem: upgrade the other node.
+
+### Collecting
+
+Per peer, independently, in a bounded pool (`MAX_CONCURRENT_PEERS = 8`) under a
+whole-collect deadline (`COLLECT_DEADLINE_MS = 4000`, sized under a tmux
+status-bar tick):
+
+1. `ssh <target> murmur export` — one round trip, no arguments. There is never a
+   second "refetch from zero" trip, because there is no watermark to be wrong.
+2. `parseSnapshot(stdout)`.
+3. `replacePeerSnapshot(name, {ok: true, snapshot, at: now})`, which takes
+   `host_id`, `display_name`, `murmur_version` and `snapshot_version` out of the
+   document itself. The caller passes no metadata alongside it, so the cache
+   cannot disagree with the snapshot it holds.
+
+Any failure at any step replaces nothing: `last_attempt_at` and `last_error` are
+set, the previous snapshot stands verbatim, and the peer ages into `stale` on its
+own. There is no third outcome and no path that writes part of a document.
+
+Concurrency is about the unreachable peers, not the reachable ones. A sleeping
+laptop holds a forked ssh client for the full connect timeout, and a serial loop
+charged that to every peer behind it: three asleep laptops froze the status bar
+for thirty seconds.
+
+`collect` also calls `reconcileLocal` once per invocation, including with zero
+peers. That is the only housekeeping left, and it lives here rather than on
+`export` because `export` only runs when a peer asks, so a single-machine node
+would otherwise reconcile never.
+
+### Reconciliation
+
+`reconcileLocal` is the only thing that retires local rows. It consults each
+pane and each owner pid once:
+
+| Pane live? | Owner pid alive? | `activity` | Action |
+| --- | --- | --- | --- |
+| no | — | — | delete the agent row and all attention for the pane |
+| yes | yes | — | nothing |
+| yes | no | `running` | set `stopped`, upsert `crashed` attention |
+| yes | no | `stopped` | delete the agent row, **keep** attention |
+
+Then, unconditionally, attention for any pane that no longer exists is deleted —
+which is what reaps an attention-only pane whose window was closed.
+
+The asymmetry in the last two rows is the point. A dead *running* owner is an
+unreported crash and must leave a durable trace; a dead *stopped* owner finished
+normally, so its row is noise, but a `done` it raised is a fact a human has not
+yet seen. For the same reason `releaseAgent` deletes the agent row and not its
+attention: completion must survive the process exiting.
+
+`requested_at` is never updated by a repeat, so re-reconciling changes nothing —
+crash attention is idempotent for free, and age keeps meaning "how long this has
+gone unmet".
+
+The liveness probe **fails closed**. `pidAlive` reports death only on `ESRCH`,
+so a probe that cannot answer (`EPERM`) reads as alive. An unknown must never
+let a second writer displace a possibly-live owner, and must never manufacture a
+crash.
+
+## The view
+
+`paneViews(store, identity, now)` builds `PaneView[]` from `store.localPanes()`
+and each cached peer snapshot, through one mapping function. `renderState`
+picks one word, `viewSort` orders the list, and `RENDER_PRIORITY` is the single
+ordering table both the status bar and the picker import rather than restating.
+
+`identity` is required and non-null, because every caller is a command that
+already fails without one. Optional-chaining it is what previously classed every
+row as remote — including local ones — whenever identity was absent.
+
+### State and freshness are different axes, and the ages are two
+
+`stale` is not a state. It is a property of a NODE.
+
+- **Local views are always fresh.** We are the node that authored them.
+- **A remote view takes the freshness of its node**: `fresh` when
+  `now - fetched_at <= STALENESS_MS` (60s), else `stale`. A peer never reached
+  is stale, not fresh — `null` means the first collect has not succeeded yet, and
+  an unreachable host you just added must not read as up to date.
+- **Freshness is never per agent, and no liveness is inferred for a remote
+  pane.** A stale node keeps its last-known fields verbatim, beside an explicit
+  "stale host" flag. That is the honest presentation: the fields are real, they
+  are simply old, and hiding them would lose the only information available.
+
+Two clocks, and collapsing them shipped a bug where a dead host's agents
+rendered as live, because the *replica* really was current:
 
 | | asks | answers |
 | --- | --- | --- |
-| `fetched_at` | how current is my copy | is the host reachable |
-| event `ts` | how old is this agent's news | is the row worth believing |
+| `fetched_at` (our clock) | how current is my copy | is the host reachable |
+| `updated_at` (their clock) | how old is this pane's news | is the row worth believing |
 
-A peer polled one second ago can be serving three-hour-old events. Collapsing
-these made a dead host's agents render as live, because the replica really was
-current.
+`snapshot_at` is the third and belongs to the peer too: when that node *built*
+the document. A peer polled one second ago can be serving a three-hour-old
+fact, so `peer list` and `status --json` report both, and the picker shows the
+pane's own age rather than ours.
 
-### 2. Facts only the author can know are recorded by the author
+`age()` and `freshness()` are the only two places a duration becomes text or a
+verdict.
+
+### Facts only the owner can know are recorded by the owner
 
 Pids, pane liveness and window names mean something only on the machine that
-owns them, so crash synthesis runs on the authoring node during export.
+owns them, so reconciliation runs on the owning node and the results travel in
+its snapshot.
 
-Do it on the reader and every remote `working` agent is marked `crashed`, which
+Do it on the reader and every remote `running` pane is marked `crashed`, which
 looks exactly like a real crash and so goes uninvestigated. This is the easiest
-thing in the codebase to get backwards.
+thing in the codebase to get backwards, and the model now makes it impossible
+rather than merely inadvisable: the reader holds no pid to probe.
 
-The same rule gives names their home: window ids are machine-local, so resolving
-a remote id against the local tmux labels an agent with whatever *this* machine
-has at that id. Names travel on the event instead. Liveness follows it too — an
-idle agent's pid is only checkable at home, which is why remote idle rows report
-`unknown` rather than a guess.
+The same rule gives names their home. Window ids are machine-local, so resolving
+a remote id against the local tmux would label an agent with whatever *this*
+machine has at that id. Names travel in the snapshot instead.
 
-### 3. The single-machine case is the same code path
+### `clear` may only cancel a request for attention
+
+`murmur clear --pane` runs from tmux focus hooks, so the single fact it knows is
+*the user looked at this pane*. It is one `DELETE FROM attention WHERE pane = ?`
+plus the badge, and it reads no agent row to decide anything.
+
+There is no state focus must refuse to clear, because attention is the only
+thing focus can address. That whole class of bug — a whitelist, a resolver call,
+a metadata copy-forward, and the reasoning about which states were clearable —
+is deleted along with the ability to get it wrong. It was the worst bug found
+here: 50 of 84 turns on one agent were cleared within a minute of starting,
+because switching back to a pane wiped the state of the agent running in it.
+
+The badge is a window option while "you looked" is true of one pane, so `clear`
+keeps the badge lit when another pane in the same window still wants attention.
+That question is asked of attention only: a busy agent next door is not a reason
+to keep an attention badge on. It fails safe by keeping the badge — wrongly
+keeping one is recoverable by focusing the pane, wrongly clearing one loses the
+signal — and it is silent and total, because it runs inside the tmux server.
+
+### The single-machine case is the same code path
 
 murmur replaced a 1500-line script that was the daily local tool. Zero peers is
 therefore the common case:
 
-- the pi extension appends events and sets the tmux window option
-- the status bar and picker read the fold
-- the collector iterates the peer list, finds nothing, and does nothing
+- the extension claims its pane and reports activity
+- the status bar and picker read `localPanes()` through the same mapping a peer
+  snapshot goes through
+- the collector iterates the peer list, finds nothing, and reconciles once
 
 No network, no ssh, no daemon, no added latency. Federation is strictly
-additive: a `host_id` on rows that all say "me", and a loop over an empty array.
+additive: a loop over an empty array. Measured first paint with zero peers:
+~50 ms, against 250 ms for the picker it replaces.
 
 This is a constraint, not an observation. A tool that only pays for itself at
 three nodes charges rent daily for capability used occasionally — one of the
-things herdr was rejected for. Measured first paint with zero peers: 48 ms
-against 250 ms for the picker it replaces.
-
-### 4. `clear` may only cancel a request for attention
-
-`murmur clear --pane` runs from tmux focus hooks, so the single fact it knows is
-*the user looked at this pane*. That satisfies an attention request and nothing
-else:
-
-| state | asking for attention? | focus clears it? |
-| --- | --- | --- |
-| `blocked` | yes, waiting on you | yes |
-| `done` | yes, finished unseen | yes |
-| `crashed` | yes, died unnoticed | yes |
-| `working` | **no**, it is just busy | **no** |
-
-`working` is the agent reporting what it is doing, and looking at it does not
-make it stop. Clearing it also breaks idea 2 above: only the agent knows whether
-it is still working, so only the agent may say otherwise.
-
-This was a real bug, and the worst one found: 50 of 84 turns on one agent were
-cleared within a minute of starting, several within seconds, because switching
-back to a pane wiped the state of the agent running in it. The damage was out of
-proportion because `working` is asserted **once**, at the start of a turn --
-cleared mid-turn, the agent read idle until its next turn began.
-
-The general form: a focus hook may cancel a notification, never author a fact.
-An unrecognised state from a newer node is therefore left alone rather than
-overwritten, which is why the clearable set is a whitelist and not `!== working`.
+things herdr was rejected for.
 
 ## Design choices, and what they cost
 
@@ -378,38 +589,46 @@ hosts only. Not wired up, because no peer in use needs it.
 **A node being down is the common case, so nothing routine reports it.** A fleet
 normally has a laptop asleep and a box switched off. The collector used to write
 two lines of ssh diagnostics per failed peer, and it runs from `murmur status`
-on every tmux status-bar tick and from `murmur pick` inside a display-popup --
-so one sleeping node wrote to stderr several times a minute, forever, and into a
-UI. The author's own status script had to pass `stderr=DEVNULL`, which is the
-tell that the output was wrong rather than merely verbose.
+on every status-bar tick and from `murmur pick` inside a display-popup — so one
+sleeping node wrote to stderr several times a minute, forever, and into a UI.
 
 Failures now travel in `collect`'s return value. `murmur collect`, which a human
 runs on purpose, is the only thing that prints, and it distinguishes unreachable
-(expected, exit 0) from reachable-but-broken (a bad schema version or a missing
-binary, exit 1). Reachability is otherwise read where it is asked for: the
-picker's `unreachable` flag and `peer list`'s LAST SEEN column.
+(expected, exit 0) from reachable-but-broken (an invalid snapshot, a missing
+binary, an auth failure; exit 1). `Permission denied` is deliberately classed as
+reachable-but-broken: an auth misconfiguration is an operator task, not a
+sleeping laptop, and calling it "asleep, probably" is how a fixable setup error
+stays invisible for weeks. Errors are normalised once, where they are caught, so
+`peer list`, `status --json` and any SDK consumer get the diagnosis rather than
+140 characters of murmur's own ssh invocation.
 
 **Membership is local and asymmetric.** No shared node list, no registry, no
-join protocol. Reachability is not symmetric: a laptop reaches a server, and
-the server does not reach a laptop behind NAT that sleeps. A global list would
+join protocol. Reachability is not symmetric: a laptop reaches a server, and the
+server does not reach a laptop behind NAT that sleeps. A global list would
 advertise peers half the fleet cannot use. And nothing needs one: only a node
 rendering a picker needs targets, and only ones it can reach. Identity is
-*discovered*. Config holds an ssh target, and the first export returns the
-node's UUID and display name.
+*discovered* — config holds an ssh target, and the first export returns the
+node's `host_id` and display name, which `peer add` records immediately rather
+than throwing away.
 
 **Zero knobs.** Every exported setting is one the user can get wrong invisibly.
 Two are irreducible: `peers` (only the operator knows their fleet) and `theme`.
-Retention horizon, collection interval and staleness threshold are constants.
-The trade: a wrong constant needs a release, not an edit. Heuristics replace
-knobs, so heuristics are where the tests go.
+Collection concurrency, deadlines and the staleness threshold are constants. The
+trade: a wrong constant needs a release, not an edit. Heuristics replace knobs,
+so heuristics are where the tests go.
 
 **`driver` distinguishes who is waiting.** An agent you are talking to and an
 agent an orchestrator placed want opposite treatment: when the orchestrated one
 finishes, its supervisor consumes the result and nobody needs to acknowledge
-anything. Same state, opposite attention. It is per *agent*, not per node,
-because the normal case is one machine running your session and six spawned
-workers at once. Null reads as `human`, so an older node's events degrade toward
-visible.
+anything. Same facts, opposite attention. So an orchestrated agent raises no
+`done` at all, and its rows are hidden from the picker and the status bar unless
+its attention includes `blocked` or `crashed` — the two kinds only a human can
+answer. That list is `NEEDS_HUMAN`, shared by both surfaces, because it was two
+literals in two files and that is how a row needing a human became one a human
+could not see.
+
+It is per *agent*, not per node, because the normal case is one machine running
+your session and six spawned workers at once.
 
 **Glance, not remote rendering.** "Render any pane from the master" hides two
 different problems: a stateless `capture-pane` (cheap, and what the preview
@@ -428,7 +647,7 @@ run locally rather than judged from their READMEs.
 | herdr | no — 1:1, planned, blocked | yes | screen-scraped |
 | T3 Code | no — "unbuilt" by its own docs | no — 14-method adapter | driven |
 | mu | state sync yes, agents no | yes | reported |
-| **murmur** | **yes** | **yes, in-process** | **pushed** |
+| **murmur** | **yes** | **yes, in-process** | **reported from inside** |
 
 ### herdr
 
@@ -445,14 +664,14 @@ long-running server/client refactor.
 Waiting would not help. The scope is one client attaching to multiple *herdr*
 servers, so every machine must run herdr — including machines where you cannot
 choose the multiplexer. And herdr detects state by matching terminal output, so
-adopting it trades push-based state from inside the agent for screen-scraping.
+adopting it trades reporting from inside the agent for screen-scraping.
 
 Taken from it: integration installs that write hooks into each agent's own
 config directory (`murmur link pi`), reusing one authenticated connection, and
-its own stated non-goals: no merged PTYs across machines, no moving work
-between hosts, host as a lightweight label. Rejected: the always-present
-sidebar, not for its ~4 columns but because it is fixed to one edge and cannot
-become a horizontal strip, while a status row is overhead already paid.
+its own stated non-goals: no merged PTYs across machines, no moving work between
+hosts, host as a lightweight label. Rejected: the always-present sidebar, not
+for its ~4 columns but because it is fixed to one edge and cannot become a
+horizontal strip, while a status row is overhead already paid.
 
 ### T3 Code
 
@@ -478,8 +697,9 @@ than a hostname.
 ### mu
 
 An agent orchestrator: workstreams, a task DAG, agents in panes, isolated
-workspaces. It already solved the hard half of the replication problem: machine
-identity, per-peer watermarks, an op-log.
+workspaces. It solved machine identity and cross-machine sync for its own
+problem, which is a genuinely harder one: mu replicates *writes* from many
+nodes, so it needs an op-log and per-peer watermarks.
 
 Two ideas taken directly. Sync is ambient rather than a daemon: every invocation
 syncs before the verb, and no watcher outlives the command. And sync never fails
@@ -487,26 +707,103 @@ a command — every ambient entry point is total, and a dead peer warns and
 returns.
 
 One idea deliberately not taken: mu's generic replicated KV. A generic op-log
-needs conflict resolution, which single-writer partitioning skips entirely, and
-a murmur with `put`/`del` over arbitrary entities would just *be* mu.
+needs conflict resolution, which single-writer-per-node caching skips entirely,
+and a murmur with `put`/`del` over arbitrary entities would just *be* mu. The
+same reasoning is why murmur ships no log of its own — nothing here is authored
+by two parties, so there is nothing to merge.
 
 **Relationship:** murmur observes, mu orchestrates. Merging is plausible later,
 since murmur would give mu global agent addressing and remote observation. But
 remote *orchestration* is much harder than remote observation, and none of it is
 murmur's problem.
 
+## The extension's lifecycle assumptions
+
+The extension is the only part of murmur that lives inside another program's
+process, and every bug in it has come from assuming that process is simpler than
+it is.
+
+At load, in order, stopping at the first failure: resolve the pane, load the
+identity (never mint one), open the store, and `claimAgent`. Then:
+
+| Outcome | Meaning | What the extension does |
+| --- | --- | --- |
+| `claimed` | the pane had no owner | keep the `agent_id`, register handlers |
+| `retained` | same pid re-claiming | keep the same `agent_id` and activity |
+| `replaced` | previous owner is dead | fresh `agent_id`; the old occupant's attention is cleared |
+| `refused` | another live process owns the pane | register nothing, paint nothing, close the store |
+
+`retained` is what makes pi's `/reload` a no-op: pi re-runs the extension
+factory in the same process, and a check that could not recognise its own claim
+would silence the real agent. `refused` is permanent for the process — a nested
+agent is deliberately invisible, and it is checked at both the store call and
+the badge, because the badge is painted from the same handler that reports.
+
+`replaced` clears the previous occupant's attention because that attention
+described a process that is gone, and a human looking at the pane now sees a
+different agent.
+
+Handlers are serialised through a single-slot promise chain. `activity` is
+last-write-wins, so an inverted `start`/`end` pair would leave a finished agent
+`running`.
+
+`setActivity` returning `false` is not an error and is not retried: it means
+this process is no longer the owner of record, and the correct response is
+silence. The badge is gated on that boolean, so a process that cannot report
+cannot paint either.
+
+Three assumptions that were wrong, all of which failed silently:
+
+- **`session_shutdown` is not "the process is exiting".** pi fires it for
+  `/reload`, session switch, resume and fork, then rebinds and continues with the
+  same instance. Cleanup belongs there; re-arming belongs in `session_start`,
+  which fires afterwards. Treating shutdown as terminal stopped reporting
+  permanently on the first `/reload`.
+- **`agent_end` is per RUN, and is not the end of the work.** `turn_start` /
+  `turn_end` are the per-turn events; one prompt with three tool calls fires one
+  `agent_start`, three `turn_end`, one `agent_end`. But `agent_end` can fire
+  several times before the agent is finished, because pi re-enters the loop for a
+  retry, a compaction or a queued continuation, each with its own `agent_start`.
+  So `start, end, start, end, settled` is a normal sequence, and a single
+  `agent_end` cannot mean "waiting for a human". `agent_settled` is the event
+  that means it: fired once, last. Listening to the wrong event is why the
+  highest-attention state in the model had no producer for months.
+- **The pane outlives the window.** A pane can move between windows, keeping its
+  id while the window id changes, so the location is re-read on every report
+  rather than cached at startup, and a move hands the badge over to the new
+  window.
+
+The store handle has three states — `untried`, `open`, `absent` — because those
+are three real situations. Collapsing them is what previously latched reporting
+off for the life of a process after one transient failure.
+
+The general rule: nothing in the extension may be permanent except "murmur is
+not installed here" and "this pane is not mine". Every other giving-up must be
+recoverable by the next event, because the process it lives in can run for days
+and the user can fix the cause from outside without restarting it.
+
 ## Testing posture
 
 Bug-driven, not coverage-driven. A thing earns a test when it can fail *without
-you noticing*:
+you noticing*. The suite is 238 tests over 28 files, and the ones that matter
+assert what is **impossible** rather than what is implemented:
 
 | Target | Why it can fail silently |
 | ------ | ------------------------ |
-| Fold precedence | A wrong glyph gets rationalized, not investigated |
-| Staleness derivation | A dead peer keeps showing last-known state forever |
-| Ingest idempotency | Duplicate rows after a partial read |
-| Unknown-field preservation | Breaks against a future node you do not own |
-| Retention keeping newest-per-agent | Idle agents vanish; reads as "not there" |
+| A notifier cannot touch an agent row | The corruption it caused looked like a state change |
+| `acknowledgePane` cannot change activity | A focus hook wiping a busy agent reads as the agent stopping |
+| A second live claimant is refused | A nested run reporting looks like the real agent misbehaving |
+| A replaced owner's writes return false | A late write from a dead process corrupts a live row |
+| Reconciliation asymmetry | An idle agent vanishing reads as "not there" |
+| Whole-snapshot replacement | A pane that should be gone lingers forever |
+| Validation before storage | An unknown value reaching a sort or a count |
+| No `owner_pid` on any read path | Remote liveness inference creeping back in |
+| Freshness derivation | A dead peer showing last-known state as current |
+| Jump failure mutating nothing | A keypress deleting a healthy agent |
+
+Several of those are asserted structurally — over the whole returned object
+graph, not by reading the type — because a type says what the author intended
+and a test says what the object contains.
 
 Not tested: ssh transport (OpenSSH's job), tmux wrappers (thin and loud), TUI
 rendering, packaging.
@@ -515,15 +812,23 @@ New tests are verified by breaking the code they cover and watching them fail. A
 test that has never failed has not been shown to test anything. A test asserting
 a *wrong* behaviour has been written twice here, so this step is not ceremony.
 
-Two traps this caught, both in the tests rather than the code. A `setTimeout(0)`
-used to drain the extension's fire-and-forget queue passed and failed about one
-run in ten -- a race in the test, which is worse than a failing test because it
-teaches people to re-run. And a `until()` helper that threw on timeout made a
-mutation "pass": the regression died inside the helper instead of at the
-assertion describing it. Barriers wait for an observable effect, and report
-through the caller's `expect`.
+Three trap shapes this caught, all in tests rather than code. A `setTimeout(0)`
+standing in for a barrier passed about nine runs in ten — worse than a failing
+test, because it teaches people to re-run. A `until()` helper that threw on
+timeout made a mutation "pass", because the regression died inside the helper
+instead of at the assertion describing it. And `expect(output).not.toContain(n)`
+over a live number passes for the wrong reason as soon as `n` changes; asserting
+over a closed key set is strictly better, and this appeared three separate
+times.
 
-Where the fake is the test's weak point, the test talks to the real thing.
+Tests must not touch the developer's own state. `stateDir()` is repointed for
+every test process, in-process and spawned, and no test addresses the caller's
+`$TMUX_PANE`. This is guarded by a test of its own, because it is not
+hypothetical: writing the rewrite contract required one `npm run check` to
+confirm the tree was green, and that run corrupted the author's live state for
+the pane it was running in — the third independent reproduction of the same bug.
+
+Where a fake is the test's weak point, the test talks to the real thing.
 `test/mux-targets.test.ts` drives a private tmux server on its own `-L` socket,
 because every other test fakes the `Mux` and a malformed tmux target passes them
 all — two wrong target spellings did exactly that.
@@ -540,78 +845,70 @@ do not tell you the tool is usable.
 Each was considered and refused with reasons above:
 
 - a daemon or listening socket
+- history of any kind: an event log, a state timeline, an audit trail
 - interactive remote terminal rendering
 - orchestration or work placement
 - a generic put/del op-log
 - HLC or clock reconciliation
-- gossip replication (schema-compatible, not built)
+- gossip replication
 - configuration knobs beyond peers and theme
 - multiplexers other than tmux, channels other than ssh
 - an in-process integration for any harness other than pi. `murmur notify` is
   the outside-in path for the rest, and it is not the same thing: a harness that
   can only run a command when something happens can ask for attention, but
-  cannot report `working`, `done` or a pid.
+  cannot report activity or ownership.
 
-## The extension's lifecycle assumptions
+## Accepted limitations
 
-The extension is the only part of murmur that lives inside another program's
-process, and every bug in it has come from assuming that process is simpler than
-it is. Three assumptions that were wrong, all of which failed silently because
-the tmux badge is set from the same handler that writes the event:
+These are design, not surprise. Each is a consequence of the model above, and
+each was cheaper to accept than to solve:
 
-- **`session_shutdown` is not "the process is exiting".** pi fires it for
-  `/reload`, session switch, resume and fork, then rebinds and continues with
-  the same instance. Cleanup belongs there; re-arming belongs in
-  `session_start`, which fires afterwards. Treating shutdown as terminal stopped
-  reporting permanently on the first `/reload`.
-- **`agent_end` is per RUN, and is not the end of the work.** It was documented
-  here as per turn, which is wrong and was measured: `turn_start` / `turn_end`
-  are the per-turn events, and one prompt with three tool calls fires one
-  `agent_start`, three `turn_end`, one `agent_end`. But `agent_end` can still
-  fire several times before the agent is finished, because pi re-enters the loop
-  for a retry, a compaction, or a queued continuation, each with its own
-  `agent_start`. So `start, end, start, end, settled` is a normal sequence and a
-  single `agent_end` cannot mean "waiting for a human".
-  `agent_settled` is the event that means it: fired once, last, when no retry,
-  compaction or queued continuation will run. That is what `blocked` is derived
-  from, and listening to the wrong event is why the state had no producer for so
-  long.
-- **The pane outlives the window.** A pane can move between windows, keeping its
-  id while the window id changes, so the location has to be re-read rather than
-  cached at startup.
-
-The general rule: nothing in the extension may be permanent except "murmur is
-not installed here". Every other giving-up must be recoverable by the next
-event, because the process it lives in can run for days and the user can fix the
-cause from outside without restarting it.
+1. **No history.** Only current state is stored. There is no event log, no
+   retention horizon, and no way to ask what an agent was doing an hour ago. The
+   picker's preview is a live `capture-pane`, not a replay.
+2. **No compatibility with older nodes.** A pre-rewrite `events.db` is not
+   migrated, and any `state.db` from a different `user_version` is rebuilt with
+   only peer names and targets salvaged. A node serving the old event format is
+   reported as reachable-but-broken, which is the honest description: the two
+   cannot federate.
+3. **No incremental sync.** Every collect transfers each peer's whole snapshot.
+   It is bounded by live pane count, so it is small — but it is O(panes) per
+   tick rather than O(changes).
+4. **No nested agents.** A second live process in one pane is refused and
+   reports nothing. A pane shows at most one agent.
+5. **No remote liveness inference.** `owner_pid` never crosses the wire, so a
+   remote pane's `activity` is whatever its own node last said. A stale node
+   keeps its last-known values beside a warning, and murmur will not guess.
+6. **PID reuse can hide a crash.** If a pane's owner dies and the OS reassigns
+   its pid before the next `reconcileLocal`, that owner reads as alive and the
+   crash is missed until something else changes. The window is short and the
+   failure is temporary; the alternatives (pid start time, cgroups, a watcher)
+   each buy a platform dependency for a case measured as rare.
+7. **A claim costs a liveness probe, and an unprobeable owner blocks the pane.**
+   `claimAgent` fails closed, so a pid that answers `EPERM` refuses the new
+   claimant and the pane stays unclaimable until it goes away. Deliberate: the
+   alternative is letting a second writer displace a possibly-live owner.
+8. **Attention is per pane, not per agent.** A pane whose agent is replaced
+   loses the previous occupant's attention, which is intended, and two
+   sequential agents in one pane cannot each hold their own `done`.
 
 ## Known gaps
-
-- **A dead agent's row is removed only by its own host.** The sweep needs the
-  live tmux pane set, which only the owning node has, so it runs there --
-  `collect` on every invocation, plus `export`. A reader that holds a replica of
-  a dead remote agent waits for that node to report again, or clears the row by
-  hand with `del`.
-- **An idle row cannot say whether its agent is still alive.** An agent that has
-  finished a run and is waiting on a human reads idle, and a pane whose agent
-  exited reads the same. `agent_settled` narrowed this rather than closing it:
-  an *unfocused* settled agent now reports `blocked`, so the common case of
-  "finished, wants you" is no longer silent, but a focused one still resolves to
-  idle by design and is indistinguishable from a dead pane. A `liveness` axis
-  folded from the last reported pid was built for this and then removed: on a real machine it answered `unknown` for
-  12 of 12 agents, because the pid-age horizon that made it honest -- pids
-  recycle in about three hours here -- rejects exactly the old idle rows it was
-  meant to describe. `reconcileDeadAgents` already covers the case that matters,
-  by pruning agents whose pane is gone. If this is worth solving, the missing
-  input is a process start time to compare against the event, not another
-  inference from the pid alone.
 
 - **The remote wrapper session is verified against tmux, not against use.**
   Options, the switch, and the return to the origin window are verified on real
   tmux servers with a stub ssh. Sitting in a live remote pane and working in it
-  is not, which is the same gap as interactive attach below.
-- **Interactive attach is unverified.** Federation, staleness and the jump
-  target are verified across two machines over real ssh; sitting in a remote
-  pane and working in it is not.
+  is not.
+- **Interactive attach is unverified.** Federation, staleness, snapshot
+  replacement and the jump target are verified across two machines over real
+  ssh; sitting in a remote pane and working in it is not, and it needs a human
+  at a terminal.
+- **A deadline-cut peer reports `unreachable: false`.** The message says the
+  collect deadline passed, which is accurate and is what every surface prints,
+  but the flag reads as "reachable". No surface misreports it today; the flag is
+  still the wrong shape for that one case.
+- **`peer add` cannot always refuse a self-add.** The refusal keys on the
+  `host_id` in the probe's snapshot, so a target that fails to answer is added
+  on the operator's word. Correct by design, but best-effort rather than a
+  guarantee.
 - **The hardware-token path is verified only in the cold-fail direction.** The
   second test node authenticates by key, so it never needed a warm socket.

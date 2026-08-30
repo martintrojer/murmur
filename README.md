@@ -39,13 +39,17 @@ it from inside the agent is what makes it reliable.
 
 - **A state layer over tmux:** tmux keeps owning your panes. murmur owns the
   answer to "what is every agent doing right now".
-- **Push-based state:** a pi extension reports from inside the agent. Nothing
-  screen-scrapes, and a crash is detected from a pid rather than guessed from
-  output.
+- **Reported state, not scraped:** a pi extension reports from inside the agent.
+  Nothing screen-scrapes, and a crash is detected from a pid rather than guessed
+  from output.
+- **Current state only:** each node publishes one complete snapshot of what its
+  panes are doing right now. No history, no log, nothing to replay — which is
+  why a peer's whole answer can be replaced in one write and absence means
+  absence.
 - **No daemon, no listening socket, no master:** peers are pulled over ssh when
   you run a command. Every node can aggregate; none is special.
 - **Fast with one machine:** it replaced a local-only script and got quicker
-  doing it, 48 ms to first paint against 250 ms. Configuring zero peers is the
+  doing it, ~50 ms to first paint against 250 ms. Configuring zero peers is the
   common case, and nothing about it is degraded.
 
 ## What it is not
@@ -93,7 +97,7 @@ does need re-linking after every upgrade — use it only if the extension has to
 keep working when the murmur install is gone.
 
 Order matters: without `murmur init` the extension loads and records nothing,
-because a node with no identity has nothing to author events as. `link pi` says
+because a node with no identity has nothing to publish state as. `link pi` says
 so if you skip it.
 
 Also on every node, in `.tmux.conf`, so a finished agent stops asking for
@@ -105,11 +109,16 @@ set-hook -g after-select-window    "run-shell -b 'murmur clear --pane #{pane_id}
 set-hook -g client-session-changed "run-shell -b 'murmur clear --pane #{pane_id}'"
 ```
 
-These are per node and not optional. The `cleared` event they write replicates,
-so a node without them leaves its agents marked `done` in *every* peer's picker,
-not only its own status bar. Verify with `tmux show-hooks -g`: `set-hook`
-accepts a hook name your tmux does not have and exits 0, so a wrong name fails
-silently.
+These are per node and not optional. `murmur clear` is the only thing that
+acknowledges an attention request, and a node's own snapshot is what every peer
+reads — so a node without these hooks leaves its finished agents marked `done` in
+*every* peer's picker, not only its own status bar. Verify with `tmux show-hooks
+-g`: `set-hook` accepts a hook name your tmux does not have and exits 0, so a
+wrong name fails silently.
+
+Focus can only ever cancel a request for attention. It cannot stop a running
+agent or alter anything the agent reported about itself, so there is no way to
+wire these hooks such that looking at a pane damages the agent in it.
 
 The pane id is passed explicitly because hooks run in the tmux server, where
 `$TMUX_PANE` is unset, and because the badge belongs to the window while "you
@@ -154,11 +163,15 @@ If `murmur` is not reachable there, give the hook the absolute path
 (`command -v murmur` from your shell) rather than relying on PATH.
 
 `notify` is the one path where a process that does not own a pane may write
-about it, and it is deliberately narrow: it can only ever say `blocked`, and the
-row it writes carries no pid, so it makes no claim about any process being
-alive. Everything else -- running, done, crashed -- stays the pane owner's
-alone. Outside tmux it records nothing and exits 0, so it cannot break the
-caller's own exit code.
+about it, and it is narrow by construction rather than by convention: an
+attention request has no field for an agent id, a pid, an activity or any owner
+metadata, so it cannot make a claim about a process even by mistake. It says
+`blocked` and nothing else; running, done and crashed stay the pane owner's and
+murmur's own reconciliation's. Outside tmux it records nothing and exits 0, so it
+cannot break the caller's own exit code.
+
+A pane reached only this way — a codex agent murmur never instrumented — is a
+full row in the list: it shows up, it is filterable, and enter jumps to it.
 
 Then, on whichever machine you want to watch from, add the peers and bind the
 picker to a key:
@@ -223,17 +236,19 @@ already full-screen, and you land back at your shell prompt on exit.
 ## Status
 
 **0.1.4.** In daily use on one machine and verified across two over real ssh.
-It is new and not battle-tested. The known gaps are listed at the end of
-[ARCHITECTURE.md](ARCHITECTURE.md#known-gaps).
+It is new and not battle-tested. The known gaps and the accepted limitations are
+listed at the end of [ARCHITECTURE.md](ARCHITECTURE.md#known-gaps).
 
-The event schema is versioned on the wire and preserves fields it does not
-recognise, so a newer node and an older one can already talk to each other.
+**All nodes must run the same murmur version.** The snapshot format is versioned
+and a mismatch is rejected rather than guessed at, so a node running older code
+is reported as reachable-but-broken with the reason on it — `murmur peer list`
+shows each peer's version for exactly this. Upgrade the fleet together.
 
 ## Documentation
 
-[ARCHITECTURE.md](ARCHITECTURE.md) explains how it works, the four ideas you
-need before changing anything, why it exists rather than the alternatives, and
-what is unfinished.
+[ARCHITECTURE.md](ARCHITECTURE.md) explains how it works: the three independent
+facts the whole model rests on, why it exists rather than the alternatives, what
+it deliberately cannot do, and what is unfinished.
 
 ---
 
