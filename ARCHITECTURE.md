@@ -60,6 +60,15 @@ Two consequences worth stating, because both are easy to violate by accident:
 Everything below assumes agents run inside tmux. A pane is how murmur names an
 agent and how a jump reaches one.
 
+An agent IS a pane. A session and a window are only where that pane currently
+lives: `agent_id` is `host:pane`, and a pane keeps its id across `move-pane`,
+`break-pane`, and a window closed and reopened, while the window on an agent's
+last event goes stale as a matter of course. So **only a pane may decide whether
+an agent exists** — a window id is location, never evidence of life. tmux says
+the same thing with its sigils, `$25` / `@75` / `%89`, and the three ids are
+branded types (`SessionId`, `WindowId`, `PaneId`) so that passing one where
+another is meant does not compile.
+
 The extension resolves its pane from `$TMUX_PANE` and returns early without one,
 so a pi started in a plain terminal writes no events and never appears in the
 picker. That is the honest outcome rather than a gap: with no pane there is no
@@ -71,9 +80,14 @@ Two nearby calls look contradictory and are not:
   it. Asking tmux instead reports whichever pane the server considers active,
   which would let a non-tmux pi record itself in an unrelated agent's pane and
   overwrite that agent's state.
-- `liveWindows()` answers "which windows exist on this host", which is
-  server-wide and correct from anywhere. Export runs over ssh with no pane of
-  its own and still has to see the windows.
+- `livePanes()` answers "which panes exist on this host", which is server-wide
+  and correct from anywhere. Export runs over ssh with no pane of its own and
+  still has to see the panes. `liveWindows()` is the same question about
+  windows, and the sweep takes it only as proof that tmux could answer at all.
+
+Both return `null` for "could not tell", which is deliberately distinct from an
+empty set. Conflating them clears every agent on the host the moment tmux is
+unreachable.
 
 The remote jump inherits the same requirement, since it is `ssh -t <host> tmux
 attach`. tmux must be running on the far side, which is why a dead remote tmux
@@ -119,7 +133,8 @@ free.
 | `seq` | Monotonic per `host_id`. The watermark unit |
 | `ts` | Wall clock. Display ordering only |
 | `agent_id` | Stable for the agent's life. Identity, distinct from location |
-| `session`, `window`, `pane` | Current **location**. May change |
+| `pane` | **Identity.** The `agent_id` component. Never changes |
+| `session`, `window` | Current **location**. May change between events |
 | `session_name`, `window_name` | Recorded by the author; ids are machine-local |
 | `agent_name`, `pi_session` | Richer than tmux, and not derivable from it |
 | `workstream`, `role`, `cli` | Nullable. Grouping and display |
@@ -181,7 +196,7 @@ current.
 
 ### 2. Facts only the author can know are recorded by the author
 
-Pids, window liveness and window names mean something only on the machine that
+Pids, pane liveness and window names mean something only on the machine that
 owns them, so crash synthesis runs on the authoring node during export.
 
 Do it on the reader and every remote `working` agent is marked `crashed`, which
@@ -456,7 +471,7 @@ cause from outside without restarting it.
 ## Known gaps
 
 - **A dead agent's row is removed only by its own host.** The sweep needs the
-  live tmux window set, which only the owning node has, so it runs there --
+  live tmux pane set, which only the owning node has, so it runs there --
   `collect` on every invocation, plus `export`. A reader that holds a replica of
   a dead remote agent waits for that node to report again, or clears the row by
   hand with `del`.
@@ -466,8 +481,8 @@ cause from outside without restarting it.
   built for this and then removed: on a real machine it answered `unknown` for
   12 of 12 agents, because the pid-age horizon that made it honest -- pids
   recycle in about three hours here -- rejects exactly the old idle rows it was
-  meant to describe. `clearDeadWindows` already covers the case that matters, by
-  pruning agents whose window is gone. If this is worth solving, the missing
+  meant to describe. `reconcileDeadAgents` already covers the case that matters,
+  by pruning agents whose pane is gone. If this is worth solving, the missing
   input is a process start time to compare against the event, not another
   inference from the pid alone.
 

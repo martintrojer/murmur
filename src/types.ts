@@ -11,6 +11,19 @@ export type Event = {
   seq: number;
   ts: number;
   agent_id: string;
+  // Three tmux ids, and they are not three of a kind. `pane` is the identity
+  // component of `agent_id` (`host:pane`) and does not change for the life of
+  // the agent: a pane keeps its id across move-pane, break-pane, and a window
+  // closed and reopened. `session` and `window` are LOCATION -- where that pane
+  // currently lives -- and may legitimately differ between two events for the
+  // same agent, so neither is evidence about anything but the moment it was
+  // recorded.
+  //
+  // Hence the rule, which is what the brands on these three types exist to
+  // enforce: only a pane may decide whether an agent exists. A window id on an
+  // agent's last event tells you nothing about whether the agent is still
+  // running, and reading it as death deleted ten live agents (a0fb6ec, fixed in
+  // 0e546c7).
   session: SessionId;
   window: WindowId;
   pane: PaneId;
