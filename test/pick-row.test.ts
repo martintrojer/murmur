@@ -1,6 +1,13 @@
 import { expect, test } from "vitest";
 import type { Agent } from "../src/agents.js";
-import { headerRow, isPopup, pickerRow } from "../src/cli/pick.js";
+import {
+  FILTER_ALIASES,
+  FILTER_KEYS,
+  headerRow,
+  isPopup,
+  isVisible,
+  pickerRow,
+} from "../src/cli/pick.js";
 import { tmux } from "../src/mux.js";
 
 const base = {
@@ -175,4 +182,58 @@ test("a popup is tmux without a pane", () => {
   expect(isPopup({ TMUX: "/tmp/tmux-501/default,123,0" })).toBe(true);
   expect(isPopup({ TMUX: "/tmp/tmux-501/default,123,0", TMUX_PANE: "%1" })).toBe(false);
   expect(isPopup({})).toBe(false);
+});
+
+test("crew agents are hidden unless they need a human", () => {
+  // `driver` exists to separate "an agent you are talking to" from "an agent an
+  // orchestrator placed", and the picker hides the latter because its
+  // supervisor consumes the result. Applied wholesale that was wrong in two
+  // states: an orchestrator cannot answer a question meant for a human, and it
+  // may never retry a worker that died. Those rows needed a human and were the
+  // ones a human could not see.
+  const crew = (state: string) =>
+    isVisible({ driver: "orchestrated", state } as unknown as Parameters<typeof isVisible>[0]);
+  const human = (state: string) =>
+    isVisible({ driver: "human", state } as unknown as Parameters<typeof isVisible>[0]);
+
+  expect(crew("blocked")).toBe(true);
+  expect(crew("crashed")).toBe(true);
+  expect(crew("done")).toBe(false);
+  expect(crew("working")).toBe(false);
+  expect(crew("cleared")).toBe(false);
+
+  // A human-driven agent is always visible, whatever it is doing.
+  for (const state of ["blocked", "crashed", "done", "working", "cleared"]) {
+    expect(human(state)).toBe(true);
+  }
+});
+
+test("the filter keys do not include a clear, which fzf already has", () => {
+  // "all" meant two things and the wrong one was bound to M-a: clearing the
+  // state filter, when the picker uses --all for the POPULATION -- the flag,
+  // and the "crew hidden (--all)" notice. Pressing it emptied the query instead
+  // of revealing the crew rows named two lines below, which read as broken.
+  //
+  // Clearing is fzf's own ctrl-u, a standard readline binding that needs no
+  // --bind, so the redundant spelling cost the word for nothing.
+  for (const [, query] of [...FILTER_KEYS, ...FILTER_ALIASES]) {
+    expect(query).not.toBe("");
+  }
+});
+
+test("no filter key can collide with tmux's default prefix", () => {
+  // `ctrl-b` was the filter for `blocked` and could never fire: C-b is tmux's
+  // DEFAULT prefix, and tmux consumes the prefix before delivering to any pane,
+  // including the display-popup the picker runs in. So the filter reached for
+  // most was dead on exactly the setup the README tells people to configure.
+  //
+  // The general rule this pins: murmur cannot know a user's prefix, so a single
+  // ctrl-letter is always a gamble. The primary keys are alt chords, which are
+  // not prefix candidates.
+  for (const [key] of FILTER_KEYS) {
+    expect(key.startsWith("alt-")).toBe(true);
+  }
+  for (const [key] of FILTER_ALIASES) {
+    expect(key).not.toBe("ctrl-b");
+  }
 });

@@ -135,9 +135,11 @@ could not reach.
 bind -N "agent state picker" a display-popup -E -w 80% -h 60% "murmur pick"
 ```
 
-In the picker: `^r` refreshes, `^p` cycles the preview, and `del` drops a stuck
-row. `^b` / `^w` / `^d` / `^x` filter to blocked, working, done or crashed, and
-`^a` clears the filter. Typing matches the agent name, its workstream or tmux
+In the picker: `^r` refreshes, `^p` cycles the preview, `del` drops a stuck row,
+and `^u` clears the filter. `M-b` / `M-w` / `M-d` / `M-x` filter to blocked,
+working, done or crashed, and `M-a` toggles orchestrated agents in and out of
+the list. Alt rather than ctrl because `^b` is tmux's own prefix, which a popup
+never receives. Typing matches the agent name, its workstream or tmux
 session, and its host, as literal substrings rather than scattered characters.
 
 `murmur status` prints per-state counts for a status bar. Everything else is
@@ -164,8 +166,11 @@ you cannot reach it. If you want an escape hatch that does not involve the
 remote, bind one key in the root table:
 
 ```tmux
-# Alt-b detaches out of a murmur wrapper session, and does nothing elsewhere.
-bind -n M-b if-shell -F '#{m:*~,#{session_name}}' detach-client
+# Alt-Escape detaches out of a murmur wrapper session, and does nothing
+# elsewhere. Deliberately not M-b or another Alt letter: a root-table binding
+# is consumed before any pane, so it would eat the picker's own M-b / M-w /
+# M-d / M-x filters -- the same class of collision that made ^b useless there.
+bind -n M-Escape if-shell -F '#{m:*~,#{session_name}}' detach-client
 ```
 
 Outside tmux none of this applies: `murmur pick` runs the ssh directly, which is

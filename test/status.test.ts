@@ -139,14 +139,36 @@ test("tmux status emits urgent human counts without agent-supplied text", () => 
 
   const output = tmuxStatus(status(store));
 
-  expect(output).toBe("crashed\t1\nblocked\t1\ndone\t1\nworking\t1\nidle\t1\n");
+  // crashed is 2: one human, plus the orchestrated one seeded above. A crew
+  // worker that died is counted, because a supervisor may or may not retry it
+  // and a death nobody noticed is what this tool exists to surface.
+  expect(output).toBe("crashed\t2\nblocked\t1\ndone\t1\nworking\t1\nidle\t1\n");
   expect(output).not.toContain(injection);
 });
 
-test("tmux status omits a crew-only fleet", () => {
+test("tmux status omits a crew-only fleet that wants nothing", () => {
   store.append(newEvent("crew", "working", "orchestrated"));
 
   expect(tmuxStatus(status(store))).toBe("");
+});
+
+test("a crew agent that needs a human is counted, one that does not is not", () => {
+  // The distinction `driver` exists for, applied per state rather than
+  // wholesale. A supervisor consumes a `done` worker's result and nobody has to
+  // acknowledge it; a `working` worker asks for nothing. But an orchestrator
+  // cannot answer a question meant for a human -- mu places work, it cannot
+  // choose between two approaches -- and it may never retry a worker that died.
+  //
+  // Verified by seeding one: before this, a blocked crew agent appeared on NO
+  // surface. It was hidden from the picker behind --all and absent from this
+  // count, which read only the human tally while orchestrated_counts was
+  // computed and never read.
+  store.append(newEvent("crew-blocked", "blocked", "orchestrated"));
+  store.append(newEvent("crew-crashed", "crashed", "orchestrated"));
+  store.append(newEvent("crew-done", "done", "orchestrated"));
+  store.append(newEvent("crew-working", "working", "orchestrated"));
+
+  expect(tmuxStatus(status(store))).toBe("crashed\t1\nblocked\t1\n");
 });
 
 test("tmux status keeps human and crew populations distinct", () => {
@@ -154,6 +176,7 @@ test("tmux status keeps human and crew populations distinct", () => {
   store.append(newEvent("crew-1", "working", "orchestrated"));
   store.append(newEvent("crew-2", "working", "orchestrated"));
 
+  // The two working crew agents are not counted: they ask for nothing.
   expect(tmuxStatus(status(store))).toBe("blocked\t1\n");
 });
 

@@ -59,6 +59,40 @@ const RESET = "\u001b[0m";
 const URGENCY = ["crashed", "blocked", "done", "working", "idle"] as const;
 
 /**
+ * Marks the picker as showing orchestrated agents, at the front of the prompt.
+ *
+ * Doubles as the toggle's state: fzf exposes the prompt to a binding through
+ * $FZF_PROMPT and nothing else is mutable, so this is both the label a human
+ * reads and the flag the alt-a transform branches on.
+ */
+const CREW_MARK = "crew ";
+
+/**
+ * Whether an agent belongs in the default list.
+ *
+ * Orchestrated agents are hidden because their supervisor consumes the result:
+ * a `done` worker needs no acknowledgement from you, and a `working` one asks
+ * for nothing. `--all` shows them.
+ *
+ * `blocked` and `crashed` are the exceptions, and neither is cosmetic:
+ *
+ * - `blocked` means waiting for an answer, and an orchestrator cannot answer a
+ *   question meant for a human. mu places work; it cannot choose between two
+ *   approaches. So a blocked crew agent is waiting on YOU.
+ * - `crashed` means the process died. A supervisor may retry it or may not, and
+ *   a worker that died without anyone noticing is exactly the thing this tool
+ *   exists to surface.
+ *
+ * Hiding these behind a flag meant the rows that needed a human were the ones a
+ * human could not see.
+ */
+const NEEDS_HUMAN = new Set(["blocked", "crashed"]);
+
+export function isVisible(agent: Agent): boolean {
+  return agent.driver === "human" || NEEDS_HUMAN.has(agent.state ?? "");
+}
+
+/**
  * Column widths, in one place because the header and the rows must agree. They
  * were duplicated as literals in two functions and had already drifted by a
  * column once.
@@ -98,10 +132,40 @@ export function headerRow(showHost: boolean): string {
  * old picker, including the choice to shadow fzf defaults: the query here is a
  * word or two, so home/left/bspace still cover the editing jobs.
  */
-const FILTER_KEYS: [string, string][] = [
-  ["ctrl-a", ""],
+/**
+ * State filters, as [key, query].
+ *
+ * Alt chords, not ctrl. `ctrl-b` was the filter for `blocked` and it could
+ * never work: `C-b` is tmux's DEFAULT prefix, and tmux consumes the prefix
+ * before delivering to any pane -- including the display-popup the picker runs
+ * in. So the one filter a user reaches for most was dead on a stock tmux, which
+ * is the configuration the README tells people to set up.
+ *
+ * The general problem is that murmur cannot know a user's prefix, so any single
+ * ctrl-letter is a gamble. Alt chords are never prefix candidates: tmux's
+ * `prefix` option takes a ctrl key by convention and nobody binds M-x at the
+ * root table for this purpose. Verified against fzf in a real terminal.
+ *
+ * Ctrl aliases are kept for the three that do not collide with the default
+ * prefix, so existing muscle memory still works. `ctrl-b` is deliberately not
+ * among them: binding a key that silently does nothing is worse than not
+ * binding it.
+ *
+ * There is no "clear the filter" key here. fzf already clears the query with
+ * ctrl-u, a standard readline binding that needs no --bind, so one existed --
+ * and binding a second spelling of it cost the word "all", which this picker
+ * needs for something else. See the alt-a toggle below.
+ */
+export const FILTER_KEYS: [key: string, query: string][] = [
+  ["alt-x", "crashed"],
+  ["alt-b", "blocked"],
+  ["alt-d", "done"],
+  ["alt-w", "working"],
+];
+
+/** Ctrl aliases that are safe against tmux's default `C-b` prefix. */
+export const FILTER_ALIASES: [key: string, query: string][] = [
   ["ctrl-x", "crashed"],
-  ["ctrl-b", "blocked"],
   ["ctrl-d", "done"],
   ["ctrl-w", "working"],
 ];
@@ -313,7 +377,7 @@ export function runPreview(store: Store, agentId: string): void {
 export async function runPick(store: Store, options: PickOptions = {}): Promise<void> {
   const identity = loadIdentity();
   const view = await statusWithCollect(store);
-  const agents = view.agents.filter((agent) => options.all || agent.driver === "human");
+  const agents = view.agents.filter((agent) => options.all || isVisible(agent));
   const hidden = view.agents.length - agents.length;
 
   if (agents.length === 0) {
@@ -339,6 +403,7 @@ export async function runPick(store: Store, options: PickOptions = {}): Promise<
   const prompt = URGENCY.filter((state) => counts.get(state))
     .map((state) => `${COLOUR[state]}${GLYPH[state]}${counts.get(state)}${RESET}`)
     .join(" ");
+  const basePrompt = `${prompt}${prompt ? "  " : ""}`;
 
   const self = process.argv[1] ?? "murmur";
   const allFlag = options.all ? " --all" : "";
@@ -352,9 +417,12 @@ export async function runPick(store: Store, options: PickOptions = {}): Promise<
   const preview = `${process.execPath} ${self} pick --preview {1}`;
   // Narrow on the hidden state column with an exact-prefix query, then restore
   // the real query. ctrl-a clears it.
-  const filterBinds = FILTER_KEYS.flatMap(([key, state]) => [
+  const filterBinds = [
+    ...FILTER_KEYS.map(([key, query]) => [key, query] as const),
+    ...FILTER_ALIASES,
+  ].flatMap(([key, query]) => [
     "--bind",
-    state ? `${key}:change-query(${state})` : `${key}:change-query()`,
+    query ? `${key}:change-query(${query})` : `${key}:change-query()`,
   ]);
 
   const result = spawnSync(
@@ -392,13 +460,17 @@ export async function runPick(store: Store, options: PickOptions = {}): Promise<
       "--info",
       "inline",
       "--prompt",
-      `${prompt}${prompt ? "  " : ""}`,
+      `${options.all ? CREW_MARK : ""}${basePrompt}`,
       "--header",
       [
-        `enter jump   ^r refresh   ^p preview   del forget   filter: ${FILTER_KEYS.map(
-          ([key, state]) => `${key.replace("ctrl-", "^")} ${state || "all"}`,
-        ).join(" ")}`,
-        hidden ? `${hidden} crew hidden (--all)` : "",
+        `enter jump   ^r refresh   ^p preview   del forget   ^u clear`,
+        // "toggle crew", not "show crew": the header is built once and the
+        // binding flips per keypress, so a directional label would be wrong
+        // half the time. The prompt's `crew` marker says which way it is
+        // currently set.
+        `filter: ${FILTER_KEYS.map(([key, query]) => `${key.replace("alt-", "M-")} ${query}`).join(
+          " ",
+        )}   M-a toggle crew`,
         headerRow(showHost),
       ]
         .filter(Boolean)
@@ -415,6 +487,27 @@ export async function runPick(store: Store, options: PickOptions = {}): Promise<
       "ctrl-p:change-preview-window(bottom:60%,border-top,wrap|hidden|right:58%,border-left,wrap)",
       "--bind",
       `ctrl-r:reload(${process.execPath} ${self} pick --rows${allFlag})`,
+      // M-a toggles the POPULATION, which is what "all" means everywhere else in
+      // murmur: the --all flag, and the "crew hidden (--all)" notice.
+      //
+      // It used to be the "clear the filter" key, labelled "all", which is the
+      // collision that made it look broken: pressing it emptied the query
+      // instead of revealing the hidden crew rows named two lines below, and
+      // nothing said why. One word, two meanings, and the wrong one bound to
+      // the key people reach for. Clearing is fzf's own ctrl-u, which needed no
+      // binding at all.
+      //
+      // `transform` rather than a fixed reload, because a bind string is built
+      // once at launch and cannot know it has already fired: binding
+      // `--rows --all` meant the second press re-ran the same thing and the
+      // toggle only worked one way. transform runs a shell snippet per
+      // keypress, so it can branch on the current state.
+      //
+      // The state lives in the prompt, which is the only mutable string fzf
+      // exposes to a binding. CREW_MARK is carried at the front of it: visible
+      // as a label, and readable back through $FZF_PROMPT.
+      "--bind",
+      `alt-a:transform:[[ $FZF_PROMPT == "${CREW_MARK}"* ]] && echo "reload(${process.execPath} ${self} pick --rows)+change-prompt(${basePrompt})" || echo "reload(${process.execPath} ${self} pick --rows --all)+change-prompt(${CREW_MARK}${basePrompt})"`,
       // Manual dismissal for a row nothing else will clear.
       //
       // The delete key, not a ctrl chord. ctrl-shift-d does not exist -- a
@@ -476,7 +569,7 @@ export async function runForget(
 export async function runRows(store: Store, options: PickOptions = {}): Promise<void> {
   const identity = loadIdentity();
   const view = await statusWithCollect(store);
-  const agents = view.agents.filter((agent) => options.all || agent.driver === "human");
+  const agents = view.agents.filter((agent) => options.all || isVisible(agent));
   const showHost = agents.some((agent) => agent.host_id !== identity?.host_id);
   const currentPane = process.env.TMUX_PANE ?? "";
   for (const agent of agents) {

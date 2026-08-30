@@ -39,6 +39,26 @@ above, and each one silently dropped events while the tmux badge kept painting:
   wrong window so jumps went to the wrong place, and closing the old window
   deleted the agent as dead.
 
+**The picker's filter keys work, and `M-a` shows crew instead of clearing.**
+`^b` was the filter for blocked and could never have worked: `C-b` is tmux's
+default prefix, and tmux consumes the prefix before any pane, including the
+popup the picker runs in. The filters are Alt chords now -- `M-b`, `M-w`, `M-d`,
+`M-x` -- because murmur cannot know a user's prefix and any ctrl-letter is a
+gamble. The safe ctrl spellings still work.
+
+`M-a` was labelled "all" and cleared the filter, which collided with the `--all`
+flag that shows orchestrated agents: pressing it emptied the query rather than
+revealing the crew rows the header names two lines below. It now toggles crew in
+and out of the list, and `^u` -- fzf's own binding, which always existed --
+clears.
+
+**Blocked and crashed crew agents are no longer hidden.** Orchestrated agents
+are hidden by default because their supervisor consumes the result, but that was
+applied to every state. An orchestrator cannot answer a question meant for a
+human, and it may never retry a worker that died, so those two rows were the
+ones a human needed and could not see -- hidden from the picker behind `--all`
+and missing from the status-bar counts entirely.
+
 **A sleeping node is no longer noisy.** The collector wrote two lines of ssh
 diagnostics for every peer it could not reach -- the full ssh invocation plus
 ssh's own message, over 200 characters -- and it runs from `murmur status` on
@@ -111,7 +131,7 @@ machine: the pid-age bound that kept it honest rejected the same old idle rows
 it existed to describe, and `clearDeadWindows` already prunes agents whose
 window is gone. The `clear` fix above removed the reason it seemed necessary.
 
-Tests went 103 to 127, including a new file that drives a real tmux server on a
+Tests went 103 to 131, including a new file that drives a real tmux server on a
 private socket: every other test fakes the multiplexer, so two malformed tmux
 targets passed the whole suite. Every new test was verified by mutating the code
 it covers. One new test was itself flaky (a timer standing in for a barrier) and

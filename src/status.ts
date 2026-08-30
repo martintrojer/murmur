@@ -32,9 +32,25 @@ function emptyCounts(): Counts {
 
 export function tmuxStatus(view: Status): string {
   const urgency: StatusState[] = ["crashed", "blocked", "done", "working", "idle"];
+  // Orchestrated agents are counted here for `blocked` and `crashed` only.
+  //
+  // Hiding crew is right for the rest: a supervisor consumes a `done` worker's
+  // result, so nobody needs to acknowledge it, and `working` asks for nothing.
+  // But `blocked` means waiting for an answer that only a human can give -- mu
+  // places work, it cannot decide between two approaches -- and `crashed` means
+  // a worker died, which a supervisor may or may not retry.
+  //
+  // So a blocked crew agent is waiting on YOU, and it used to appear on no
+  // surface at all: hidden from the picker behind --all, and absent from this
+  // count, which read `view.counts` only. `orchestrated_counts` was computed
+  // and no caller read it. Verified by seeding one: the status bar printed
+  // nothing while a worker sat waiting.
+  const needsHuman = new Set<StatusState>(["blocked", "crashed"]);
+  const total = (state: StatusState): number =>
+    view.counts[state] + (needsHuman.has(state) ? view.orchestrated_counts[state] : 0);
   return urgency
-    .filter((state) => view.counts[state] > 0)
-    .map((state) => `${state}\t${view.counts[state]}\n`)
+    .filter((state) => total(state) > 0)
+    .map((state) => `${state}\t${total(state)}\n`)
     .join("");
 }
 
