@@ -5,6 +5,56 @@ so it says what changed for a user rather than listing every commit.
 
 ## Unreleased
 
+**An agent that finishes while you are looking elsewhere now says so.**
+`blocked` is the state this tool exists to deliver, and nothing produced it.
+The extension listened to `agent_start` and `agent_end`; the event that means
+"the agent is done and waiting on a human" is `agent_settled`, and murmur was
+not subscribed to it. So the highest-attention state in the model was carried by
+the picker, the status bar and the clear whitelist, and never arrived.
+
+An agent that settles while its pane is unfocused now reports `blocked`, which
+is exactly "it wants you and you are not looking". If you are already in the
+pane there is nothing to request and nothing is written. Orchestrated crew
+agents are unchanged: mu placed the work and mu consumes the result, so a
+finishing worker is not a human's problem.
+
+Expect the status bar to show attention where it previously showed nothing. That
+is the fix working, not a new alarm.
+
+**A second pi in an agent's pane no longer corrupts that agent's row.** Starting
+a pi inside a pane that already had one — a nested run, a subagent, or just
+`pi` typed by hand — made it report *as* the existing agent, because the pane id
+is inherited and the extension is installed globally. One pane collected six
+different reporting processes, of which one was alive, and the real agent read
+as idle while it was working. Doubled `cleared` events came from the same cause:
+two processes each correctly reporting once, about an agent only one of them
+was.
+
+Only a pane's own agent reports for it now. A nested pi writes nothing at all
+rather than writing something wrong. This also affects anything that launches pi
+from inside an agent, including test suites.
+
+**A node whose database is wiped is no longer invisible to its peers.** Peers
+track "everything after sequence N", and a node's identity deliberately survives
+losing its event log — so a wiped node restarted counting at 1, a peer asked for
+anything after 3, and was told there was nothing new. Blocked agents could sit
+unseen indefinitely with no way to notice. Exports now carry an epoch
+identifying which incarnation of the log the sequence numbers belong to, and a
+peer that sees a new one re-reads from the start. Older peers that send no epoch
+still work.
+
+**`peer list` shows each peer's murmur version.** Two nodes can agree on the
+wire format and still run different code with different behaviour, which was
+previously invisible and is a thing worth seeing before debugging a
+disagreement. A genuine wire incompatibility is now called out as such rather
+than showing up as a peer that mysteriously reports nothing.
+
+**`npm test` builds first.** Several tests execute the built output, so a stale
+`dist/` could pass while testing code you had not written — it cost a maintainer
+ten minutes on a failure that looked like a formatting bug and was a stale
+build. Running vitest directly still works and now fails loudly instead of
+quietly, with `test:only` as the escape hatch.
+
 **Harnesses other than pi can ask for attention again.** `murmur notify` is the
 path for codex and opencode, which have no in-process hook and can only run a
 command when something happens. It replaces the `notify` subcommand of the

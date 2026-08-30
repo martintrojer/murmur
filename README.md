@@ -231,7 +231,7 @@ recognise, so a newer node and an older one can already talk to each other.
 
 ## Documentation
 
-[ARCHITECTURE.md](ARCHITECTURE.md) explains how it works, the three ideas you
+[ARCHITECTURE.md](ARCHITECTURE.md) explains how it works, the four ideas you
 need before changing anything, why it exists rather than the alternatives, and
 what is unfinished.
 
