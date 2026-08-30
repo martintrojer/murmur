@@ -5,6 +5,7 @@ import {
   agentLabel,
   agentLocation,
   forgetOneAgent,
+  type JumpResult,
   jumpToAgent,
   terminalText,
 } from "../agents.js";
@@ -15,6 +16,28 @@ import { status, statusWithCollect } from "../status.js";
 import { openStore, type Store } from "../store.js";
 
 type PickOptions = { all?: boolean };
+
+/**
+ * The two effects `runPick` has on the world: it runs fzf, and it jumps.
+ *
+ * Injectable because everything interesting about the picker happens BETWEEN
+ * those two calls -- which id fzf returns, and which agent that id resolves
+ * to -- and with both hard-wired that stretch had no coverage at all. The crew
+ * rows revealed by alt-a looked selectable but could not be jumped to for
+ * exactly as long as this seam did not exist.
+ */
+export type PickDeps = {
+  fzf?: (args: string[], input: string, env: NodeJS.ProcessEnv) => string;
+  jump?: (store: Store, agent: Agent) => JumpResult;
+};
+
+const spawnFzf: NonNullable<PickDeps["fzf"]> = (args, input, env) =>
+  spawnSync("fzf", args, {
+    input,
+    encoding: "utf8",
+    stdio: ["pipe", "pipe", "inherit"],
+    env,
+  }).stdout ?? "";
 
 const PREVIEW_EVENTS = 8;
 const PREVIEW_MESSAGE_MAX = 300;
@@ -374,7 +397,13 @@ export function runPreview(store: Store, agentId: string): void {
   process.stdout.write(`${previewText(store, agent)}\n`);
 }
 
-export async function runPick(store: Store, options: PickOptions = {}): Promise<void> {
+export async function runPick(
+  store: Store,
+  options: PickOptions = {},
+  deps: PickDeps = {},
+): Promise<void> {
+  const fzf = deps.fzf ?? spawnFzf;
+  const jumpTo = deps.jump ?? jumpToAgent;
   const identity = loadIdentity();
   const view = await statusWithCollect(store);
   const agents = view.agents.filter((agent) => options.all || isVisible(agent));
@@ -425,8 +454,7 @@ export async function runPick(store: Store, options: PickOptions = {}): Promise<
     query ? `${key}:change-query(${query})` : `${key}:change-query()`,
   ]);
 
-  const result = spawnSync(
-    "fzf",
+  const stdout = fzf(
     [
       "--delimiter",
       "\t",
@@ -522,23 +550,34 @@ export async function runPick(store: Store, options: PickOptions = {}): Promise<
       "--no-select-1",
       "--no-exit-0",
     ],
-    {
-      input,
-      encoding: "utf8",
-      stdio: ["pipe", "pipe", "inherit"],
-      // FZF_DEFAULT_OPTS can carry a conflicting layout or bindings from the
-      // user's shell; the old picker stripped it for the same reason.
-      env: Object.fromEntries(
-        Object.entries(process.env).filter(([key]) => !key.startsWith("FZF_DEFAULT_OPTS")),
-      ),
-    },
+    input,
+    // FZF_DEFAULT_OPTS can carry a conflicting layout or bindings from the
+    // user's shell; the old picker stripped it for the same reason.
+    Object.fromEntries(
+      Object.entries(process.env).filter(([key]) => !key.startsWith("FZF_DEFAULT_OPTS")),
+    ),
   );
 
-  const selected = result.stdout?.trim().split("\t")[0];
+  const selected = stdout.trim().split("\t")[0];
   if (!selected) return;
-  const agent = agents.find((candidate) => candidate.agent_id === selected);
-  if (!agent) return;
-  const jump = jumpToAgent(store, agent);
+  // Resolved against the UNFILTERED list, not `agents`. `agents` is what this
+  // process printed at launch; alt-a reloads the rows from a SUBPROCESS, so a
+  // crew row revealed that way was never in the parent's array. fzf returned
+  // its agent_id, find() returned undefined, and enter did nothing — the
+  // reveal shipped able to show rows it could not select. Filtering is a
+  // presentation concern and must not gate the action; the id fzf hands back
+  // is authoritative.
+  const agent = view.agents.find((candidate) => candidate.agent_id === selected);
+  // So a miss here means the agent is genuinely gone between the collect and
+  // the keypress, and that is worth saying. Same argument as the jump.ok
+  // branch below: in a popup, a silent return is indistinguishable from a dead
+  // key.
+  if (!agent) {
+    process.stderr.write(`${selected} is no longer here.\n`);
+    process.exitCode = 1;
+    return;
+  }
+  const jump = jumpTo(store, agent);
   // A popup closes the moment this returns, so a bare failure looked exactly
   // like "enter did nothing". Say what happened and fail loudly.
   if (!jump.ok) {
