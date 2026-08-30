@@ -52,6 +52,20 @@ revealing the crew rows the header names two lines below. It now toggles crew in
 and out of the list, and `^u` -- fzf's own binding, which always existed --
 clears.
 
+**Agents whose tmux window is gone clean themselves up.** A dead agent's final
+`cleared` event was immortal: retention keeps the newest event per agent so a
+long-idle agent does not vanish, and the dead-window sweep only ever converted a
+LIVE row to `cleared` -- an already-cleared row had nothing to supersede, so it
+was skipped. Two correct rules, and between them a row that nothing could
+remove. Four crew rows on the author's machine had outlived their windows
+indefinitely, and the only way to clear them was the manual `del` key.
+
+The sweep now deletes those rows, and runs from `collect` rather than only from
+`export` -- export happens when a peer asks over ssh, so a single-machine node
+never swept at all. `blocked`, `done` and `crashed` on a dead window are still
+superseded rather than deleted: those are facts a human has not seen, and
+sweeping them away would hide the failures this tool exists to surface.
+
 **Blocked and crashed crew agents are no longer hidden.** Orchestrated agents
 are hidden by default because their supervisor consumes the result, but that was
 applied to every state. An orchestrator cannot answer a question meant for a
@@ -131,7 +145,7 @@ machine: the pid-age bound that kept it honest rejected the same old idle rows
 it existed to describe, and `clearDeadWindows` already prunes agents whose
 window is gone. The `clear` fix above removed the reason it seemed necessary.
 
-Tests went 103 to 131, including a new file that drives a real tmux server on a
+Tests went 103 to 134, including a new file that drives a real tmux server on a
 private socket: every other test fakes the multiplexer, so two malformed tmux
 targets passed the whole suite. Every new test was verified by mutating the code
 it covers. One new test was itself flaky (a timer standing in for a barrier) and

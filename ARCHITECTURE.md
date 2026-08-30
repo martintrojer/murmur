@@ -455,6 +455,11 @@ cause from outside without restarting it.
 
 ## Known gaps
 
+- **A dead agent's row is removed only by its own host.** The sweep needs the
+  live tmux window set, which only the owning node has, so it runs there --
+  `collect` on every invocation, plus `export`. A reader that holds a replica of
+  a dead remote agent waits for that node to report again, or clears the row by
+  hand with `del`.
 - **An idle row cannot say whether its agent is still alive.** `agent_end` fires
   per turn, so an agent in use reads idle between turns, and a pane whose agent
   exited reads the same. A `liveness` axis folded from the last reported pid was

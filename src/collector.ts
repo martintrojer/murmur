@@ -1,5 +1,5 @@
 import type { Channel } from "./channel.js";
-import { type Envelope, eventFromWire, SCHEMA_VERSION } from "./export.js";
+import { type Envelope, eventFromWire, reapDeadAgents, SCHEMA_VERSION } from "./export.js";
 import type { Store } from "./store.js";
 import type { Event } from "./types.js";
 
@@ -282,6 +282,16 @@ export async function collect(
   // Retention must not be able to fail a command, hence its own try.
   try {
     store.prune();
+    // Reap this host's agents whose tmux window is gone and whose last word was
+    // `cleared`. Housekeeping, alongside retention, and for the same reason it
+    // lives here: this runs once per invocation including with zero peers, so
+    // the single-machine case is covered.
+    //
+    // It could not live in `export` alone, which is where clearDeadWindows was
+    // called from -- export runs when a PEER asks over ssh, so a node with no
+    // peers never reaped, and four dead crew rows sat in the author's picker
+    // indefinitely. Only the owning host can do this: `live` is its own tmux.
+    reapDeadAgents(store);
   } catch {
     // Retention is housekeeping: it must not fail a command, and it must not
     // report either. A failed prune costs disk, which the next collect retries.

@@ -1,5 +1,6 @@
 import { foldAgent, type LiveCheck } from "./fold.js";
-import { ensureIdentity } from "./identity.js";
+import { ensureIdentity, loadIdentity } from "./identity.js";
+import { tmux } from "./mux.js";
 import type { Store } from "./store.js";
 import type { Driver, Event } from "./types.js";
 
@@ -107,7 +108,30 @@ function synthesizeCrashes(store: Store, hostId: string, isAlive: LiveCheck): vo
  * filter, so the fact replicates once and explains itself, instead of every
  * peer having to re-derive it from an absence.
  */
-export function clearDeadWindows(store: Store, hostId: string, live: Set<string> | null): void {
+/**
+ * Drop this host's agents whose tmux window is gone and whose last state is
+ * already `cleared`.
+ *
+ * The delete-only half of clearDeadWindows, callable without building an
+ * export. Housekeeping runs from `collect`, which happens on every invocation
+ * including with no peers; export only runs when a peer asks over ssh, so a
+ * single-machine node reaped never.
+ *
+ * Resolves identity and tmux itself because both are facts only the owning host
+ * can know, and this must be a no-op on a node that has neither.
+ */
+export function reapDeadAgents(store: Store, live: Set<string> | null = tmux.liveWindows()): void {
+  const identity = loadIdentity();
+  if (!identity || live === null) return;
+  clearDeadWindows(store, identity.host_id, live, "reap-only");
+}
+
+export function clearDeadWindows(
+  store: Store,
+  hostId: string,
+  live: Set<string> | null,
+  mode: "full" | "reap-only" = "full",
+): void {
   // null means tmux could not answer. An empty set means it did and there are
   // no windows. Conflating them would clear every agent on the host whenever
   // tmux was briefly unreachable.
@@ -121,8 +145,35 @@ export function clearDeadWindows(store: Store, hostId: string, live: Set<string>
   }
 
   for (const event of newest.values()) {
-    if (event.state === "cleared") continue;
     if (live.has(event.window)) continue;
+
+    // The window is gone AND the agent already reported cleared, so there is no
+    // state left to supersede and nothing a human could learn from the row.
+    // Drop it outright.
+    //
+    // Without this the row was immortal, which is a leak from two correct rules
+    // meeting. Retention keeps the newest event per agent forever so a
+    // long-idle agent does not vanish, and this loop only ever CONVERTED a live
+    // row to cleared -- an already-cleared row had nothing to supersede, so it
+    // was skipped. A dead agent's final `cleared` was therefore protected by
+    // pruning and removed by nothing: four crew rows on the author's machine
+    // had outlived their windows indefinitely.
+    //
+    // Deliberately narrow. `blocked`, `done` and `crashed` on a dead window
+    // still become a synthetic `cleared` below rather than being deleted: those
+    // are unacknowledged facts, and sweeping them away silently would hide the
+    // very failures this tool exists to surface. Only a row that already says
+    // "nothing to see" is discarded.
+    if (event.state === "cleared") {
+      store.forgetAgent(event.agent_id);
+      continue;
+    }
+
+    // reap-only: never author. Synthesising a `cleared` is an authorship
+    // decision that belongs to export, where crash synthesis already lives and
+    // where the envelope that carries it is being built. Housekeeping only
+    // removes rows that say nothing.
+    if (mode === "reap-only") continue;
     const { host_id: _hostId, seq: _seq, ts: _ts, ...rest } = event;
     store.append({
       ...rest,

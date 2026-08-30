@@ -2,7 +2,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, test } from "vitest";
-import { eventFromWire, exportJsonl, SCHEMA_VERSION } from "../src/export.js";
+import { clearDeadWindows, eventFromWire, exportJsonl, SCHEMA_VERSION } from "../src/export.js";
 import { openStore, type Store } from "../src/store.js";
 import type { Event } from "../src/types.js";
 
@@ -151,4 +151,76 @@ test("re-export reproduces an unknown event line byte for byte", () => {
       .trim()
       .split("\n")[1] ?? "";
   expect(second).toBe(first);
+});
+
+test("an agent whose window is gone and which already said cleared is dropped", () => {
+  // Two correct rules met and leaked. Retention keeps the newest event per
+  // agent forever so a long-idle agent does not vanish from the list; and
+  // clearDeadWindows only ever CONVERTED a live row to `cleared`, skipping one
+  // that was already cleared because there was nothing to supersede. So a dead
+  // agent's final `cleared` was protected by pruning and removed by nothing.
+  //
+  // Observed: four crew rows on the author's machine outlived their tmux
+  // windows indefinitely, visible under --all forever, and the only way to get
+  // rid of them was the manual `del` key. A window tmux says is gone needs no
+  // human judgement, so it should not need a keystroke.
+  s.append(localEvent({ agent_id: "dead", window: "@gone", state: "cleared" }));
+  s.append(localEvent({ agent_id: "alive", window: "@here", state: "cleared" }));
+  const hostId = s.allEvents()[0]?.host_id ?? "";
+
+  clearDeadWindows(s, hostId, new Set(["@here"]));
+
+  const remaining = new Set(s.allEvents().map((event) => event.agent_id));
+  expect(remaining.has("dead")).toBe(false);
+  // A live window is untouched, however long it has been idle.
+  expect(remaining.has("alive")).toBe(true);
+});
+
+test("an unacknowledged state on a dead window is superseded, never deleted", () => {
+  // The narrowness that makes the deletion safe. blocked, done and crashed are
+  // facts a human has not seen yet, and sweeping them away because the window
+  // closed would hide exactly the failures this tool exists to surface -- an
+  // agent that died mid-task would simply disappear. They become a synthetic
+  // `cleared` instead, which keeps the history and the reason.
+  for (const state of ["blocked", "done", "crashed"]) {
+    s.append(localEvent({ agent_id: `dead-${state}`, window: "@gone", state }));
+  }
+  const hostId = s.allEvents()[0]?.host_id ?? "";
+
+  clearDeadWindows(s, hostId, new Set(["@here"]));
+
+  for (const state of ["blocked", "done", "crashed"]) {
+    const events = s.allEvents().filter((event) => event.agent_id === `dead-${state}`);
+    expect(events.length).toBeGreaterThan(1);
+    expect(events.at(-1)).toMatchObject({
+      state: "cleared",
+      synthetic: true,
+      reason: "window_gone",
+    });
+  }
+});
+
+test("reap-only housekeeping removes dead rows but authors nothing", () => {
+  // Why the delete half is callable on its own. clearDeadWindows ran only from
+  // `export`, which happens when a PEER asks over ssh -- so a node with no
+  // peers reaped never, which is the everyday single-machine case. Housekeeping
+  // now runs from `collect`, on every invocation.
+  //
+  // It must not author, though: synthesising a `cleared` is an authorship
+  // decision that belongs with crash synthesis in export, where the envelope
+  // carrying it is being built.
+  s.append(localEvent({ agent_id: "dead", window: "@gone", state: "cleared" }));
+  s.append(localEvent({ agent_id: "blocked", window: "@gone", state: "blocked" }));
+  const hostId = s.allEvents()[0]?.host_id ?? "";
+
+  const before = s.allEvents().length;
+  clearDeadWindows(s, hostId, new Set<string>(), "reap-only");
+  const after = s.allEvents();
+
+  expect(after.some((event) => event.agent_id === "dead")).toBe(false);
+  // The blocked row is left exactly as it was: not deleted, and not superseded.
+  const blocked = after.filter((event) => event.agent_id === "blocked");
+  expect(blocked).toHaveLength(1);
+  expect(blocked[0]?.state).toBe("blocked");
+  expect(after.length).toBeLessThan(before);
 });
