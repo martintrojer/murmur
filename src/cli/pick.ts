@@ -232,13 +232,6 @@ export function pickerRow(agent: Agent, showHost: boolean, current: boolean, loc
     // A jump already proved this one dead. Say so plainly rather than leaving
     // the row looking merely old, and sort it last.
     agent.tmux_down ? "no tmux" : "",
-    // An idle row means "wants nothing", which covers both a pi sitting between
-    // turns and a pane whose agent exited hours ago. Those deserve different
-    // decisions -- one is worth jumping to, the other is worth closing -- and
-    // the state word alone cannot tell them apart. Only shown when the pid was
-    // checkable: a remote idle agent is genuinely unknown from here.
-    agent.liveness === "alive" ? "live" : "",
-    agent.liveness === "exited" ? "exited" : "",
     age(agent.event_age_ms),
   ]
     .filter(Boolean)

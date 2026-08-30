@@ -428,8 +428,8 @@ the tmux badge is set from the same handler that writes the event:
   `session_start`, which fires afterwards. Treating shutdown as terminal stopped
   reporting permanently on the first `/reload`.
 - **`agent_end` is per turn, not per session.** An agent in active use
-  alternates `working` / `cleared` for its whole life, which is why an idle row
-  needs a liveness axis to be readable at all.
+  alternates `working` / `cleared` for its whole life, so a single sample cannot
+  distinguish "between turns" from "gone".
 - **The pane outlives the window.** A pane can move between windows, keeping its
   id while the window id changes, so the location has to be re-read rather than
   cached at startup.
@@ -441,15 +441,17 @@ cause from outside without restarting it.
 
 ## Known gaps
 
-- **Liveness of a quiet agent degrades to `unknown` after an hour.** Pids
-  recycle -- measured at ~9/sec idle here, so darwin's 99999-pid space wraps in
-  about three hours -- and `pidAlive` only asks whether *something* holds that
-  number. Past the trust horizon an alive agent that has been quiet reads
-  `unknown`, which is honest but less useful than the truth. A start timestamp
-  compared against the process's own would fix it and needs a `ps` call.
-- **Remote idle agents report no liveness.** Only the authoring node can check a
-  pid, so remote idle rows read `unknown` where local ones read `live` or
-  `exited`. A peer could fold and export its own, and the wire format allows it.
+- **An idle row cannot say whether its agent is still alive.** `agent_end` fires
+  per turn, so an agent in use reads idle between turns, and a pane whose agent
+  exited reads the same. A `liveness` axis folded from the last reported pid was
+  built for this and then removed: on a real machine it answered `unknown` for
+  12 of 12 agents, because the pid-age horizon that made it honest -- pids
+  recycle in about three hours here -- rejects exactly the old idle rows it was
+  meant to describe. `clearDeadWindows` already covers the case that matters, by
+  pruning agents whose window is gone. If this is worth solving, the missing
+  input is a process start time to compare against the event, not another
+  inference from the pid alone.
+
 - **The remote wrapper session is verified against tmux, not against use.**
   Options, the switch, and the return to the origin window are verified on real
   tmux servers with a stub ssh. Sitting in a live remote pane and working in it

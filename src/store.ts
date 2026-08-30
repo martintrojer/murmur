@@ -154,11 +154,6 @@ export function openStore(): Store {
   const salvagedPeers = resetIfStale(path);
   const database = new Database(path);
   database.pragma("journal_mode = WAL");
-  // Stated rather than relied on. better-sqlite3 already defaults this to 5s,
-  // but WAL's one-writer-at-a-time rule plus a zero timeout is the difference
-  // between a queued append and a lost event, and that is too load-bearing to
-  // leave as a library default someone could change.
-  database.pragma("busy_timeout = 5000");
   database.pragma(`user_version = ${STORE_VERSION}`);
   database.exec(`
     CREATE TABLE IF NOT EXISTS events (

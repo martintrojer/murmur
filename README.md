@@ -14,19 +14,13 @@ keystroke, then jumps you to the agent on whichever machine it turns out to be.
    ! blocked  review the auth change          api           → devbox        4m
    ▶ working  Fix the picker filter           murmur          here
    ✓ done     migrate the fixtures            api           → devbox        12m
-   · idle     worker-2                        infra           here          crew live
-   · idle     glance-2                        murmur          here          exited
+   · idle     worker-2                        infra           here          crew
 ```
 
 Pick a row and press enter. Local agents are a window switch away; remote ones
 open over ssh. The preview beside the list shows the last few lines the agent
 printed, so you can tell "waiting on me" from "still thinking" without going
 there at all.
-
-Idle means the agent wants nothing, which covers a pi sitting between turns and
-a pane whose agent exited hours ago. `live` and `exited` separate those: one is
-worth jumping to, the other is worth closing. Only the agent's own machine can
-check a pid, so a remote idle row shows neither.
 
 ## Why it exists
 

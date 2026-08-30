@@ -115,19 +115,21 @@ export default function murmurPi(pi: ExtensionAPI): void {
     return location;
   };
 
-  // Three states, and conflating two of them silenced the extension for the
-  // life of the process. `undefined` is "not tried yet", a Store is "open", and
-  // `null` used to mean both "murmur is not installed, stop trying" and "a
-  // write failed, let go of the handle" -- so one transient failure latched the
-  // cache off and every later event was dropped while the tmux badge still
-  // painted. Observed: an agent stopped reporting mid-session and read as idle
-  // for two minutes while it was working.
+  // One variable, three named states, so the combinations that must not exist
+  // cannot be written down.
   //
-  // `absent` is now the only permanent answer, and only the import or a missing
-  // identity produces it. A dropped handle resets to `undefined`, so the next
-  // event reopens.
-  let store: Store | null | undefined;
-  let absent = false;
+  // This was a `Store | null | undefined` plus a separate `absent` boolean --
+  // six combinations for three meanings -- and conflating two of them silenced
+  // the extension for the life of the process: `null` meant both "murmur is not
+  // installed, stop trying" and "a write failed, let go of the handle", so one
+  // transient failure latched the cache off and every later event was dropped
+  // while the tmux badge still painted.
+  //
+  // Only `absent` is permanent, and only a failed import or a missing identity
+  // produces it. A dropped handle returns to `untried`, so the next event
+  // reopens.
+  type StoreState = { kind: "untried" } | { kind: "open"; store: Store } | { kind: "absent" };
+  let state: StoreState = { kind: "untried" };
   let hostId: string | null = null;
   let queue: Promise<void> = Promise.resolve();
 
@@ -139,22 +141,21 @@ export default function murmurPi(pi: ExtensionAPI): void {
   const getStore = async (): Promise<Store | null> => {
     // Permanent: murmur is not installed, or this node has no identity. Neither
     // becomes true later in the same process, so retrying every event would pay
-    // a failed dynamic import per turn forever.
-    if (absent) return null;
-    if (store !== undefined && store !== null) return store;
+    // a failed dynamic import per turn forever. `session_start` re-arms it,
+    // because both ARE fixable from outside a running pi.
+    if (state.kind === "absent") return null;
+    if (state.kind === "open") return state.store;
     try {
       const { loadIdentity, openStore } = (await import(storeModule)) as StoreModule;
       hostId = loadIdentity()?.host_id ?? null;
       if (!hostId) {
-        absent = true;
-        store = null;
+        state = { kind: "absent" };
         return null;
       }
-      store = openStore();
-      return store;
+      state = { kind: "open", store: openStore() };
+      return state.store;
     } catch {
-      absent = true;
-      store = null;
+      state = { kind: "absent" };
       return null;
     }
   };
@@ -165,22 +166,19 @@ export default function murmurPi(pi: ExtensionAPI): void {
   // recurring transient write failure leaked a connection and its WAL read
   // state per event, inside a pi process that can run for days. Shared with
   // session_shutdown so there is one way to let go of the store.
+  // Close the handle and go back to "not tried yet". A failed write is usually
+  // transient -- a lock held by a concurrent writer, a WAL hiccup -- and the
+  // agent has hours of events left to report, so the next one must reopen.
+  // Never sets `absent`: that is reserved for "murmur is not here at all".
   const dropStore = (): void => {
-    try {
-      store?.close();
-    } catch {
-      // Best effort: extension failures must never reach pi.
+    if (state.kind === "open") {
+      try {
+        state.store.close();
+      } catch {
+        // Best effort: extension failures must never reach pi.
+      }
     }
-    // Back to "not tried yet", not to "absent". A failed write is usually
-    // transient -- a lock held by a concurrent writer, a WAL hiccup -- and the
-    // agent has hours of events left to report. `absent` is untouched, so a
-    // genuinely missing murmur still stops after one attempt.
-    //
-    // Belt and braces with the `!== null` guard in getStore: either alone stops
-    // the latch, so reverting one keeps the tests green. Both are here because
-    // they state different things -- this is "let go of a broken handle", that
-    // is "null is not a cached answer".
-    store = undefined;
+    state = { kind: "untried" };
   };
 
   const append = async (
@@ -264,7 +262,7 @@ export default function murmurPi(pi: ExtensionAPI): void {
   // being the one that discovers the move.
   pi.on("session_start", () => {
     void enqueue(async () => {
-      absent = false;
+      if (state.kind === "absent") state = { kind: "untried" };
       const location = here();
       lastWindow = location.window;
     });

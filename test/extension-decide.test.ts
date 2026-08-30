@@ -503,8 +503,13 @@ test("session_start re-arms an extension that gave up, so a reload is a real rec
   expect(appended).toEqual([]);
 
   // The user runs `murmur init` and reloads.
+  //
+  // session_start alone, WITHOUT session_shutdown first. dropStore also returns
+  // the state to "untried", so driving the full shutdown/start pair would pass
+  // even with no re-arm at all -- the test would be asserting the wrong
+  // mechanism. Confirmed by mutation: with the pair, removing the re-arm still
+  // passed.
   identity = { host_id: "H" };
-  await handlers.get("session_shutdown")?.();
   await handlers.get("session_start")?.();
   await handlers.get("agent_start")?.();
   await until(() => appended.includes("working"), "append after init + reload");

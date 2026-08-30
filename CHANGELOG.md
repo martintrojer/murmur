@@ -19,12 +19,6 @@ While you are in that session the local tmux has no prefix and cannot be
 reached. If you want a way out that does not involve the remote, the README
 documents a one-line root-table binding.
 
-**An idle agent now says whether it is still running.** `idle` covered both a pi
-sitting between turns and a pane whose agent exited hours ago, and the picker
-showed them identically — two live agents on the author's machine read as plain
-idle for hours. Idle rows now carry a `live` or `exited` flag. Remote idle rows
-show neither, because only an agent's own machine can check a pid.
-
 **Three fixes for agents that stopped reporting.** Found by chasing the case
 above, and each one silently dropped events while the tmux badge kept painting:
 
@@ -44,11 +38,6 @@ above, and each one silently dropped events while the tmux badge kept painting:
   The badge was left on the window the agent had left, later events recorded the
   wrong window so jumps went to the wrong place, and closing the old window
   deleted the agent as dead.
-
-An idle agent's `live` flag is also now bounded by pid age. Pids recycle in
-about three hours on this machine, so a day-old pid was being reported as alive
-when it may well have belonged to an unrelated process; past an hour the answer
-is `unknown`.
 
 **Switching back to an agent's pane no longer wipes its state.** The tmux focus
 hooks call `murmur clear`, which cleared whatever state it found -- including
@@ -95,7 +84,13 @@ does not create one -- an agent should not decide what a machine is called --
 but the consequence was invisible: it loaded, ran, and recorded nothing while
 the tmux badge still painted.
 
-Tests went 103 to 132, including a new file that drives a real tmux server on a
+A `live` / `exited` flag on idle rows was built during this work and then
+removed before release. It answered `unknown` for every agent on a real
+machine: the pid-age bound that kept it honest rejected the same old idle rows
+it existed to describe, and `clearDeadWindows` already prunes agents whose
+window is gone. The `clear` fix above removed the reason it seemed necessary.
+
+Tests went 103 to 124, including a new file that drives a real tmux server on a
 private socket: every other test fakes the multiplexer, so two malformed tmux
 targets passed the whole suite. Every new test was verified by mutating the code
 it covers. One new test was itself flaky (a timer standing in for a barrier) and
