@@ -10,7 +10,7 @@ import {
 import { glance } from "../glance.js";
 import { status, statusWithCollect } from "../status.js";
 import { openStore, type Store } from "../store.js";
-import { age, type PaneView, RENDER_PRIORITY, renderState } from "../view.js";
+import { age, type PaneView, RENDER_PRIORITY, type RenderState, renderState } from "../view.js";
 import { requireIdentity } from "./identity-guard.js";
 
 type PickOptions = { all?: boolean };
@@ -150,14 +150,10 @@ export function headerRow(showHost: boolean): string {
 }
 
 /**
- * State filter keys — an axis kept separate from the text query, so ctrl-b
- * shows blocked agents rather than searching for the word "blocked" (which
- * would also match an agent merely *named* that). Inherited wholesale from the
- * old picker, including the choice to shadow fzf defaults: the query here is a
- * word or two, so home/left/bspace still cover the editing jobs.
- */
-/**
- * State filters, as [key, query].
+ * State filters, as [key, query]. An axis kept separate from the text query, so
+ * a filter shows blocked panes rather than searching for the word "blocked",
+ * which would also match a pane merely *named* that.
+ *
  *
  * Alt chords, not ctrl. `ctrl-b` was the filter for `blocked` and it could
  * never work: `C-b` is tmux's DEFAULT prefix, and tmux consumes the prefix
@@ -179,19 +175,24 @@ export function headerRow(showHost: boolean): string {
  * ctrl-u, a standard readline binding that needs no --bind, so one existed --
  * and binding a second spelling of it cost the word "all", which this picker
  * needs for something else. See the alt-a toggle below.
+ *
+ * Every query is a `RenderState`, because that is the word the row prints. The
+ * `working` filter outlived the state it searched for: activity and attention
+ * are separate facts now and a busy pane paints `running`, so `alt-w working`
+ * narrowed the list to nothing and read exactly like "nothing is busy".
  */
-export const FILTER_KEYS: [key: string, query: string][] = [
+export const FILTER_KEYS: [key: string, query: RenderState][] = [
   ["alt-x", "crashed"],
   ["alt-b", "blocked"],
   ["alt-d", "done"],
-  ["alt-w", "working"],
+  ["alt-w", "running"],
 ];
 
 /** Ctrl aliases that are safe against tmux's default `C-b` prefix. */
-export const FILTER_ALIASES: [key: string, query: string][] = [
+export const FILTER_ALIASES: [key: string, query: RenderState][] = [
   ["ctrl-x", "crashed"],
   ["ctrl-d", "done"],
-  ["ctrl-w", "working"],
+  ["ctrl-w", "running"],
 ];
 
 function timestamp(ts: number): string {
@@ -408,14 +409,27 @@ function previewText(store: Store, agent: PaneView): string {
  * every preview up front — which would mean an ssh round-trip per remote pane
  * before the list even paints.
  */
-export function runPreview(store: Store, paneId: string): void {
+export function runPreview(store: Store, paneId: string, hostId?: string): void {
   const identity = requireIdentity();
   if (!identity) return;
   // Runs as a child of a picker that has just collected, so it reads the store
   // directly rather than syncing again.
-  const agent = status(store, identity).panes.find((candidate) => candidate.pane === paneId);
-  if (!agent) return;
-  process.stdout.write(`${previewText(store, agent)}\n`);
+  //
+  // Keyed on HOST AND PANE, which is the whole address. A pane id is unique per
+  // node and nothing more, so two machines routinely hold a `%1`; fzf hands both
+  // columns back for exactly this reason. Matching on the pane alone previewed
+  // whichever row the sort happened to put first, and for a local hit that meant
+  // a local `capture-pane` standing in for a remote agent.
+  const agent = status(store, identity).panes.find(
+    (candidate) =>
+      candidate.pane === paneId && (hostId === undefined || candidate.host_id === hostId),
+  );
+  // A miss is worth saying. This process's entire output is the preview, so
+  // printing nothing is indistinguishable from a broken preview command -- and
+  // the row can genuinely vanish between the collect and the keypress.
+  process.stdout.write(
+    agent ? `${previewText(store, agent)}\n` : `${DIM}${paneId} is no longer here.${RESET}\n`,
+  );
 }
 
 export async function runPick(
@@ -574,7 +588,7 @@ export async function runPick(
     ),
   );
 
-  const [, selected] = stdout.trim().split("\t");
+  const [selectedHost, selected] = stdout.trim().split("\t");
   if (!selected) return;
   // Resolved against the UNFILTERED list, not `agents`. `agents` is what this
   // process printed at launch; alt-a reloads the rows from a SUBPROCESS, so a
@@ -583,7 +597,13 @@ export async function runPick(
   // shipped able to show rows it could not select. Filtering is a presentation
   // concern and must not gate the action; the key fzf hands back is
   // authoritative.
-  const agent = view.panes.find((candidate) => candidate.pane === selected);
+  // The WHOLE address, host and pane. A pane id is unique per node and nothing
+  // more, so two machines routinely hold a `%1`; matching on the pane alone
+  // jumped to whichever one the sort happened to put first, which turns an ssh
+  // into a local window switch.
+  const agent = view.panes.find(
+    (candidate) => candidate.pane === selected && candidate.host_id === selectedHost,
+  );
   // So a miss here means the pane is genuinely gone between the collect and
   // the keypress, and that is worth saying. Same argument as the jump.ok
   // branch below: in a popup, a silent return is indistinguishable from a dead
@@ -623,10 +643,10 @@ export function registerPick(program: Command): void {
     .option("--preview <pane>", "render the preview pane for one pane (internal)")
     .option("--host <host-id>", "host of the pane being previewed (internal)")
     .option("--rows", "print picker rows only (internal, for reload)")
-    .action(async (options: PickOptions & { preview?: string; rows?: boolean }) => {
+    .action(async (options: PickOptions & { preview?: string; host?: string; rows?: boolean }) => {
       const store = openStore();
       try {
-        if (options.preview) runPreview(store, options.preview);
+        if (options.preview) runPreview(store, options.preview, options.host);
         else if (options.rows) await runRows(store, options);
         else await runPick(store, options);
       } finally {

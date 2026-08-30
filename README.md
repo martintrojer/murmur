@@ -12,7 +12,7 @@ keystroke, then jumps you to the agent on whichever machine it turns out to be.
 ```
      state    agent                          workstream    host           age / flags
    ! blocked  review the auth change          api           → devbox        4m
-   ▶ working  Fix the picker filter           murmur          here
+   ▶ running  Fix the picker filter           murmur          here
    ✓ done     migrate the fixtures            api           → devbox        12m
    · idle     worker-2                        infra           here          crew
 ```
@@ -31,8 +31,8 @@ remote *access* than anything else here, but lists the aggregated view as
 unbuilt in its own docs. Both infer agent state by matching terminal output.
 
 murmur takes a different bet. The agent reports its own state from inside the
-process, and the machines exchange nothing more complicated than "here is my
-log since event N". Knowing what is happening is the hard part, and reporting
+process, and the machines exchange nothing more complicated than "here is
+everything I currently know". Knowing what is happening is the hard part, and reporting
 it from inside the agent is what makes it reliable.
 
 ## What it is
@@ -156,7 +156,7 @@ If `murmur` is not reachable there, give the hook the absolute path
 `notify` is the one path where a process that does not own a pane may write
 about it, and it is deliberately narrow: it can only ever say `blocked`, and the
 row it writes carries no pid, so it makes no claim about any process being
-alive. Everything else -- working, done, crashed -- stays the pane owner's
+alive. Everything else -- running, done, crashed -- stays the pane owner's
 alone. Outside tmux it records nothing and exits 0, so it cannot break the
 caller's own exit code.
 
@@ -179,9 +179,9 @@ could not reach.
 bind -N "agent state picker" a display-popup -E -w 80% -h 60% "murmur pick"
 ```
 
-In the picker: `^r` refreshes, `^p` cycles the preview, `del` drops a stuck row,
-and `^u` clears the filter. `M-b` / `M-w` / `M-d` / `M-x` filter to blocked,
-working, done or crashed, and `M-a` toggles orchestrated agents in and out of
+In the picker: `^r` refreshes, `^p` cycles the preview, and `^u` clears the
+filter. `M-b` / `M-w` / `M-d` / `M-x` filter to blocked,
+running, done or crashed, and `M-a` toggles orchestrated agents in and out of
 the list. Alt rather than ctrl because `^b` is tmux's own prefix, which a popup
 never receives. Typing matches the agent name, its workstream or tmux
 session, and its host, as literal substrings rather than scattered characters.

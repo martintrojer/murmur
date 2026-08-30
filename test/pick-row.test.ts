@@ -9,7 +9,7 @@ import {
 } from "../src/cli/pick.js";
 import { asPaneId, asSessionId, asWindowId } from "../src/ids.js";
 import { tmux } from "../src/mux.js";
-import type { PaneView } from "../src/view.js";
+import { type PaneView, RENDER_PRIORITY } from "../src/view.js";
 
 const base: PaneView = {
   host_id: "H",
@@ -219,6 +219,35 @@ test("crew agents are hidden unless they need a human", () => {
   for (const attention of [["blocked"], ["crashed"], ["done"], []] as PaneView["attention"][]) {
     expect(human(attention)).toBe(true);
   }
+});
+
+test("a row shows activity and attention at once, and says when the host is stale", () => {
+  // The three facts are independent, so a row that paints one word hides two of
+  // them. A running agent waiting on a human is the normal case, and a stale
+  // node keeps its last-known fields -- which is only honest if the row says
+  // those fields are old.
+  const text = label(pickerRow({ ...base, freshness: "stale" }, true, false, false));
+  expect(text).toContain("blocked");
+  expect(text).toContain("running");
+  expect(text).toContain("stale host");
+
+  // A fresh host says nothing about freshness: a flag on every row is furniture.
+  expect(label(pickerRow(base, true, false, false))).not.toContain("stale");
+});
+
+test("every filter key queries a render state that rows actually contain", () => {
+  // `alt-w working` outlived the word it searched for. The filters type an
+  // exact-prefix query against the visible row, and the row prints a
+  // RenderState, so a filter naming a state that no longer exists narrows the
+  // list to nothing -- silently, and indistinguishably from "nothing is running".
+  const states = new Set<string>(RENDER_PRIORITY);
+  for (const [, query] of [...FILTER_KEYS, ...FILTER_ALIASES]) {
+    expect(states).toContain(query);
+  }
+
+  // And a query really does appear in a row painted in that state.
+  const row = label(pickerRow({ ...base, attention: [], activity: "running" }, false, false, true));
+  expect(row).toContain("running");
 });
 
 test("the filter keys do not include a clear, which fzf already has", () => {

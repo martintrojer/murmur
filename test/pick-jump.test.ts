@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { isVisible, runPick } from "../src/cli/pick.js";
-import { createIdentity } from "../src/identity.js";
+import { createIdentity, loadIdentity } from "../src/identity.js";
 import { asPaneId, asSessionId, asWindowId } from "../src/ids.js";
 import { openStore, type Store } from "../src/store.js";
 import type { AgentMeta, Driver, Location } from "../src/types.js";
@@ -22,6 +22,11 @@ afterEach(() => {
   vi.unstubAllEnvs();
   process.exitCode = 0;
 });
+
+/** This node's host_id, which is half of every row key fzf hands back. */
+function here(): string {
+  return loadIdentity()?.host_id ?? "";
+}
 
 function location(pane: string): Location {
   return {
@@ -94,7 +99,7 @@ test("a crew row revealed by alt-a can actually be jumped to", async () => {
   agent("%1");
   agent("%9", "orchestrated");
 
-  const { jumped, rows } = await pickReturning("LOCAL\t%9\tlabel");
+  const { jumped, rows } = await pickReturning(`${here()}\t%9\tlabel`);
 
   // Precondition: this pane really is filtered out of the default display, so
   // the test exercises the gap rather than a coincidence.
@@ -113,7 +118,7 @@ test("selecting a pane that is genuinely gone says so instead of exiting silentl
   agent("%1");
   const stderr = vi.spyOn(process.stderr, "write").mockReturnValue(true);
   try {
-    const { jumped } = await pickReturning("LOCAL\t%404\tlabel");
+    const { jumped } = await pickReturning(`${here()}\t%404\tlabel`);
 
     expect(jumped).toEqual([]);
     expect(process.exitCode).toBe(1);
@@ -134,8 +139,66 @@ test("an attention-only pane is selectable, which keying on an agent id would br
     source: "codex",
   });
 
-  const { jumped, rows } = await pickReturning("LOCAL\t%7\tlabel");
+  const { jumped, rows } = await pickReturning(`${here()}\t%7\tlabel`);
 
   expect(rows.some((row) => row.split("\t")[1] === "%7")).toBe(true);
   expect(jumped).toEqual(["%7"]);
+});
+
+test("a selection is resolved on host AND pane, not on the pane alone", async () => {
+  // Pane ids are unique per NODE, so two machines routinely hold a `%1`. The row
+  // carries both columns for exactly this reason, and the selection is the whole
+  // address -- matching on the pane alone jumped to whichever `%1` the sort put
+  // first, which is a local window switch standing in for an ssh.
+  agent("%1");
+  store.addPeer("bubba", "bubba.example");
+  store.replacePeerSnapshot("bubba", {
+    ok: true,
+    at: Date.now(),
+    snapshot: {
+      murmur_snapshot: 1,
+      host_id: "REMOTE",
+      display_name: "container-id",
+      murmur_version: "0.2.0",
+      generated_at: 1,
+      panes: [
+        {
+          pane: asPaneId("%1"),
+          session: asSessionId("$9"),
+          window: asWindowId("@9"),
+          session_name: "far",
+          window_name: "remote",
+          agent: {
+            agent_id: "remote-agent",
+            activity: "running",
+            agent_name: "remote-worker",
+            pi_session: null,
+            workstream: null,
+            role: null,
+            cli: "pi",
+            driver: "human",
+            claimed_at: 1,
+            updated_at: 1,
+          },
+          attention: [],
+        },
+      ],
+    },
+  });
+
+  const jumped: PaneView[] = [];
+  await runPick(
+    store,
+    {},
+    {
+      fzf: () => "REMOTE\t%1\tlabel",
+      jump: (_store, pane: PaneView) => {
+        jumped.push(pane);
+        return { ok: true };
+      },
+    },
+  );
+
+  expect(jumped.map((pane) => pane.host_id)).toEqual(["REMOTE"]);
+  expect(jumped[0]?.local).toBe(false);
 });
