@@ -5,7 +5,7 @@ import { beforeEach, expect, test } from "vitest";
 import { clearPane } from "../src/cli/clear.js";
 import { ensureIdentity } from "../src/identity.js";
 import { asPaneId, asSessionId, asWindowId } from "../src/ids.js";
-import type { Mux } from "../src/mux.js";
+import { type Mux, pidAlive } from "../src/mux.js";
 import { openStore } from "../src/store.js";
 import { fakeMux } from "./helpers/fake-mux.js";
 
@@ -167,9 +167,19 @@ test("focusing a working agent does not clear it", () => {
   // The consequence was severe because `working` is only re-asserted at the
   // start of a turn: once cleared mid-turn, the agent read idle until its NEXT
   // turn began, which for a long turn is many minutes.
+  //
+  // The pid must be a LIVE one. This test used to seed 4242 and pass, but only
+  // because clear read the raw row: a dead pid is the CRASHED case, which focus
+  // must clear, so the fixture was asserting the opposite of its own name once
+  // clear started folding. `process.pid` is alive by construction.
   const identity = ensureIdentity();
   const store = openStore();
-  store.append({ ...NEW_EVENT, agent_id: `${identity.host_id}:%1`, state: "working", pid: 4242 });
+  store.append({
+    ...NEW_EVENT,
+    agent_id: `${identity.host_id}:%1`,
+    state: "working",
+    pid: process.pid,
+  });
   store.close();
 
   const badges: (string | null)[] = [];
@@ -185,6 +195,99 @@ test("focusing a working agent does not clear it", () => {
   // And the badge is left alone. A `working` badge is not an attention request
   // either, so there is nothing for focus to acknowledge.
   expect(badges).toEqual([]);
+});
+
+test("focusing an agent whose pid is gone clears the crash the user was shown", () => {
+  // USER-REPORTED: an agent shows `crashed` in the picker, and switching to it
+  // never clears it. Ever.
+  //
+  // `crashed` is DERIVED, never stored: a `working` row whose pid is gone folds
+  // to `crashed` at read time, and that is what the picker and the status bar
+  // render. `clear` read the raw stored row, saw `working`, found it absent from
+  // CLEARABLE and returned -- so `crashed` was in the whitelist from the start
+  // and yet nothing was ever clearable by it. Live proof on the author's box,
+  // pane %1: stored state `working` pid 32298, displayed state `crashed`, pid
+  // dead, and `murmur clear --pane %1` left it crashed.
+  //
+  // Focus must acknowledge what was DISPLAYED, so clear folds first.
+  const identity = ensureIdentity();
+  const store = openStore();
+  store.append({ ...NEW_EVENT, agent_id: `${identity.host_id}:%1`, state: "working", pid: 32298 });
+  store.close();
+
+  const badges: (string | null)[] = [];
+  clearPane(
+    "%1",
+    fakeMux({ setWindowBadge: (_window, badge) => void badges.push(badge) }),
+    () => false,
+  );
+
+  const after = openStore();
+  expect(after.allEvents().at(-1)?.state).toBe("cleared");
+  after.close();
+  // And the badge, which the same early return also left set: nothing else ever
+  // reconciles it, so a dead agent's glyph sat in the status bar permanently.
+  expect(badges).toEqual([null]);
+});
+
+test("focusing a working agent whose pid is ALIVE still does not clear it", () => {
+  // The cbcd9c4 regression, and the reason the fix above must fold rather than
+  // add `working` to CLEARABLE. A dead-pid `working` row and a live-pid one are
+  // byte-identical in the store; only the pid probe separates them. If clear
+  // ever stops making that distinction, this is the test that says so, and the
+  // cost is 50 of 84 turns wiped mid-flight again.
+  const identity = ensureIdentity();
+  const store = openStore();
+  store.append({ ...NEW_EVENT, agent_id: `${identity.host_id}:%1`, state: "working", pid: 32298 });
+  store.close();
+
+  const badges: (string | null)[] = [];
+  clearPane(
+    "%1",
+    fakeMux({ setWindowBadge: (_window, badge) => void badges.push(badge) }),
+    () => true,
+  );
+
+  const after = openStore();
+  expect(after.allEvents().at(-1)?.state).toBe("working");
+  after.close();
+  expect(badges).toEqual([]);
+});
+
+test("a pid probe that throws leaves a working agent alone", () => {
+  // Fail closed, both halves.
+  //
+  // A probe that cannot answer must never become permission to overwrite a
+  // running agent's state. Two mechanisms enforce that and this test covers the
+  // outer one: a probe that THROWS unwinds to clear's own catch, so no `cleared`
+  // row is appended. The inner one is `pidAlive` itself, which returns dead only
+  // on ESRCH -- EPERM and every other errno read as alive, which folds to
+  // `working`, which is not clearable.
+  const identity = ensureIdentity();
+  const store = openStore();
+  store.append({ ...NEW_EVENT, agent_id: `${identity.host_id}:%1`, state: "working", pid: 32298 });
+  store.close();
+
+  clearPane("%1", fakeMux(), () => {
+    throw new Error("probe unavailable");
+  });
+
+  const after = openStore();
+  expect(after.allEvents().at(-1)?.state).toBe("working");
+  after.close();
+});
+
+test("pidAlive reports death only on ESRCH", () => {
+  // The inner half of fail-closed, and the reason clear can trust the fold. A
+  // liveness answer of "alive" is the safe default because it folds to
+  // `working`, which focus may not clear. Asserted here rather than inferred:
+  // this is the property the whole fix rests on.
+  expect(pidAlive(process.pid)).toBe(true);
+  // pid 1 exists on every unix and is not ours, so kill(1, 0) is EPERM for a
+  // non-root process -- not ESRCH, therefore alive.
+  expect(pidAlive(1)).toBe(true);
+  // Nothing is alive at pid 0x7FFFFFFF; ESRCH is the only errno it can give.
+  expect(pidAlive(0x7fffffff)).toBe(false);
 });
 
 test("focusing an agent that wants attention still clears it", () => {

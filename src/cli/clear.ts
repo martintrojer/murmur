@@ -1,25 +1,10 @@
 import type { Command } from "commander";
+import { foldAgent, type LiveCheck } from "../fold.js";
 import { loadIdentity } from "../identity.js";
-import { asPaneId, type PaneId, type SessionId, type WindowId } from "../ids.js";
-import { type Mux, tmux } from "../mux.js";
+import { asPaneId, type PaneId, type WindowId } from "../ids.js";
+import { type Mux, pidAlive, tmux } from "../mux.js";
 import { openStore, type Store } from "../store.js";
-import type { Driver } from "../types.js";
-
-type OwnedPane = {
-  agent_id: string;
-  session_name: string | null;
-  window_name: string | null;
-  agent_name: string | null;
-  pi_session: string | null;
-  session: SessionId;
-  window: WindowId;
-  pane: PaneId;
-  workstream: string | null;
-  role: string | null;
-  cli: string | null;
-  driver: Driver | null;
-  state: string;
-};
+import type { Event } from "../types.js";
 
 /**
  * States that focus is allowed to clear.
@@ -40,8 +25,38 @@ type OwnedPane = {
  * The damage was out of proportion to the mistake because `working` is asserted
  * once, at the start of a turn. Cleared mid-turn, the agent read idle until its
  * NEXT turn began -- minutes, for a long turn.
+ *
+ * This set is matched against the FOLDED state, not the stored row -- see
+ * foldedState below. `crashed` was in here from the start and still never
+ * cleared, because nothing is ever STORED as crashed.
  */
 const CLEARABLE = new Set(["blocked", "done", "crashed"]);
+
+/**
+ * What the USER is looking at, which is the only thing focus can acknowledge.
+ *
+ * `crashed` is derived, never stored: a `working` row whose pid is gone folds to
+ * `crashed` at read time (fold.ts), which is what the picker and the status bar
+ * show. `clear` used to gate on the raw row, so it saw `working`, found it
+ * absent from CLEARABLE, and returned -- an agent the user could see had
+ * crashed was unclearable forever, no matter how often they focused it.
+ *
+ * So fold, and gate on the result. Focus acknowledges what was displayed.
+ *
+ * Cheap on purpose: this runs from a tmux focus hook on EVERY focus event, so it
+ * folds the single row we already have rather than re-reading the agent's
+ * history. foldAgent returns on the newest row it recognises, so one row is the
+ * whole answer -- and an unrecognised state from a newer node still folds to
+ * null, which is not clearable, exactly as before.
+ *
+ * The probe fails CLOSED. `pidAlive` only reports death on ESRCH, so a probe
+ * that cannot answer (EPERM, or anything else) says alive, which folds to
+ * `working`, which is not clearable. A liveness check we cannot trust must never
+ * be what lets focus overwrite a running agent's state.
+ */
+function foldedState(owner: Event, isAlive: LiveCheck): string | null {
+  return foldAgent([owner], isAlive).state;
+}
 
 /**
  * Does any OTHER pane in this window own an agent?
@@ -80,7 +95,7 @@ function windowHasAgent(
   }
 }
 
-export function clearPane(raw: string, mux: Mux = tmux): void {
+export function clearPane(raw: string, mux: Mux = tmux, isAlive: LiveCheck = pidAlive): void {
   let store: Store | undefined;
   try {
     if (!raw) return;
@@ -95,14 +110,11 @@ export function clearPane(raw: string, mux: Mux = tmux): void {
     const window = mux.windowForPane(pane);
     const identity = loadIdentity();
 
-    let owner: OwnedPane | undefined;
+    let owner: Event | undefined;
     if (identity) {
       try {
         store = openStore();
-        owner =
-          (store.latestForAgent(identity.host_id, `${identity.host_id}:${pane}`) as
-            | OwnedPane
-            | undefined) ?? undefined;
+        owner = store.latestForAgent(identity.host_id, `${identity.host_id}:${pane}`) ?? undefined;
       } catch {
         // No database yet. Nothing is owned; the badge still clears below.
       }
@@ -142,7 +154,13 @@ export function clearPane(raw: string, mux: Mux = tmux): void {
     // focus hook should overwrite. CLEARABLE is the single gate -- an earlier
     // version also had a `working` early return, so adding `working` to this
     // set silently did nothing.
-    if (!CLEARABLE.has(owner.state)) return;
+    //
+    // The FOLDED state, so a dead-pid `working` row -- which the user is being
+    // shown as `crashed` -- is clearable, while a live one is not. The two rows
+    // are identical apart from whether the pid answers, which is precisely why
+    // the raw state cannot decide this.
+    const state = foldedState(owner, isAlive);
+    if (state === null || !CLEARABLE.has(state)) return;
 
     // `owner` came from this store, so it is open; the check is for the type.
     try {
