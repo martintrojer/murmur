@@ -1,430 +1,670 @@
 import { randomUUID } from "node:crypto";
-import { rmSync } from "node:fs";
+import { mkdirSync, rmSync } from "node:fs";
+import { dirname } from "node:path";
 import Database from "better-sqlite3";
-import { ensureIdentity } from "./identity.js";
-import { dbPath } from "./paths.js";
-import type { Driver, Event, Peer } from "./types.js";
-
-const DEFAULT_RETENTION_MS = 7 * 86_400_000;
+import type { NodeIdentity } from "./identity.js";
+import type { PaneId } from "./ids.js";
+import { asPaneId, asSessionId, asWindowId } from "./ids.js";
+import { pidAlive } from "./mux.js";
+import { dbPath, stateDir } from "./paths.js";
+import type {
+  ActivityUpdate,
+  AgentClaim,
+  AgentRelease,
+  AttentionKind,
+  AttentionRequest,
+  ClaimResult,
+  LocalWorld,
+  PeerFetch,
+  PeerRecord,
+  ReconcileSummary,
+  Snapshot,
+  SnapshotAgent,
+  SnapshotAttention,
+  SnapshotPane,
+} from "./types.js";
+import { MURMUR_VERSION } from "./version.js";
+import { RENDER_PRIORITY } from "./view.js";
 
 /**
- * Local storage shape. Bump on any change to the events or peers tables.
+ * The storage version. Any change to any table bumps it.
  *
- * Distinct from `SCHEMA_VERSION` in export.ts, which versions the *wire*: a
- * node can change how it stores events without changing what it sends, and a
- * wire change should not throw away local history.
+ * There is ONE version strategy, not two: a mismatch salvages the peer names
+ * and targets a human typed, deletes the file, and recreates the schema. No
+ * ALTER TABLE anywhere, so there is no additive path to forget to use — which
+ * is the fragility the dual-strategy store had.
  */
-export const STORE_VERSION = 2;
+const SCHEMA_USER_VERSION = 3;
+
+const SCHEMA = `
+  CREATE TABLE agents (
+    agent_id     TEXT    NOT NULL PRIMARY KEY,
+    pane         TEXT    NOT NULL UNIQUE,
+    owner_pid    INTEGER NOT NULL CHECK (owner_pid > 0),
+    activity     TEXT    NOT NULL CHECK (activity IN ('running', 'stopped')),
+    session      TEXT    NOT NULL,
+    window       TEXT    NOT NULL,
+    session_name TEXT,
+    window_name  TEXT,
+    agent_name   TEXT,
+    pi_session   TEXT,
+    workstream   TEXT,
+    role         TEXT,
+    cli          TEXT    NOT NULL,
+    driver       TEXT    NOT NULL CHECK (driver IN ('human', 'orchestrated')),
+    claimed_at   INTEGER NOT NULL,
+    updated_at   INTEGER NOT NULL
+  ) STRICT;
+
+  CREATE TABLE attention (
+    pane         TEXT    NOT NULL,
+    kind         TEXT    NOT NULL CHECK (kind IN ('done', 'blocked', 'crashed')),
+    message      TEXT    NOT NULL,
+    source       TEXT    NOT NULL,
+    session      TEXT    NOT NULL,
+    window       TEXT    NOT NULL,
+    session_name TEXT,
+    window_name  TEXT,
+    requested_at INTEGER NOT NULL,
+    PRIMARY KEY (pane, kind)
+  ) STRICT;
+
+  CREATE TABLE peers (
+    name             TEXT NOT NULL PRIMARY KEY,
+    target           TEXT NOT NULL,
+    host_id          TEXT,
+    display_name     TEXT,
+    snapshot         TEXT,
+    snapshot_at      INTEGER,
+    fetched_at       INTEGER,
+    last_attempt_at  INTEGER,
+    last_error       TEXT,
+    murmur_version   TEXT,
+    snapshot_version INTEGER
+  ) STRICT;
+`;
 
 /**
- * Migration strategy: there isn't one. A version mismatch deletes the database
- * and starts again.
+ * The store, and the only place in murmur that holds a database handle or
+ * writes SQL.
  *
- * This is only acceptable because nothing in events.db is authoritative or
- * irreplaceable. It is a bounded-retention observability log: remote events
- * re-sync from their authoring peer on the next collect, local agents re-report
- * on their next state change, and node identity deliberately lives in a
- * separate file. If anything durable is ever added here, this stops being safe
- * and a real migration is required.
- *
- * Peers survive, because they are the one thing a human typed. Watermarks are
- * reset with the events they indexed -- keeping them would skip the events the
- * new database no longer has -- and re-reading a peer from zero is free, since
- * ingest is idempotent.
+ * This interface is CLOSED. There is no `append`, no `ingest`, no log read, no
+ * partial-row update, and no local read other than `localPanes` — each of those
+ * shapes let a writer say something it had no standing to say, and each cost a
+ * shipped bug. Attention methods take no agent identity at all, which is what
+ * makes "a notifier cannot corrupt an agent row" structural.
  */
-function resetIfStale(path: string): Peer[] {
-  let salvaged: Peer[] = [];
-  try {
-    const existing = new Database(path, { fileMustExist: true });
-    const version = (existing.pragma("user_version", { simple: true }) as number) ?? 0;
-    if (version === STORE_VERSION) {
-      existing.close();
-      return salvaged;
-    }
-    try {
-      salvaged = existing
-        .prepare("SELECT name, target, host_id, display_name FROM peers")
-        .all() as Peer[];
-    } catch {
-      // Old enough not to have the table, or unreadable. Nothing to save.
-    }
-    existing.close();
-  } catch {
-    // No database yet, or one too broken to open. Either way, recreate.
-    return salvaged;
-  }
-
-  // -wal and -shm must go too: a stale sidecar against a fresh main file is a
-  // documented way to corrupt sqlite.
-  for (const suffix of ["", "-wal", "-shm"]) rmSync(`${path}${suffix}`, { force: true });
-  return salvaged;
-}
-
-// The name fields are optional on the way in: a caller that has no name for a
-// thing should not have to say `null` four times, and a non-tmux harness has
-// none of them. They are non-optional on `Event` itself, so a reader never has
-// to distinguish absent from null.
-export type NewEvent = Omit<
-  Event,
-  "host_id" | "seq" | "ts" | "session_name" | "window_name" | "agent_name" | "pi_session"
-> & {
-  ts?: number;
-  session_name?: string | null;
-  window_name?: string | null;
-  agent_name?: string | null;
-  pi_session?: string | null;
-};
-
-type EventRow = Omit<Event, "synthetic" | "extra"> & {
-  synthetic: number;
-  extra: string;
-};
-
-function eventValues(event: Event): unknown[] {
-  return [
-    event.host_id,
-    event.seq,
-    event.ts,
-    event.agent_id,
-    event.session,
-    event.window,
-    event.pane,
-    event.session_name,
-    event.window_name,
-    event.agent_name,
-    event.pi_session,
-    event.workstream,
-    event.role,
-    event.cli,
-    event.driver,
-    event.kind,
-    event.state,
-    event.message,
-    event.pid,
-    Number(event.synthetic),
-    event.reason,
-    JSON.stringify(event.extra),
-  ];
-}
-
-function toEvent(row: EventRow): Event {
-  return {
-    ...row,
-    driver: row.driver as Driver | null,
-    synthetic: row.synthetic === 1,
-    extra: JSON.parse(row.extra) as Record<string, unknown>,
-  };
-}
-
 export interface Store {
-  append(event: NewEvent): Event;
-  ingest(events: Event[]): number;
-  eventsSince(hostId: string, seq: number): Event[];
-  allEvents(): Event[];
-  /**
-   * The most recent event for one agent, or null.
-   *
-   * Exists so the `clear` hook does not have to open its own SQLite handle and
-   * write its own `ORDER BY seq DESC LIMIT 1`, which is what it used to do --
-   * making "store is the only module touching SQL" false, and putting knowledge
-   * of agent_id construction and event ordering in a CLI file where a schema
-   * change would miss it. That path swallows its own errors, so the miss would
-   * have been silent.
-   */
-  latestForAgent(hostId: string, agentId: string): Event | null;
-  maxSeq(hostId: string): number;
-  /**
-   * This database's incarnation id, minted when the file is created.
-   *
-   * Not identity: `host_id` says WHICH NODE, and deliberately survives a wipe
-   * because it lives in its own file. This says WHICH LOG, and must not
-   * survive, because `seq` is only meaningful within one. A reset keeps the
-   * host_id and restarts seq at 1, which is precisely the pair a peer cannot
-   * distinguish from "nothing new" -- see the epoch comment in export.ts.
-   */
-  epoch(): string;
-  prune(horizonMs?: number): number;
-  peers(): Peer[];
-  /**
-   * Drop every event for one agent from this node's replica.
-   *
-   * For a remote agent this is a replica eviction, not a claim about truth: the
-   * authoring node still owns it, and a collect re-reads from the watermark if
-   * it is still alive.
-   */
-  forgetAgent(agentId: string): number;
-  forgetHost(hostId: string): number;
-  upsertPeer(peer: Partial<Peer> & { name: string; target: string }): void;
+  // --- agent lifecycle: owner-only, pid-gated -----------------------------
+  claimAgent(claim: AgentClaim): ClaimResult;
+  setActivity(update: ActivityUpdate): boolean;
+  releaseAgent(release: AgentRelease): boolean;
+
+  // --- attention: pane-addressed, no agent authority ----------------------
+  requestAttention(request: AttentionRequest): void;
+  acknowledgePane(pane: PaneId): number;
+
+  // --- local truth --------------------------------------------------------
+  /** The one local read. Joins agents and attention by pane. No reconciliation. */
+  localPanes(): SnapshotPane[];
+  reconcileLocal(world: LocalWorld): ReconcileSummary;
+  buildLocalSnapshot(identity: NodeIdentity, world: LocalWorld): Snapshot;
+
+  // --- peer cache ---------------------------------------------------------
+  peers(): PeerRecord[];
+  addPeer(name: string, target: string): void;
   removePeer(name: string): boolean;
+  replacePeerSnapshot(name: string, fetch: PeerFetch): void;
+
   close(): void;
 }
 
+type AgentDbRow = {
+  agent_id: string;
+  pane: string;
+  owner_pid: number;
+  activity: string;
+  session: string;
+  window: string;
+  session_name: string | null;
+  window_name: string | null;
+  agent_name: string | null;
+  pi_session: string | null;
+  workstream: string | null;
+  role: string | null;
+  cli: string;
+  driver: string;
+  claimed_at: number;
+  updated_at: number;
+};
+
+type AttentionDbRow = {
+  pane: string;
+  kind: string;
+  message: string;
+  source: string;
+  session: string;
+  window: string;
+  session_name: string | null;
+  window_name: string | null;
+  requested_at: number;
+};
+
+type PeerDbRow = {
+  name: string;
+  target: string;
+  host_id: string | null;
+  display_name: string | null;
+  snapshot: string | null;
+  snapshot_at: number | null;
+  fetched_at: number | null;
+  last_attempt_at: number | null;
+  last_error: string | null;
+  murmur_version: string | null;
+  snapshot_version: number | null;
+};
+
+/**
+ * Delete every trace of the pre-rewrite event log, once per open.
+ *
+ * Best effort and unconditional: `events.db` is not read, not migrated and not
+ * written by any code path, so a file left behind is dead weight that a future
+ * reader could mistake for state. The sidecars go too — a stale -wal against a
+ * missing main file is a documented way to confuse sqlite.
+ */
+function removeLegacyLog(): void {
+  for (const suffix of ["", "-wal", "-shm"]) {
+    try {
+      rmSync(`${stateDir()}/events.db${suffix}`, { force: true });
+    } catch {
+      // A read-only state dir is not a reason to fail opening the store.
+    }
+  }
+}
+
+/** Peer names and targets: the two fields a human typed, and all we salvage. */
+function salvagePeers(path: string): { name: string; target: string }[] {
+  try {
+    const existing = new Database(path, { fileMustExist: true });
+    try {
+      const version = (existing.pragma("user_version", { simple: true }) as number) ?? 0;
+      if (version === SCHEMA_USER_VERSION) return [];
+      return existing.prepare("SELECT name, target FROM peers").all() as {
+        name: string;
+        target: string;
+      }[];
+    } catch {
+      // Too old to have the table, or unreadable. Nothing to save.
+      return [];
+    } finally {
+      existing.close();
+    }
+  } catch {
+    // No database yet, or one too broken to open.
+    return [];
+  }
+}
+
+function needsReset(path: string): boolean {
+  try {
+    const existing = new Database(path, { fileMustExist: true });
+    try {
+      return (
+        ((existing.pragma("user_version", { simple: true }) as number) ?? 0) !== SCHEMA_USER_VERSION
+      );
+    } finally {
+      existing.close();
+    }
+  } catch {
+    return false;
+  }
+}
+
+function toAttention(row: AttentionDbRow): SnapshotAttention {
+  return {
+    kind: row.kind as AttentionKind,
+    message: row.message,
+    source: row.source,
+    requested_at: row.requested_at,
+  };
+}
+
+function toAgent(row: AgentDbRow): SnapshotAgent {
+  return {
+    agent_id: row.agent_id,
+    activity: row.activity as SnapshotAgent["activity"],
+    agent_name: row.agent_name,
+    pi_session: row.pi_session,
+    workstream: row.workstream,
+    role: row.role,
+    cli: row.cli,
+    driver: row.driver as SnapshotAgent["driver"],
+    claimed_at: row.claimed_at,
+    updated_at: row.updated_at,
+  };
+}
+
+const PRIORITY = new Map<string, number>(RENDER_PRIORITY.map((kind, index) => [kind, index]));
+
+function attentionOrder(left: SnapshotAttention, right: SnapshotAttention): number {
+  return (PRIORITY.get(left.kind) ?? 99) - (PRIORITY.get(right.kind) ?? 99);
+}
+
+/**
+ * Open the store. Takes no arguments and mints no identity.
+ *
+ * `openStore` deliberately does NOT read or create `identity.json`: identity is
+ * created only by `murmur init`, so a read path — a status-bar tick, a focus
+ * hook — cannot bring a node into existence as a side effect.
+ */
 export function openStore(): Store {
-  const identity = ensureIdentity();
   const path = dbPath();
-  const salvagedPeers = resetIfStale(path);
+  mkdirSync(dirname(path), { recursive: true });
+  removeLegacyLog();
+
+  const salvaged = salvagePeers(path);
+  if (needsReset(path)) {
+    for (const suffix of ["", "-wal", "-shm"]) rmSync(`${path}${suffix}`, { force: true });
+  }
+
   const database = new Database(path);
   database.pragma("journal_mode = WAL");
-  database.pragma(`user_version = ${STORE_VERSION}`);
-  database.exec(`
-    CREATE TABLE IF NOT EXISTS events (
-      host_id TEXT NOT NULL,
-      seq INTEGER NOT NULL,
-      ts INTEGER NOT NULL,
-      agent_id TEXT NOT NULL,
-      session TEXT NOT NULL,
-      window TEXT NOT NULL,
-      pane TEXT NOT NULL,
-      session_name TEXT,
-      window_name TEXT,
-      agent_name TEXT,
-      pi_session TEXT,
-      workstream TEXT,
-      role TEXT,
-      cli TEXT,
-      driver TEXT,
-      kind TEXT NOT NULL,
-      state TEXT NOT NULL,
-      message TEXT NOT NULL,
-      pid INTEGER,
-      synthetic INTEGER NOT NULL,
-      reason TEXT NOT NULL,
-      extra TEXT NOT NULL,
-      PRIMARY KEY (host_id, seq)
-    );
-    CREATE INDEX IF NOT EXISTS events_agent_seq ON events (agent_id, seq);
-    CREATE TABLE IF NOT EXISTS peers (
-      name TEXT PRIMARY KEY,
-      target TEXT NOT NULL,
-      host_id TEXT,
-      display_name TEXT,
-      watermark INTEGER NOT NULL,
-      fetched_at INTEGER,
-      -- When a jump last proved this peer's tmux was not answering. Reader
-      -- state, not an event: this node cannot author facts about another
-      -- node's agents, and a jump is a local observation, not something the
-      -- peer said. Cleared by the next successful collect.
-      tmux_down_at INTEGER,
-      -- The incarnation of the peer's LOG that our watermark indexes. When the
-      -- peer reports a different one, its seqs restarted and the watermark is
-      -- meaningless, so we re-read from zero. NULL means we have never seen an
-      -- epoch from it, which is also what an older peer's envelope implies.
-      epoch TEXT,
-      -- What the peer last said it was running. Peer-reported metadata, like
-      -- display_name: recorded at collect time, null until it answers once.
-      -- schema_version is stored too because it is the field the collector
-      -- actually enforces, so it is the only honest basis for flagging a
-      -- pairing as incompatible.
-      murmur_version TEXT,
-      schema_version INTEGER
-    );
+  database.pragma("busy_timeout = 5000");
+  const version = (database.pragma("user_version", { simple: true }) as number) ?? 0;
+  if (version !== SCHEMA_USER_VERSION) {
+    database.exec(SCHEMA);
+    database.pragma(`user_version = ${SCHEMA_USER_VERSION}`);
+    // Re-inserted with every OBSERVED column null: a salvaged peer has no
+    // snapshot and has never been fetched, and saying otherwise would render a
+    // never-reached host as fresh.
+    const restore = database.prepare("INSERT OR IGNORE INTO peers (name, target) VALUES (?, ?)");
+    for (const peer of salvaged) restore.run(peer.name, peer.target);
+  }
+
+  const selectAgentByPane = database.prepare("SELECT * FROM agents WHERE pane = ?");
+  const insertAgent = database.prepare(`
+    INSERT INTO agents (agent_id, pane, owner_pid, activity, session, window,
+                        session_name, window_name, agent_name, pi_session,
+                        workstream, role, cli, driver, claimed_at, updated_at)
+    VALUES (@agent_id, @pane, @owner_pid, @activity, @session, @window,
+            @session_name, @window_name, @agent_name, @pi_session,
+            @workstream, @role, @cli, @driver, @claimed_at, @updated_at)
   `);
-
-  // Additive migration: an existing peers table predates tmux_down_at.
-  try {
-    database.exec("ALTER TABLE peers ADD COLUMN tmux_down_at INTEGER");
-  } catch {
-    // Already present.
-  }
-
-  // Additive migration: a peers table predating epoch tracking. A NULL epoch
-  // means "never seen one", which is what an old peer's envelope also implies,
-  // so the two cases converge without special handling.
-  try {
-    database.exec("ALTER TABLE peers ADD COLUMN epoch TEXT");
-  } catch {
-    // Already present.
-  }
-
-  // Additive migrations: a peers table predating version reporting. Separate
-  // statements because one failing ALTER must not skip the next.
-  for (const column of ["murmur_version TEXT", "schema_version INTEGER"]) {
-    try {
-      database.exec(`ALTER TABLE peers ADD COLUMN ${column}`);
-    } catch {
-      // Already present.
-    }
-  }
-
-  // The incarnation id for THIS database file.
-  //
-  // Stored in the db rather than beside identity.json, because that is what
-  // makes it correct by construction: the wipe that resets `seq` is the same
-  // wipe that takes this row with it, so a new log cannot inherit an old log's
-  // epoch even if someone adds a new reason to reset. Nothing has to remember
-  // to bump it -- `resetIfStale` deletes the file and the next open mints a new
-  // one. Peers survive the wipe and are restored at watermark 0, but their
-  // `epoch` column is about the REMOTE log and is untouched by ours.
-  database.exec("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
-  database.prepare("INSERT OR IGNORE INTO meta (key, value) VALUES ('epoch', ?)").run(randomUUID());
-
-  // Put back the peers the wipe took, at watermark 0 so the next collect
-  // re-reads each one from the start.
-  if (salvagedPeers.length > 0) {
-    const restore = database.prepare(
-      `INSERT OR IGNORE INTO peers (name, target, host_id, display_name, watermark, fetched_at)
-       VALUES (?, ?, ?, ?, 0, NULL)`,
-    );
-    for (const peer of salvagedPeers) {
-      restore.run(peer.name, peer.target, peer.host_id ?? null, peer.display_name ?? null);
-    }
-  }
-
-  const eventColumns = `
-      host_id, seq, ts, agent_id, session, window, pane,
-      session_name, window_name, agent_name, pi_session,
-      workstream, role, cli, driver, kind, state, message, pid,
-      synthetic, reason, extra`;
-  const eventPlaceholders = new Array(22).fill("?").join(", ");
-  const insertEvent = database.prepare(
-    `INSERT INTO events (${eventColumns}) VALUES (${eventPlaceholders})`,
+  const retainAgent = database.prepare(`
+    UPDATE agents
+       SET session = @session, window = @window, session_name = @session_name,
+           window_name = @window_name, agent_name = @agent_name,
+           pi_session = @pi_session, workstream = @workstream, role = @role,
+           cli = @cli, driver = @driver, updated_at = @updated_at
+     WHERE agent_id = @agent_id
+  `);
+  const deleteAgentByPane = database.prepare("DELETE FROM agents WHERE pane = ?");
+  const deleteAttentionForPane = database.prepare("DELETE FROM attention WHERE pane = ?");
+  const updateActivity = database.prepare(`
+    UPDATE agents
+       SET activity = @activity, session = @session, window = @window,
+           session_name = @session_name, window_name = @window_name,
+           updated_at = @updated_at
+     WHERE agent_id = @agent_id AND owner_pid = @owner_pid
+  `);
+  const deleteAgentOwned = database.prepare(
+    "DELETE FROM agents WHERE agent_id = ? AND owner_pid = ?",
   );
-  const ingestEvent = database.prepare(
-    `INSERT OR IGNORE INTO events (${eventColumns}) VALUES (${eventPlaceholders})`,
+  const upsertAttention = database.prepare(`
+    INSERT INTO attention (pane, kind, message, source, session, window,
+                           session_name, window_name, requested_at)
+    VALUES (@pane, @kind, @message, @source, @session, @window,
+            @session_name, @window_name, @requested_at)
+    ON CONFLICT (pane, kind) DO UPDATE SET
+      message = excluded.message,
+      source = excluded.source,
+      session = excluded.session,
+      window = excluded.window,
+      session_name = excluded.session_name,
+      window_name = excluded.window_name
+  `);
+  const selectAgents = database.prepare("SELECT * FROM agents");
+  const selectAttention = database.prepare("SELECT * FROM attention");
+  const setActivityByPane = database.prepare(
+    "UPDATE agents SET activity = ?, updated_at = ? WHERE pane = ?",
   );
-  const selectMaxSeq = database.prepare(
-    "SELECT COALESCE(MAX(seq), 0) AS seq FROM events WHERE host_id = ?",
-  );
-  // `.immediate` rather than a plain (deferred) transaction, and it is the fix
-  // that busy_timeout alone could not be.
-  //
-  // Both of these read the max seq and then write, so a deferred transaction
-  // starts as a READER and tries to upgrade to a writer. When two do that at
-  // once, the loser's snapshot is already out of date and SQLite fails it with
-  // SQLITE_BUSY_SNAPSHOT immediately -- a timeout cannot help, because waiting
-  // longer cannot make a stale snapshot fresh. `.immediate` takes the write
-  // lock up front, so contenders queue on busy_timeout instead of failing.
-  //
-  // Measured with 8 concurrent appenders x 40 events: 5 of 8 writers failed
-  // before, 0 fail after.
-  const appendTransaction = database.transaction((event: NewEvent): Event => {
-    const row = selectMaxSeq.get(identity.host_id) as { seq: number };
-    const stored: Event = {
-      ...event,
-      host_id: identity.host_id,
-      seq: row.seq + 1,
-      ts: event.ts ?? Date.now(),
-      session_name: event.session_name ?? null,
-      window_name: event.window_name ?? null,
-      agent_name: event.agent_name ?? null,
-      pi_session: event.pi_session ?? null,
+
+  /**
+   * `.immediate`, not deferred, and this is load-bearing.
+   *
+   * The transaction reads the incumbent row and then writes, so a deferred one
+   * starts as a READER and must upgrade. Two doing that at once fails the loser
+   * with SQLITE_BUSY_SNAPSHOT, which no busy_timeout can fix: waiting longer
+   * cannot make a stale snapshot fresh. Measured previously at 5 of 8
+   * concurrent writers failing.
+   */
+  const claimAgent = database.transaction((claim: AgentClaim): ClaimResult => {
+    const now = claim.now ?? Date.now();
+    const isAlive = claim.isAlive ?? pidAlive;
+    const { location, meta, owner_pid } = claim;
+    const incumbent = selectAgentByPane.get(location.pane) as AgentDbRow | undefined;
+
+    const values = {
+      pane: location.pane,
+      owner_pid,
+      session: location.session,
+      window: location.window,
+      session_name: location.session_name,
+      window_name: location.window_name,
+      agent_name: meta.agent_name,
+      pi_session: meta.pi_session,
+      workstream: meta.workstream,
+      role: meta.role,
+      cli: meta.cli,
+      driver: meta.driver,
+      updated_at: now,
     };
-    insertEvent.run(...eventValues(stored));
-    return stored;
+
+    if (!incumbent) {
+      const agentId = randomUUID();
+      insertAgent.run({ ...values, agent_id: agentId, activity: "stopped", claimed_at: now });
+      return { outcome: "claimed", agent_id: agentId };
+    }
+
+    // Our own claim, seen again. This is what makes pi's `/reload` a no-op: pi
+    // re-runs the extension factory in the same process, and a check that could
+    // not recognise its own claim would silence the real agent. `activity` and
+    // `agent_id` are deliberately untouched.
+    if (incumbent.owner_pid === owner_pid) {
+      retainAgent.run({ ...values, agent_id: incumbent.agent_id });
+      return { outcome: "retained", agent_id: incumbent.agent_id };
+    }
+
+    // A different LIVE process in one pane: the nested-agent case, and the only
+    // answer for it. Fails closed — `pidAlive` reports death only on ESRCH, so
+    // an unanswerable probe (EPERM) reads as alive and refuses. An unknown must
+    // never let a second writer displace a possibly-live owner.
+    if (isAlive(incumbent.owner_pid)) {
+      return { outcome: "refused", held_by_pid: incumbent.owner_pid };
+    }
+
+    // The previous occupant is gone. Its attention described a process that no
+    // longer exists, and a human looking at the pane now sees a different agent.
+    deleteAgentByPane.run(location.pane);
+    deleteAttentionForPane.run(location.pane);
+    const agentId = randomUUID();
+    insertAgent.run({ ...values, agent_id: agentId, activity: "stopped", claimed_at: now });
+    return { outcome: "replaced", agent_id: agentId, previous_agent_id: incumbent.agent_id };
+  }).immediate;
+
+  /**
+   * One transaction, because the `stopped` write and its `crashed` attention row
+   * must land together or not at all.
+   *
+   * A no-op when tmux could not answer: `panes === null` is absence of evidence,
+   * not evidence of death, and conflating the two once deleted ten live agents.
+   */
+  const reconcileLocal = database.transaction((world: LocalWorld): ReconcileSummary => {
+    const summary: ReconcileSummary = { crashed: [], removed: [], attention_removed: [] };
+    if (world.panes === null) return summary;
+    const live = world.panes;
+    const isAlive = world.isAlive ?? pidAlive;
+    const now = world.now ?? Date.now();
+
+    // Which panes already carry a crash we recorded. Read once, before any
+    // write, so the loop below sees the state reconciliation started from.
+    const alreadyCrashed = new Set(
+      (selectAttention.all() as AttentionDbRow[])
+        .filter((row) => row.kind === "crashed")
+        .map((row) => row.pane),
+    );
+
+    for (const row of selectAgents.all() as AgentDbRow[]) {
+      const pane = asPaneId(row.pane);
+      if (!live.has(pane)) {
+        deleteAgentByPane.run(row.pane);
+        deleteAttentionForPane.run(row.pane);
+        summary.removed.push(pane);
+        continue;
+      }
+      if (isAlive(row.owner_pid)) continue;
+
+      // The asymmetry below is the point. A dead RUNNING owner is an unreported
+      // crash and must leave a durable trace. A dead STOPPED owner finished
+      // normally, so its row is noise — but any `done` it raised is a fact a
+      // human has not yet seen, so the attention stays.
+      if (row.activity === "running") {
+        setActivityByPane.run("stopped", now, row.pane);
+        upsertAttention.run({
+          pane: row.pane,
+          kind: "crashed",
+          message: "",
+          source: "murmur",
+          session: row.session,
+          window: row.window,
+          session_name: row.session_name,
+          window_name: row.window_name,
+          requested_at: now,
+        });
+        summary.crashed.push(pane);
+      } else if (!alreadyCrashed.has(row.pane)) {
+        deleteAgentByPane.run(row.pane);
+        summary.removed.push(pane);
+      }
+      // A pane we already recorded a crash for keeps its agent row, and that is
+      // the one place this deviates from a literal reading of the contract's
+      // table -- which says a live pane with a dead STOPPED owner loses its row.
+      // Taken literally, the second reconcile after a crash deletes the row the
+      // first one had just marked `stopped`, so the crashed pane loses its
+      // agent_name, workstream, role and cli one tick after the crash is
+      // reported. That contradicts the contract's own idempotence requirement
+      // ("running it again changes nothing") and it strips exactly the fields a
+      // human needs to know WHICH agent died.
+      //
+      // The distinction the table is drawing is between an owner that finished
+      // normally -- whose row is noise -- and one that died mid-run. The
+      // `crashed` row we wrote is the record of which case this was, so it is
+      // also the right thing to key on.
+    }
+
+    // Reaps attention for a pane that never had an agent row — an
+    // attention-only codex pane whose window was closed. Nothing else would.
+    for (const row of selectAttention.all() as AttentionDbRow[]) {
+      const pane = asPaneId(row.pane);
+      if (live.has(pane)) continue;
+      deleteAttentionForPane.run(row.pane);
+      if (!summary.attention_removed.includes(pane)) summary.attention_removed.push(pane);
+    }
+
+    return summary;
+  }).immediate;
+
+  /**
+   * Both tables read at ONE point in time, or a pane can appear with an agent
+   * and without the attention that was there when the agent was read.
+   */
+  const readLocalPanes = database.transaction((): SnapshotPane[] => {
+    const agents = selectAgents.all() as AgentDbRow[];
+    const attention = selectAttention.all() as AttentionDbRow[];
+    const panes = new Map<string, SnapshotPane>();
+
+    const locate = (row: AgentDbRow | AttentionDbRow): SnapshotPane => {
+      const existing = panes.get(row.pane);
+      if (existing) return existing;
+      const created: SnapshotPane = {
+        pane: asPaneId(row.pane),
+        session: asSessionId(row.session),
+        window: asWindowId(row.window),
+        session_name: row.session_name,
+        window_name: row.window_name,
+        agent: null,
+        attention: [],
+      };
+      panes.set(row.pane, created);
+      return created;
+    };
+
+    for (const row of agents) locate(row).agent = toAgent(row);
+    for (const row of attention) locate(row).attention.push(toAttention(row));
+
+    for (const pane of panes.values()) pane.attention.sort(attentionOrder);
+    return [...panes.values()].sort((left, right) => left.pane.localeCompare(right.pane));
   });
-  const append = appendTransaction.immediate;
-  const ingestTransaction = database.transaction((events: Event[]): number => {
-    let inserted = 0;
-    for (const event of events) inserted += ingestEvent.run(...eventValues(event)).changes;
-    return inserted;
-  });
-  const ingest = ingestTransaction.immediate;
+
+  function peerRecord(row: PeerDbRow): PeerRecord {
+    let snapshot: Snapshot | null = null;
+    if (row.snapshot !== null) {
+      try {
+        // Parsed leniently on the way OUT: it was validated on the way in, and
+        // a read path must not throw. A stored document that no longer parses
+        // reads as "no snapshot" and is left in place, not deleted.
+        snapshot = JSON.parse(row.snapshot) as Snapshot;
+      } catch {
+        snapshot = null;
+      }
+    }
+    return {
+      name: row.name,
+      target: row.target,
+      host_id: row.host_id,
+      display_name: row.display_name,
+      snapshot,
+      snapshot_at: row.snapshot_at,
+      fetched_at: row.fetched_at,
+      last_attempt_at: row.last_attempt_at,
+      last_error: row.last_error,
+      murmur_version: row.murmur_version,
+      snapshot_version: row.snapshot_version,
+    };
+  }
 
   return {
-    append,
-    ingest,
-    eventsSince(hostId, seq) {
-      const rows = database
-        .prepare("SELECT * FROM events WHERE host_id = ? AND seq > ? ORDER BY seq")
-        .all(hostId, seq) as EventRow[];
-      return rows.map(toEvent);
-    },
-    allEvents() {
-      const rows = database
-        .prepare("SELECT * FROM events ORDER BY ts, host_id, seq")
-        .all() as EventRow[];
-      return rows.map(toEvent);
-    },
-    latestForAgent(hostId, agentId) {
-      const row = database
-        .prepare(
-          `SELECT * FROM events
-            WHERE host_id = ? AND agent_id = ?
-            ORDER BY seq DESC LIMIT 1`,
-        )
-        .get(hostId, agentId) as EventRow | undefined;
-      return row ? toEvent(row) : null;
-    },
-    epoch() {
+    claimAgent,
+    reconcileLocal,
+
+    setActivity(update) {
+      // Both key components are required, so a write from a REPLACED owner
+      // matches nothing and returns false. That is not an error and must not be
+      // retried: it means this process is no longer the owner of record, and the
+      // correct response is silence.
       return (
-        database.prepare("SELECT value FROM meta WHERE key = 'epoch'").get() as
-          | { value: string }
-          | undefined
-      )?.value as string;
+        updateActivity.run({
+          activity: update.activity,
+          session: update.location.session,
+          window: update.location.window,
+          session_name: update.location.session_name,
+          window_name: update.location.window_name,
+          updated_at: update.now ?? Date.now(),
+          agent_id: update.agent_id,
+          owner_pid: update.owner_pid,
+        }).changes === 1
+      );
     },
-    maxSeq(hostId) {
-      return (selectMaxSeq.get(hostId) as { seq: number }).seq;
+
+    releaseAgent(release) {
+      // Attention is deliberately NOT deleted: a `done` raised at settle must
+      // survive the agent exiting, or completion becomes invisible the moment
+      // the process quits.
+      return deleteAgentOwned.run(release.agent_id, release.owner_pid).changes === 1;
     },
-    prune(horizonMs = Number(process.env.MURMUR_RETENTION_MS ?? DEFAULT_RETENTION_MS)) {
-      return database
-        .prepare(`
-          DELETE FROM events
-           WHERE ts < ?
-             AND (host_id, seq) NOT IN (
-               SELECT host_id, seq FROM (
-                 SELECT host_id, seq,
-                        ROW_NUMBER() OVER (PARTITION BY agent_id ORDER BY ts DESC, seq DESC) rn
-                   FROM events
-               ) WHERE rn = 1
-             )
-        `)
-        .run(Date.now() - horizonMs).changes;
+
+    requestAttention(request) {
+      // `requested_at` is absent from the DO UPDATE list on purpose. Age means
+      // "how long this has gone unmet", so a repeat must not reset the clock —
+      // which also makes crash attention idempotent for free. Touches no
+      // `agents` row, ever; there is no column here that could.
+      upsertAttention.run({
+        pane: request.location.pane,
+        kind: request.kind,
+        message: request.message,
+        source: request.source,
+        session: request.location.session,
+        window: request.location.window,
+        session_name: request.location.session_name,
+        window_name: request.location.window_name,
+        requested_at: request.now ?? Date.now(),
+      });
     },
+
+    acknowledgePane(pane) {
+      // Every kind, one statement, no agent row touched: focusing a pane cannot
+      // alter activity or owner metadata. This is the whole `murmur clear`
+      // write path.
+      return deleteAttentionForPane.run(pane).changes;
+    },
+
+    localPanes() {
+      return readLocalPanes();
+    },
+
+    buildLocalSnapshot(identity, world) {
+      // Reconcile first, which is what makes "a snapshot is authoritative"
+      // true: absence from a successful snapshot means absence, so it must
+      // never be produced from unreconciled rows. Two transactions rather than
+      // one — a write transaction held open across the read would serialise
+      // every focus hook on the machine behind an export.
+      reconcileLocal(world);
+      return {
+        murmur_snapshot: 1,
+        host_id: identity.host_id,
+        display_name: identity.display_name,
+        murmur_version: MURMUR_VERSION,
+        generated_at: world.now ?? Date.now(),
+        // Rule 3: an empty pane is readable locally but must not be published.
+        panes: readLocalPanes().filter((pane) => pane.agent !== null || pane.attention.length > 0),
+      };
+    },
+
     peers() {
-      return database.prepare("SELECT * FROM peers ORDER BY name").all() as Peer[];
+      return (database.prepare("SELECT * FROM peers ORDER BY name").all() as PeerDbRow[]).map(
+        peerRecord,
+      );
     },
-    forgetAgent(agentId) {
-      return database.prepare("DELETE FROM events WHERE agent_id = ?").run(agentId).changes;
-    },
-    forgetHost(hostId) {
-      // Every replicated row for one origin node. Only ever called about a
-      // REMOTE host: the local host's rows are this node's own authorship and
-      // the retention horizon owns them.
-      return database.prepare("DELETE FROM events WHERE host_id = ?").run(hostId).changes;
-    },
-    upsertPeer(peer) {
-      const current = database.prepare("SELECT * FROM peers WHERE name = ?").get(peer.name) as
-        | Peer
-        | undefined;
+
+    addPeer(name, target) {
+      // Correcting a target must not discard the cache, so this updates only
+      // the field the operator retyped.
       database
-        .prepare(`
-          INSERT INTO peers (name, target, host_id, display_name, watermark, fetched_at, tmux_down_at, epoch, murmur_version, schema_version)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          ON CONFLICT(name) DO UPDATE SET
-            target = excluded.target,
-            host_id = excluded.host_id,
-            display_name = excluded.display_name,
-            watermark = excluded.watermark,
-            fetched_at = excluded.fetched_at,
-            tmux_down_at = excluded.tmux_down_at,
-            epoch = excluded.epoch,
-            murmur_version = excluded.murmur_version,
-            schema_version = excluded.schema_version
-        `)
-        .run(
-          peer.name,
-          peer.target,
-          peer.host_id !== undefined ? peer.host_id : (current?.host_id ?? null),
-          peer.display_name !== undefined ? peer.display_name : (current?.display_name ?? null),
-          peer.watermark !== undefined ? peer.watermark : (current?.watermark ?? 0),
-          peer.fetched_at !== undefined ? peer.fetched_at : (current?.fetched_at ?? null),
-          peer.tmux_down_at !== undefined ? peer.tmux_down_at : (current?.tmux_down_at ?? null),
-          peer.epoch !== undefined ? peer.epoch : (current?.epoch ?? null),
-          peer.murmur_version !== undefined
-            ? peer.murmur_version
-            : (current?.murmur_version ?? null),
-          peer.schema_version !== undefined
-            ? peer.schema_version
-            : (current?.schema_version ?? null),
-        );
+        .prepare(
+          `INSERT INTO peers (name, target) VALUES (?, ?)
+           ON CONFLICT(name) DO UPDATE SET target = excluded.target`,
+        )
+        .run(name, target);
     },
+
     removePeer(name) {
-      // Drops the peer and its watermark. Replicated events stay: they are
-      // real history authored elsewhere, and the retention horizon already
-      // ages them out. Re-adding the peer re-syncs from zero, which ingest
-      // makes free.
       return database.prepare("DELETE FROM peers WHERE name = ?").run(name).changes > 0;
     },
+
+    replacePeerSnapshot(name, fetch) {
+      if (!fetch.ok) {
+        // Failure touches neither snapshot, snapshot_at nor fetched_at, so the
+        // last-known document stands and the peer ages into `stale` on its own.
+        database
+          .prepare("UPDATE peers SET last_attempt_at = ?, last_error = ? WHERE name = ?")
+          .run(fetch.at, fetch.error, name);
+        return;
+      }
+      // Two clocks, and conflating them is how a freshly fetched three-hour-old
+      // fact reads as new. `snapshot_at` is the PEER's clock (when it built the
+      // document); `fetched_at` is OURS (when we reached it), and freshness is
+      // computed from `fetched_at` only.
+      database
+        .prepare(
+          `UPDATE peers
+              SET snapshot = ?, snapshot_at = ?, fetched_at = ?, last_attempt_at = ?,
+                  last_error = NULL, host_id = ?, display_name = ?,
+                  murmur_version = ?, snapshot_version = ?
+            WHERE name = ?`,
+        )
+        .run(
+          JSON.stringify(fetch.snapshot),
+          fetch.snapshot.generated_at,
+          fetch.at,
+          fetch.at,
+          fetch.snapshot.host_id,
+          fetch.snapshot.display_name,
+          fetch.snapshot.murmur_version,
+          fetch.snapshot.murmur_snapshot,
+          name,
+        );
+    },
+
     close() {
       database.close();
     },

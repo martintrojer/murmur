@@ -2,13 +2,15 @@ import type { Command } from "commander";
 import { ssh } from "../channel.js";
 import { collect, describeFailure } from "../collector.js";
 import { openStore } from "../store.js";
+import { requireIdentity } from "./identity-guard.js";
 
 export function registerCollect(program: Command): void {
   program
     .command("collect")
-    .description("Collect events from configured peers")
+    .description("Fetch each peer's snapshot")
     .option("-q, --quiet", "report nothing, not even unreachable peers")
     .action(async (options: { quiet?: boolean }) => {
+      if (!requireIdentity()) return;
       const store = openStore();
       try {
         const results = await collect(store, ssh);

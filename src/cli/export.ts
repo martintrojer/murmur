@@ -1,17 +1,25 @@
 import type { Command } from "commander";
-import { exportJsonl } from "../export.js";
-import { pidAlive, tmux } from "../mux.js";
+import { tmux } from "../mux.js";
 import { openStore } from "../store.js";
+import { requireIdentity } from "./identity-guard.js";
 
 export function registerExport(program: Command): void {
   program
     .command("export")
-    .description("Export local events as JSONL")
-    .requiredOption("--since <seq>", "export events after this sequence", Number)
-    .action((options: { since: number }) => {
+    // No options. There is no `--since`, because there is no watermark and no
+    // delta form: the document is complete, so a peer that returns one has said
+    // everything it knows and absence in it is absence.
+    .description("Print this node's current-state snapshot")
+    .action(() => {
+      const identity = requireIdentity();
+      if (!identity) return;
       const store = openStore();
       try {
-        process.stdout.write(exportJsonl(store, options.since, pidAlive, tmux.liveWindows()));
+        // `buildLocalSnapshot` reconciles first, which is what makes the
+        // document authoritative: a snapshot built from unreconciled rows would
+        // publish agents whose panes are gone, and a reader has no way to tell.
+        const snapshot = store.buildLocalSnapshot(identity, { panes: tmux.livePanes() });
+        process.stdout.write(`${JSON.stringify(snapshot)}\n`);
       } finally {
         store.close();
       }

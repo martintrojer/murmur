@@ -35,8 +35,8 @@ function underTmp(path: string): boolean {
 
 test("a test that sets nothing still resolves state under a temp dir", () => {
   // The default path, exercised by every test that never touches
-  // MURMUR_STATE_DIR: identity.json, events.db and the config dir must all
-  // land in the sandbox rather than in the developer's home.
+  // MURMUR_STATE_DIR: identity.json, state.db and the config dir must all land
+  // in the sandbox rather than in the developer's home.
   expect(underTmp(stateDir()), `stateDir() escaped the sandbox: ${stateDir()}`).toBe(true);
   expect(underTmp(configDir()), `configDir() escaped the sandbox: ${configDir()}`).toBe(true);
   expect(underTmp(dbPath()), `dbPath() escaped the sandbox: ${dbPath()}`).toBe(true);

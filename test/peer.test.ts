@@ -4,7 +4,35 @@ import { join } from "node:path";
 import { beforeEach, expect, test } from "vitest";
 import { formatTable, lastSeen, parseSshHosts, peerAddDecision } from "../src/cli/peer.js";
 import { openStore } from "../src/store.js";
-import type { Peer } from "../src/types.js";
+import type { PeerRecord, Snapshot } from "../src/types.js";
+
+/** A probe result: what `peer add` parsed out of the far side's `murmur export`. */
+function probe(hostId: string, displayName: string): Snapshot {
+  return {
+    murmur_snapshot: 1,
+    host_id: hostId,
+    display_name: displayName,
+    murmur_version: "0.2.0",
+    generated_at: 1,
+    panes: [],
+  };
+}
+
+function existing(name: string, hostId: string): PeerRecord {
+  return {
+    name,
+    target: name,
+    host_id: hostId,
+    display_name: name,
+    snapshot: null,
+    snapshot_at: null,
+    fetched_at: null,
+    last_attempt_at: null,
+    last_error: null,
+    murmur_version: null,
+    snapshot_version: null,
+  };
+}
 
 beforeEach(() => {
   process.env.MURMUR_STATE_DIR = mkdtempSync(join(tmpdir(), "murmur-peer-"));
@@ -29,7 +57,7 @@ Host final # trailing comment
 
 test("removePeer drops the peer and reports whether it existed", () => {
   const store = openStore();
-  store.upsertPeer({ name: "ghost", target: "192.0.2.1" });
+  store.addPeer("ghost", "192.0.2.1");
   expect(store.peers()).toHaveLength(1);
   expect(store.removePeer("ghost")).toBe(true);
   expect(store.peers()).toEqual([]);
@@ -45,20 +73,16 @@ test("peer add refuses a host already configured under another name", () => {
   // The old version of this test inserted one peer and then reimplemented the
   // duplicate lookup in its own assertion, so it never ran the production
   // branch: disabling that branch entirely left it green.
-  const envelope = {
-    schema_version: 1,
-    host_id: "H",
-    display_name: "bubba",
-    exported_at: 1,
-  };
-  const peers = [{ name: "bubba", target: "bubba", host_id: "H", display_name: "bubba" } as Peer];
-
+  //
+  // Nothing dedupes for you any more either. Under the event model two names for
+  // one node merely doubled the ssh traffic; now each name holds its own cached
+  // snapshot of the same machine, so every pane on it is listed twice.
   const refusal = peerAddDecision({
     name: "bubba2",
     target: "bubba",
-    envelope,
+    snapshot: probe("H", "bubba"),
     selfHostId: "SELF",
-    peers,
+    peers: [existing("bubba", "H")],
   });
 
   expect(refusal).toContain('already configured as peer "bubba"');
@@ -68,9 +92,9 @@ test("re-adding the same peer name is allowed, so a target can be corrected", ()
   const refusal = peerAddDecision({
     name: "bubba",
     target: "bubba.local",
-    envelope: { schema_version: 1, host_id: "H", display_name: "bubba", exported_at: 1 },
+    snapshot: probe("H", "bubba"),
     selfHostId: "SELF",
-    peers: [{ name: "bubba", target: "bubba", host_id: "H", display_name: "bubba" } as Peer],
+    peers: [existing("bubba", "H")],
   });
 
   expect(refusal).toBeNull();
@@ -80,7 +104,7 @@ test("peer add refuses this node itself", () => {
   const refusal = peerAddDecision({
     name: "me",
     target: "localhost",
-    envelope: { schema_version: 1, host_id: "SELF", display_name: "me", exported_at: 1 },
+    snapshot: probe("SELF", "me"),
     selfHostId: "SELF",
     peers: [],
   });
@@ -89,12 +113,12 @@ test("peer add refuses this node itself", () => {
 });
 
 test("an unreachable host is still added, on the operator's word", () => {
-  // No envelope means the probe failed. The peer is added anyway and the first
+  // No snapshot means the probe failed. The peer is added anyway and the first
   // successful collect discovers who it is.
   const refusal = peerAddDecision({
     name: "asleep",
     target: "asleep",
-    envelope: null,
+    snapshot: null,
     selfHostId: "SELF",
     peers: [],
   });
@@ -102,12 +126,22 @@ test("an unreachable host is still added, on the operator's word", () => {
   expect(refusal).toBeNull();
 });
 
-test("a peer keeps its identity when re-added under the same name", () => {
+test("a peer keeps its cache when its target is corrected", () => {
+  // Re-adding is how a target gets fixed, so it must update the one field the
+  // operator retyped and nothing else. Discarding the snapshot here would blank
+  // the host's whole pane list until the next collect.
   const store = openStore();
-  store.upsertPeer({ name: "bubba", target: "bubba", host_id: "H", display_name: "bubba" });
-  store.upsertPeer({ name: "bubba", target: "bubba" });
+  store.addPeer("bubba", "bubba");
+  store.replacePeerSnapshot("bubba", { ok: true, at: 1_000, snapshot: probe("H", "bubba") });
+
+  store.addPeer("bubba", "bubba.local");
+
   expect(store.peers()).toHaveLength(1);
-  expect(store.peers()[0]?.host_id).toBe("H");
+  expect(store.peers()[0]).toMatchObject({
+    target: "bubba.local",
+    host_id: "H",
+    fetched_at: 1_000,
+  });
 });
 
 test("peer list output is column-aligned under a header", () => {

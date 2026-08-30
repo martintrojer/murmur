@@ -7,37 +7,25 @@ import {
   type SessionId,
   type WindowId,
 } from "./ids.js";
-import type { AgentState } from "./types.js";
-
-export type Location = {
-  session: SessionId;
-  window: WindowId;
-  pane: PaneId;
-  session_name: string | null;
-  window_name: string | null;
-};
+import type { Location } from "./types.js";
+import type { RenderState } from "./view.js";
 
 export interface Mux {
   currentWindow(): Location | null;
-  liveWindows(): Set<WindowId> | null;
   livePanes(): Set<PaneId> | null;
   // Sets `@agent_state` on a WINDOW, even though the attention it expresses
   // belongs to a pane. The asymmetry is tmux's: the status bar and the `tms`
   // picker read a window option, and there is no per-pane equivalent they
   // would read instead. Its consequence is that a pane moving between windows
   // must clear the badge it left behind, since nothing else knows it moved.
-  setWindowBadge(window: WindowId, state: AgentState | null): void;
+  setWindowBadge(window: WindowId, state: RenderState | null): void;
   // Reports whether the attach actually happened. runTmux swallows failures to
   // return null, and a jump that silently failed looked exactly like "enter did
   // nothing" -- the symptom the remote probe was added to prevent, reproduced
   // on the local path.
   attach(session: SessionId, window: WindowId): boolean;
-  windowNames(): Map<WindowId, string>;
   windowForPane(pane: PaneId): WindowId | null;
   panesInWindow(window: WindowId): PaneId[];
-  windowNamed(name: string): WindowId | null;
-  selectWindow(window: WindowId): boolean;
-  newWindow(name: string, command: string): boolean;
   capture(pane: PaneId, lines?: number): string | null;
   // --- remote-jump session seam -------------------------------------------
   // A remote attach lives in its own local session rather than a window, so it
@@ -129,37 +117,15 @@ export const tmux: Mux = {
     };
   },
 
-  // Which of this host's windows still exist. Only the authoring node can
-  // answer this, which is why the check runs on export rather than on the
-  // reader: a peer holding a `blocked` row for a window that died has nothing
-  // to supersede it, and the agent stays in every HUD forever.
+  // Which of this host's PANES still exist. The only liveness question tmux is
+  // ever asked, and the one that matches how an agent is addressed: a pane keeps
+  // its id when it moves between windows, so a recorded window id can be gone
+  // while the agent is very much alive. Sweeping on windows deleted ten live
+  // agents once, which is why `liveWindows` no longer exists.
   //
-  // null means "could not tell" (no tmux server, tmux missing) and is
-  // deliberately distinct from an empty set, which means "tmux answered, and
-  // there are no windows". Treating the first as the second would clear every
-  // agent on the host the moment tmux was unreachable.
-  //
-  // Unlike currentWindow, this deliberately asks tmux rather than reading the
-  // environment, and it is right to: "which windows exist on this host" is a
-  // server-wide question with one answer, and export runs over ssh with no
-  // pane of its own. currentWindow asks "which pane am I in", which only
-  // $TMUX_PANE can answer.
-  liveWindows() {
-    const out = runTmux(["list-windows", "-a", "-F", "#{window_id}"]);
-    if (out === null) return null;
-    return new Set(out.split("\n").filter(Boolean).map(asWindowId));
-  },
-
-  // Which of this host's PANES still exist.
-  //
-  // The companion to liveWindows, and the one that matches how an agent is
-  // identified. `agent_id` is `host:pane`, and a pane keeps its id when it
-  // moves between windows -- so a window id recorded on an old event can be
-  // gone while the agent is very much alive. Sweeping on windows deleted ten
-  // live agents on the author's machine.
-  //
-  // Same null-vs-empty contract as liveWindows: null means tmux could not
-  // answer, an empty set means it did and there are none.
+  // null means tmux could not answer; an empty set means it did and there are
+  // none. Conflating the two would delete every agent on the host the moment
+  // tmux was briefly unreachable.
   livePanes() {
     const out = runTmux(["list-panes", "-a", "-F", "#{pane_id}"]);
     if (out === null) return null;
@@ -190,44 +156,12 @@ export const tmux: Mux = {
     return runTmux(["select-window", "-t", window]) !== null;
   },
 
-  // Window ids are what the log stores, because they are stable; names are
-  // what a human recognises in a picker. Names are live tmux state, not
-  // history, so they are resolved at render time rather than recorded.
-  windowNames() {
-    const out = runTmux(["list-windows", "-a", "-F", "#{window_id}\t#{window_name}"]);
-    const names = new Map<WindowId, string>();
-    for (const line of out?.split("\n") ?? []) {
-      const [id, name] = line.split("\t");
-      if (id && name) names.set(asWindowId(id), name);
-    }
-    return names;
-  },
-
-  // First window carrying this exact name, or null. Used to reuse a per-host
-  // ssh window instead of opening another one.
   // Sibling panes, for deciding whether an unowned pane may clear the window's
   // badge. A window holding an agent and a shell must not lose the badge when
   // you focus the shell.
   panesInWindow(window) {
     const out = runTmux(["list-panes", "-t", window, "-F", "#{pane_id}"]);
     return out?.split("\n").filter(Boolean).map(asPaneId) ?? [];
-  },
-
-  windowNamed(name) {
-    const out = runTmux(["list-windows", "-a", "-F", "#{window_id}\t#{window_name}"]);
-    for (const line of out?.split("\n") ?? []) {
-      const [id, windowName] = line.split("\t");
-      if (id && windowName === name) return asWindowId(id);
-    }
-    return null;
-  },
-
-  selectWindow(window) {
-    return runTmux(["select-window", "-t", window]) !== null;
-  },
-
-  newWindow(name, command) {
-    return runTmux(["new-window", "-n", name, command]) !== null;
   },
 
   // Which client to send home when the remote attach exits. `switch-client`

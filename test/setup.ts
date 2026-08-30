@@ -69,6 +69,11 @@ import { afterAll } from "vitest";
  * child env -- and pane-ownership.test.ts stands up its own private tmux
  * server. None of them wants the ambient value.
  */
+// MURMUR_RETENTION_MS and MURMUR_PANE_OWNER no longer exist in production --
+// there is no retention horizon and no environment-borne ownership claim. They
+// stay in this list deliberately: the rig's job is to make the suite independent
+// of the developer's shell, and a stale export of a variable murmur once read
+// costs nothing to keep clearing while a forgotten one costs a corrupted run.
 const CLEARED = [
   "MURMUR_STORE_MODULE",
   "MURMUR_RETENTION_MS",

@@ -3,20 +3,21 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { notifyFields, parsePayload, runNotify } from "../src/cli/notify.js";
-import { ensureIdentity } from "../src/identity.js";
+import type { NodeIdentity } from "../src/identity.js";
+import { createIdentity } from "../src/identity.js";
 import type { WindowId } from "../src/ids.js";
 import { asPaneId, asSessionId, asWindowId } from "../src/ids.js";
 import { status } from "../src/status.js";
 import { openStore, type Store } from "../src/store.js";
-import type { AgentState } from "../src/types.js";
+import type { RenderState } from "../src/view.js";
 import { fakeMux } from "./helpers/fake-mux.js";
 
 let store: Store;
-let hostId: string;
+let identity: NodeIdentity;
 
 beforeEach(() => {
   process.env.MURMUR_STATE_DIR = mkdtempSync(join(tmpdir(), "murmur-notify-"));
-  hostId = ensureIdentity().host_id;
+  identity = createIdentity("here");
   store = openStore();
 });
 
@@ -52,61 +53,34 @@ test("a codex notification records blocked for the pane the hook ran in", () => 
   );
 
   expect(ok).toBe(true);
-  const event = store.allEvents().at(-1);
-  expect(event).toMatchObject({
-    // host:pane, the same identity the pi extension builds. A bare pane id would
-    // be a second agent for the same pane.
-    agent_id: `${hostId}:%1`,
-    pane: "%1",
-    window: "@1",
-    state: "blocked",
-    cli: "codex",
-    driver: "human",
-    reason: "notify",
-  });
-  // Falls back to the title when no message is given, rather than a placeholder.
-  expect(event?.message).toBe("Codex");
+  const pane = store.localPanes()[0];
+  // Addressed by PANE and nothing else, which is what makes it safe: there is
+  // no field on the request for an agent id, a pid or an activity.
+  expect(pane).toMatchObject({ pane: "%1", window: "@1", agent: null });
+  expect(pane?.attention).toEqual([
+    // Falls back to the title when no message is given, rather than a
+    // placeholder. `source` carries the harness name; `driver` is not its to
+    // set.
+    { kind: "blocked", message: "Codex", source: "codex", requested_at: expect.any(Number) },
+  ]);
 });
 
-test("the row carries no pid, which is what makes the ownership exception safe", () => {
-  // 3281cff established that only a pane's owner may report for it, because six
-  // pids had each written `working` to one row and the row then folded off a
-  // dead child's pid. notify is a deliberate exception, and this is the property
-  // that keeps it from reopening that hole.
-  //
-  // The distinction: a nested pi CLAIMS TO BE the agent, writing `working` with
-  // its own pid. A notifier SPEAKS ABOUT the agent and writes `blocked` with no
-  // pid at all. `pid` is the crash-detection probe -- fold turns `working` into
-  // `crashed` when the recorded pid is gone -- so a row with no pid makes no
-  // claim about any process's liveness and there is nothing for a dying
-  // notifier to corrupt.
-  runNotify(store, { source: "codex" }, {}, inPane());
-
-  const event = store.allEvents().at(-1);
-  expect(event?.pid).toBeNull();
-  expect(event?.state).toBe("blocked");
-});
-
-test("notify can only ever say blocked", () => {
-  // The exception is narrow in WHAT it may assert, not just in who may assert
-  // it. An external process cannot know that an agent started, finished or
-  // crashed, so those states stay the owner's alone -- there is no flag that
-  // reaches `state`, by construction.
-  //
-  // Asserted against the shape of the input type rather than by trying to pass
-  // a state: a caller cannot express one, which is the point.
+test("a notifier cannot say anything except blocked, and cannot name a process", () => {
+  // The old exception was narrow by CARE: notify wrote a row with `pid: null`
+  // and `state: "blocked"`, and the safety came from those two values being
+  // chosen correctly at one call site. Now it is narrow by CONSTRUCTION --
+  // `AttentionRequest` has no state field, no pid field and no owner metadata
+  // field, so a payload naming a state and a pid cannot reach either.
   for (const attempt of [
     { source: "codex" },
     { source: "codex", message: "working" },
     { source: "codex", eventType: "crashed" },
   ]) {
-    const before = store.allEvents().length;
-    runNotify(store, attempt, { state: "working", pid: 4242 }, inPane());
-    const event = store.allEvents().at(-1);
-    expect(store.allEvents().length).toBe(before + 1);
-    // Even a payload that names a state and a pid cannot set either.
-    expect(event?.state).toBe("blocked");
-    expect(event?.pid).toBeNull();
+    runNotify(store, attempt, { state: "working", pid: 4242, activity: "running" }, inPane());
+    const pane = store.localPanes()[0];
+    expect(pane?.attention.map((entry) => entry.kind)).toEqual(["blocked"]);
+    expect(pane?.agent).toBeNull();
+    expect(JSON.stringify(pane)).not.toContain("4242");
   }
 });
 
@@ -168,11 +142,11 @@ test("outside tmux it records nothing and does not fail the caller", () => {
   const ok = runNotify(store, { source: "codex" }, {}, fakeMux({ currentWindow: () => null }));
 
   expect(ok).toBe(false);
-  expect(store.allEvents()).toHaveLength(0);
+  expect(store.localPanes()).toHaveLength(0);
 });
 
 test("the window badge is set, so the status bar does not wait for a collect", () => {
-  const badges: [WindowId, AgentState | null][] = [];
+  const badges: [WindowId, RenderState | null][] = [];
   const mux = fakeMux({
     currentWindow: () => ({
       session: asSessionId("$0"),
@@ -195,8 +169,7 @@ test("--pane may name a sibling pane, and refuses a pane it cannot verify", () =
   // Deliberately implemented without adding a pane-to-session lookup to Mux: it
   // narrows the location currentWindow already resolved.
   runNotify(store, { source: "codex", pane: "%2" }, {}, inPane(["%1", "%2"]));
-  expect(store.allEvents().at(-1)).toMatchObject({
-    agent_id: `${hostId}:%2`,
+  expect(store.localPanes()[0]).toMatchObject({
     pane: "%2",
     // Session and window are exactly what two panes in one window share.
     window: "@1",
@@ -204,45 +177,65 @@ test("--pane may name a sibling pane, and refuses a pane it cannot verify", () =
 
   // A pane in another window is refused rather than guessed: recording a
   // location this process cannot verify writes a row nothing can ever clear.
-  const before = store.allEvents().length;
+  const before = store.localPanes().length;
   const ok = runNotify(store, { source: "codex", pane: "%99" }, {}, inPane(["%1", "%2"]));
   expect(ok).toBe(false);
-  expect(store.allEvents()).toHaveLength(before);
+  expect(store.localPanes()).toHaveLength(before);
 });
 
-test("a notify row supersedes the pane's own agent instead of forking it", () => {
-  // The integration property, and the reason agent_id must be host:pane rather
-  // than a bare pane id. A pi agent is already reporting for this pane; the
-  // notification is about THAT agent, not a second one.
+test("a notification leaves the pane's live agent untouched and joins onto it", () => {
+  // The integration property, and the reason attention is keyed on pane alone.
+  // A pi agent is already reporting for this pane; the notification is about
+  // THAT pane, and used to be recorded by superseding the agent's row -- which
+  // is how a live `running` agent lost its name, workstream, role and driver.
   //
-  // Verified end to end against the real binary before being written down: two
-  // events, one agent, and `murmur status` reports `blocked 1` rather than
-  // counting two agents in the same pane.
-  store.append({
-    agent_id: `${hostId}:%1`,
-    session: asSessionId("$0"),
-    window: asWindowId("@1"),
-    pane: asPaneId("%1"),
-    cli: "pi",
-    driver: "human",
-    kind: "state",
-    state: "working",
-    message: "",
-    pid: process.pid,
-    synthetic: false,
-    reason: "",
-    extra: {},
-    workstream: null,
-    role: null,
+  // Now the two facts sit side by side: one pane, one agent row, one attention
+  // row, and `status` counts one blocked pane rather than two agents.
+  const claim = store.claimAgent({
+    location: {
+      session: asSessionId("$0"),
+      window: asWindowId("@1"),
+      pane: asPaneId("%1"),
+      session_name: "dev",
+      window_name: "codex",
+    },
+    owner_pid: process.pid,
+    meta: {
+      agent_name: "worker-1",
+      pi_session: null,
+      workstream: "murmur",
+      role: null,
+      cli: "pi",
+      driver: "human",
+    },
+  });
+  store.setActivity({
+    agent_id: "agent_id" in claim ? claim.agent_id : "",
+    owner_pid: process.pid,
+    activity: "running",
+    location: {
+      session: asSessionId("$0"),
+      window: asWindowId("@1"),
+      pane: asPaneId("%1"),
+      session_name: "dev",
+      window_name: "codex",
+    },
   });
 
   runNotify(store, { source: "codex", title: "Codex" }, {}, inPane());
 
-  const events = store.allEvents();
-  expect(events).toHaveLength(2);
-  // One agent, not two: the fold takes the newest row it recognises, so the
-  // notification is what the pane now says.
-  expect(new Set(events.map((event) => event.agent_id)).size).toBe(1);
-  expect(status(store).agents).toHaveLength(1);
-  expect(status(store).agents[0]?.state).toBe("blocked");
+  const panes = store.localPanes();
+  expect(panes).toHaveLength(1);
+  // The agent survives verbatim: still running, still named, still a pi agent.
+  expect(panes[0]?.agent).toMatchObject({
+    activity: "running",
+    agent_name: "worker-1",
+    workstream: "murmur",
+    cli: "pi",
+  });
+  expect(panes[0]?.attention.map((entry) => entry.source)).toEqual(["codex"]);
+
+  const view = status(store, identity);
+  expect(view.panes).toHaveLength(1);
+  expect(view.counts.blocked).toBe(1);
 });

@@ -1,9 +1,8 @@
 import { execFileSync } from "node:child_process";
-import type { Agent } from "./agents.js";
 import { SSH_OPTIONS } from "./channel.js";
-import { loadIdentity } from "./identity.js";
 import { tmux } from "./mux.js";
 import type { Store } from "./store.js";
+import type { PaneView } from "./view.js";
 
 /**
  * Glance: the last few lines a pane printed.
@@ -18,8 +17,8 @@ import type { Store } from "./store.js";
 
 const GLANCE_LINES = 40;
 
-export function glance(store: Store, agent: Agent, lines = GLANCE_LINES): string | null {
-  if (agent.host_id === loadIdentity()?.host_id) return tmux.capture(agent.pane, lines);
+export function glance(store: Store, agent: PaneView, lines = GLANCE_LINES): string | null {
+  if (agent.local) return tmux.capture(agent.pane, lines);
 
   const peer = store.peers().find((candidate) => candidate.host_id === agent.host_id);
   const target = peer?.target ?? peer?.name;

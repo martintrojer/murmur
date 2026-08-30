@@ -3,12 +3,17 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Command } from "commander";
 import { hasWarmSocket, ssh } from "../channel.js";
-import { STALENESS_MS } from "../collector.js";
-import { type Envelope, SCHEMA_VERSION } from "../export.js";
-import { age, isStale } from "../fold.js";
 import { loadIdentity } from "../identity.js";
+import { parseSnapshot } from "../snapshot.js";
 import { openStore } from "../store.js";
-import type { Peer } from "../types.js";
+import type { PeerRecord, Snapshot } from "../types.js";
+import { age, freshness, STALENESS_MS } from "../view.js";
+
+/**
+ * The snapshot document version this node speaks. One number, and the only one
+ * the code enforces: `parseSnapshot` rejects anything else outright.
+ */
+export const SNAPSHOT_VERSION = 1;
 
 export function parseSshHosts(config: string): string[] {
   const hosts: string[] = [];
@@ -45,47 +50,43 @@ function sshHosts(): string[] {
  */
 export function lastSeen(fetchedAt: number | null, now: number): string {
   if (fetchedAt === null) return "never";
-  if (!isStale(fetchedAt, now, STALENESS_MS)) return "just now";
+  if (freshness(fetchedAt, now, STALENESS_MS) === "fresh") return "just now";
   return `${age(now - fetchedAt)} ago`;
 }
 
 /**
  * What to show in the VERSION column, and whether the pairing is a problem.
  *
- * The distinction the task turns on, and it is drawn from what the code
- * actually enforces rather than from taste:
+ * The distinction is drawn from what the code actually enforces rather than from
+ * taste:
  *
- *   - a differing SCHEMA_VERSION is a hard incompatibility. `parseJsonl`
- *     refuses a peer whose schema is higher than ours, so events genuinely do
- *     not flow. That is a fact about behaviour, and it is the only thing marked.
- *   - a differing murmur version is worth SHOWING and nothing more. Two nodes
- *     on schema 2 running 0.1.3 and 0.1.4 interoperate fine; marking that would
+ *   - a differing SNAPSHOT VERSION is a hard incompatibility. `parseSnapshot`
+ *     rejects any `murmur_snapshot` other than 1, so state genuinely does not
+ *     flow. That is a fact about behaviour, and it is the only thing marked.
+ *   - a differing murmur version is worth SHOWING and nothing more. Two nodes on
+ *     snapshot 1 running 0.1.3 and 0.2.0 interoperate fine; marking that would
  *     cry wolf on every patch release and train the operator to ignore the
  *     column that is supposed to mean something.
  *
- * So the mark answers "can these two exchange events?", not "are these two
- * byte-identical?". A peer we have never heard from is `unknown` and is NOT a
- * mismatch: absence of information is not evidence of incompatibility, and a
- * down or asleep peer is the common case here, not an exception.
+ * A peer we have never heard from is `unknown` and is NOT a mismatch: absence of
+ * information is not evidence of incompatibility, and a sleeping peer is the
+ * common case here.
  */
 export function versionCell(
-  peer: Pick<Peer, "murmur_version" | "schema_version">,
-  ours = SCHEMA_VERSION,
+  peer: Pick<PeerRecord, "murmur_version" | "snapshot_version">,
+  ours = SNAPSHOT_VERSION,
 ): { text: string; incompatible: boolean } {
-  // Never successfully asked. Renders like the other never-seen columns rather
-  // than inventing a value.
-  if (peer.murmur_version === null && peer.schema_version === null) {
+  if (peer.murmur_version === null && peer.snapshot_version === null) {
     return { text: "unknown", incompatible: false };
   }
   // Answered, but from a build too old to say what it is. Distinct from never
   // having answered: this one is reachable and talking.
   const version = peer.murmur_version ?? "unreported";
-  const incompatible = peer.schema_version !== null && peer.schema_version !== ours;
-  // The schema number appears ONLY when it is the problem. In the normal case it
-  // is noise -- every peer would read "0.1.4 (schema 2)" -- and in the abnormal
-  // case it is the whole explanation, so it earns its width exactly then.
+  const incompatible = peer.snapshot_version !== null && peer.snapshot_version !== ours;
+  // The number appears ONLY when it is the problem. In the normal case it is
+  // noise on every row; in the abnormal case it is the whole explanation.
   return {
-    text: incompatible ? `${version} (schema ${peer.schema_version} \u2260 ${ours})` : version,
+    text: incompatible ? `${version} (snapshot ${peer.snapshot_version} \u2260 ${ours})` : version,
     incompatible,
   };
 }
@@ -119,33 +120,33 @@ export function formatTable(rows: string[][]): string {
 export function peerAddDecision(input: {
   name: string;
   target: string;
-  envelope: Envelope | null;
+  snapshot: Snapshot | null;
   selfHostId: string | null;
-  peers: Peer[];
+  peers: PeerRecord[];
 }): string | null {
-  const { name, target, envelope, selfHostId, peers } = input;
+  const { name, target, snapshot, selfHostId, peers } = input;
   // No identity means an unreachable host. It is still added, on the operator's
   // word, and the first successful collect fills in who it is.
-  if (!envelope) return null;
+  if (!snapshot) return null;
 
   // Adding yourself would fold your own events back in as a "remote" host and
   // collect over ssh to reach a database you already hold.
-  if (envelope.host_id === selfHostId) {
+  if (snapshot.host_id === selfHostId) {
     return `${target} is this node; not adding it as a peer\n`;
   }
 
   // One node, one peer. Two names for one host_id means two ssh round-trips per
-  // command and the same machine listed twice; the events dedupe on
-  // (host_id, seq), so nothing looks wrong until you notice every collect is
-  // doing double the work. Excluding `name` itself keeps re-adding the same
+  // command and the
+  // same machine listed twice, so nothing looks wrong until you notice every
+  // collect is doing double the work. Excluding `name` itself keeps re-adding the same
   // peer idempotent, which is how a target gets corrected.
   const existing = peers.find(
-    (candidate) => candidate.host_id === envelope.host_id && candidate.name !== name,
+    (candidate) => candidate.host_id === snapshot.host_id && candidate.name !== name,
   );
   if (existing) {
     return (
       `${target} is already configured as peer "${existing.name}" ` +
-      `(${envelope.display_name}); remove it first to rename\n`
+      `(${snapshot.display_name}); remove it first to rename\n`
     );
   }
   return null;
@@ -168,18 +169,19 @@ export function registerPeer(program: Command): void {
         // tells us whether this is a node we already have under another name
         // — and a peer written first would be found by its own duplicate
         // check.
-        let envelope: Envelope | null = null;
+        let snapshot: Snapshot | null = null;
         try {
-          const output = await ssh.exec(target, ["murmur", "export", "--since", "0"]);
-          envelope = JSON.parse(output.trim().split("\n")[0] ?? "") as Envelope;
+          // Bare `murmur export`, with no `--since`: the flag no longer exists,
+          // here or in the collector.
+          snapshot = parseSnapshot(await ssh.exec(target, ["murmur", "export"]));
         } catch {
-          envelope = null;
+          snapshot = null;
         }
 
         const refusal = peerAddDecision({
           name,
           target,
-          envelope,
+          snapshot,
           selfHostId: loadIdentity()?.host_id ?? null,
           peers: store.peers(),
         });
@@ -189,15 +191,17 @@ export function registerPeer(program: Command): void {
           return;
         }
 
-        store.upsertPeer({
-          name,
-          target,
-          host_id: envelope?.host_id ?? null,
-          display_name: envelope?.display_name ?? null,
-        });
+        store.addPeer(name, target);
+        // The probe already parsed a valid document, and it used to be thrown
+        // away: recording it here means `peer list` can name the host, its
+        // version and its snapshot version immediately rather than after the
+        // first collect.
+        if (snapshot) {
+          store.replacePeerSnapshot(name, { ok: true, snapshot, at: Date.now() });
+        }
         process.stdout.write(
-          envelope
-            ? `Added ${name} (${envelope.display_name})\n`
+          snapshot
+            ? `Added ${name} (${snapshot.display_name})\n`
             : `Added ${name} (identity pending)\n`,
         );
       } finally {
@@ -281,9 +285,13 @@ export function registerPeer(program: Command): void {
             // of asleep peers must not buy a column of "unknown".
             version:
               entry === undefined ||
-              (entry.murmur_version === null && entry.schema_version === null)
+              (entry.murmur_version === null && entry.snapshot_version === null)
                 ? undefined
                 : versionCell(entry),
+            // Named where it can be acted on: a peer that answered with a bad
+            // document is reachable but broken, which is an operator task and
+            // reads nothing like a sleeping laptop.
+            error: entry?.last_error ?? null,
           };
         });
 
@@ -340,10 +348,18 @@ export function registerPeer(program: Command): void {
         const incompatible = rows.filter((row) => row.version?.incompatible);
         if (incompatible.length > 0) {
           process.stdout.write(
-            `\n${incompatible.length} peer${incompatible.length === 1 ? "" : "s"} on an incompatible wire schema; events will not sync until murmur versions match: ${incompatible
+            `\n${incompatible.length} peer${incompatible.length === 1 ? "" : "s"} speak an incompatible snapshot version; state will not sync until murmur versions match: ${incompatible
               .map((row) => row.name)
               .join(", ")}\n`,
           );
+        }
+
+        // A peer that answered with something wrong. Printed after the table
+        // rather than in it, because the message is a sentence and a column of
+        // sentences is not a table.
+        const broken = rows.filter((row) => row.error);
+        for (const row of broken) {
+          process.stdout.write(`\n${row.name}: last attempt failed -- ${row.error}\n`);
         }
 
         const addable = rows.filter((row) => !row.peer).length;

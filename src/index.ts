@@ -1,16 +1,19 @@
 // SDK entry. package.json advertises this as the "." export, so anything a
 // consumer needs to drive murmur without shelling out to the CLI belongs here.
 // The CLI is a thin layer over exactly these units.
-// Read from the manifest rather than restated here: the version lived in
-// package.json and in this file, and two copies of one fact drift. npm bumps
-// the manifest, so the manifest is the source.
-import { createRequire } from "node:module";
-
-const manifest = createRequire(import.meta.url)("../package.json") as { version: string };
-export const VERSION: string = manifest.version;
+//
+// What is deliberately NOT here: any method from the forbidden-shapes list (no
+// append, no ingest, no log read, no narrow local read, no partial-row update)
+// and no raw database handle by any name. `reconcileLocal` and
+// `buildLocalSnapshot` are reachable only as `Store` methods, which is what
+// keeps src/store.ts the sole owner of SQL.
+//
+// The version comes from src/version.ts, which is the one module that knows how
+// to find package.json from any bundle depth. See the comment there: hardcoding
+// the relative path here worked for dist/index.js and broke silently for
+// dist/extension/store.js.
 
 export {
-  type Agent,
   agentLabel,
   agentLocation,
   type JumpResult,
@@ -22,22 +25,14 @@ export {
   type CollectResult,
   collect,
   MAX_CONCURRENT_PEERS,
-  STALENESS_MS,
 } from "./collector.js";
-export { eventFromWire, exportJsonl, SCHEMA_VERSION } from "./export.js";
-export {
-  type AgentView,
-  attentionSort,
-  foldAgent,
-  foldAll,
-  isStale,
-  type LiveCheck,
-  type ResolvedState,
-  resolveState,
-  viewState,
-} from "./fold.js";
 export { glance } from "./glance.js";
-export { ensureIdentity, loadIdentity, type NodeIdentity } from "./identity.js";
+export {
+  createIdentity,
+  loadIdentity,
+  type NodeIdentity,
+  setDisplayName,
+} from "./identity.js";
 export {
   asPaneId,
   asSessionId,
@@ -48,12 +43,43 @@ export {
 } from "./ids.js";
 export { type Mux, pidAlive, tmux } from "./mux.js";
 export { configDir, dbPath, stateDir } from "./paths.js";
-export { type Status, status } from "./status.js";
-export { type NewEvent, openStore, STORE_VERSION, type Store } from "./store.js";
-export {
-  type AgentState,
-  DEFAULT_DRIVER,
-  type Driver,
-  type Event,
-  type Peer,
+export { parseSnapshot, SnapshotInvalidError } from "./snapshot.js";
+export { type Status, status, statusWithCollect, tmuxStatus } from "./status.js";
+export { openStore, type Store } from "./store.js";
+export type {
+  Activity,
+  ActivityUpdate,
+  AgentClaim,
+  AgentMeta,
+  AgentRelease,
+  AgentRow,
+  AttentionKind,
+  AttentionRequest,
+  AttentionRow,
+  ClaimResult,
+  Driver,
+  LiveCheck,
+  LocalWorld,
+  Location,
+  PeerFetch,
+  PeerRecord,
+  ReconcileSummary,
+  Snapshot,
+  SnapshotAgent,
+  SnapshotAttention,
+  SnapshotPane,
 } from "./types.js";
+export { DEFAULT_DRIVER } from "./types.js";
+export { MURMUR_VERSION as VERSION } from "./version.js";
+export {
+  age,
+  type Freshness,
+  freshness,
+  type PaneView,
+  paneViews,
+  RENDER_PRIORITY,
+  type RenderState,
+  renderState,
+  STALENESS_MS,
+  viewSort,
+} from "./view.js";

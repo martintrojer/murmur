@@ -1,34 +1,31 @@
 import { spawnSync } from "node:child_process";
 import { SSH_OPTIONS } from "./channel.js";
-import { loadIdentity } from "./identity.js";
 import { asPaneId } from "./ids.js";
 import { type Mux, tmux } from "./mux.js";
-import type { Status } from "./status.js";
 import type { Store } from "./store.js";
-
-export type Agent = Status["agents"][number];
+import type { PaneView } from "./view.js";
 
 /**
- * The most specific human-readable name an agent has, never a tmux id.
+ * The most specific human-readable name a pane's agent has, never a tmux id.
  *
- * Four sources, most to least specific: mu's agent name, pi's session name,
- * the tmux window name, the tmux session name. The old picker showed window
- * names and that was the thing it did better than raw `$26:@79`; these are all
- * recorded on the event, so this reads the same for a local and a remote agent.
+ * Four sources, most to least specific: mu's agent name, pi's session name, the
+ * tmux window name, the tmux session name. All are recorded by the node that
+ * owns the pane, so this reads the same for a local and a remote pane -- a
+ * reader cannot resolve a remote window id against its own tmux.
  *
  * Falls back to the window id only when a node recorded no names at all, which
- * means a pre-names event or a non-tmux harness.
+ * means a non-tmux harness.
  */
-export function agentLabel(agent: Agent): string {
+export function agentLabel(agent: PaneView): string {
   const name = agent.agent_name ?? agent.pi_session ?? agent.window_name ?? agent.session_name;
   return terminalText(name ?? agent.window);
 }
 
 /**
- * Where the agent lives, for the second column. Names only -- the ids are what
+ * Where the pane lives, for the second column. Names only -- the ids are what
  * jumps, not what a human reads.
  */
-export function agentLocation(agent: Agent): string {
+export function agentLocation(agent: PaneView): string {
   const session = agent.session_name ?? agent.session;
   const window = agent.window_name ?? agent.window;
   return terminalText(session === window ? session : `${session}:${window}`);
@@ -106,145 +103,32 @@ export type JumpResult =
     };
 
 /**
- * Drop a dead agent's rows from the local replica.
+ * Jump to a pane, wherever it lives.
  *
- * Export on the authoring node clears dead agents, but that only runs when the
- * peer is next polled, and a pane can die between a fetch and a jump. When a
- * jump proves the pane is gone, the agent should leave this HUD now rather
- * than at the next collect.
- *
- * "Proves" is load-bearing and was once false: the caller asked whether the
- * agent's WINDOW still existed, which a live pane routinely outlives, so this
- * delete fired on healthy agents.
- *
- * DELETE rather than append a `cleared` event, because this node cannot author
- * an event about another node's agent. `store.append` stamps the local host_id,
- * and `status()` folds local and remote events separately (local needs a pid
- * check, remote cannot have one) -- so a local row about a remote agent lands
- * in the other fold and shows up as a SECOND agent with the same agent_id,
- * which is exactly what it did before this was a delete.
- *
- * Deleting a replica is safe ONLY IF the rows can come back, and that needs the
- * peer's watermark rewound as well. Ingest asks for events after the watermark,
- * so deleting rows below it deletes them permanently: bubba's agents vanished
- * from the picker and no amount of collecting brought them back, even with the
- * node alive and the events still in its log.
- *
- * Rewinding to zero rather than to the deleted seq: the log is bounded by the
- * retention horizon, ingest is idempotent on (host_id, seq), and a re-read of a
- * small table is cheaper than tracking which seq belonged to which agent. The
- * next collect re-reads everything the peer still has, so if the window is
- * genuinely alive the agent reappears -- which is the answer to the race where
- * the host comes back up between the jump and the next poll.
- *
- * For a local agent there is no watermark and nothing to rewind: the pane is
- * gone, so nothing will ever author about it again.
+ * NEVER MUTATES STATE ON FAILURE, and that is the change from the old version.
+ * A failed probe used to delete the replica and rewind a watermark, so one
+ * keypress on a healthy agent could remove it -- and for a local pane the delete
+ * was unrecoverable. A failure is now a report: a reason and a message, nothing
+ * written. The next collect reconciles either way, and only the owning node can
+ * author facts about its own panes.
  */
-/**
- * A jump proved this peer has no tmux server, so none of its agents exist.
- *
- * Drops every replicated row for that origin and rewinds the watermark, the
- * same recoverable delete `forgetReplica` does for one agent — just scoped to
- * the node, because "no tmux server" is a fact about the host rather than about
- * the pane we happened to aim at. Leaving the rows and only labelling them
- * meant the picker kept offering four dead agents you had just been told were
- * gone.
- *
- * The mark stays on the peer as well: it is what stops an empty export being
- * read as recovery, and it is why the rows do not immediately reappear.
- */
-export function forgetHostReplica(store: Store, hostId: string): void {
-  try {
-    const peer = store.peers().find((candidate) => candidate.host_id === hostId);
-    store.forgetHost(hostId);
-    if (peer) {
-      // Watermark deliberately NOT rewound here, unlike the single-agent case.
-      // Rewinding re-ingests the very rows just deleted, and because the
-      // collector reads any ingest as "the node is authoring again", it also
-      // cleared the mark -- so the dead agents reappeared looking healthy on
-      // the next collect, one second later.
-      //
-      // Keeping the watermark means recovery waits for a NEW event, which is
-      // the correct bar: the node has to actually say something before its
-      // agents come back. Nothing is lost, since the rows describe windows a
-      // live tmux server would re-announce.
-      store.upsertPeer({
-        name: peer.name,
-        target: peer.target,
-        tmux_down_at: Date.now(),
-      });
-    }
-  } catch {
-    // Advisory only: the next collect reconciles either way.
-  }
-}
-
-export function forgetReplica(store: Store, agentId: string, hostId: string): void {
-  try {
-    store.forgetAgent(agentId);
-    const peer = store.peers().find((candidate) => candidate.host_id === hostId);
-    if (peer) store.upsertPeer({ name: peer.name, target: peer.target, watermark: 0 });
-  } catch {
-    // Cosmetic only: the next collect reconciles either way.
-  }
-}
-
-/**
- * Drop one agent from the picker by hand.
- *
- * The escape hatch for a row that is stuck and that nothing else will clear: an
- * agent whose pane died in a way that left no terminal event, or a replica from
- * a peer that will never report again. Everything else here reconciles on its
- * own, so this exists for the cases that do not.
- *
- * A local agent also gets its tmux badge cleared. Deleting only the row would
- * leave `@agent_state` set, which the status bar and the tms session picker
- * both read — so the glyph would survive the row it came from and nothing would
- * ever clear it.
- *
- * Not authoritative, and cannot be: for a remote agent this deletes a replica,
- * and the owning node still holds the truth. If that node reports again the
- * agent comes back, which is correct — a row you dismissed while the agent was
- * alive should return.
- */
-export function forgetOneAgent(store: Store, agent: Agent, mux: Mux = tmux): void {
-  const identity = loadIdentity();
-  if (agent.host_id === identity?.host_id) {
-    try {
-      mux.setWindowBadge(agent.window, null);
-    } catch {
-      // Best effort: the row still goes.
-    }
-  }
-  forgetReplica(store, agent.agent_id, agent.host_id);
-}
-
 export function jumpToAgent(
   store: Store,
-  agent: Agent,
+  agent: PaneView,
   mux: Mux = tmux,
   run: Runner = spawnRunner,
 ): JumpResult {
-  const identity = loadIdentity();
-  if (agent.host_id === identity?.host_id) {
-    // The PANE decides, and only the pane. This asked `liveWindows()` about
-    // `agent.window` -- the exact rule 0e546c7 removed from the sweep, left
-    // live on the jump path -- and then DELETED the row. A pane keeps its id
-    // across move-pane and break-pane while the window it left stops existing,
-    // so one keypress on a healthy agent deleted it and reported it as gone.
-    // Verified against real tmux: after `move-pane -s %0 -t @1`, list-panes
-    // still has %0 and list-windows no longer has @0.
-    //
-    // Worse here than in the sweep, because the delete is unrecoverable: a
-    // local agent has no peer row, so forgetReplica's watermark rewind has
-    // nothing to rewind and nothing will ever re-author the rows.
+  if (agent.local) {
+    // The PANE decides, and only the pane. This once asked whether the agent's
+    // WINDOW still existed, which a live pane routinely outlives: after
+    // `move-pane -s %0 -t @1`, list-panes still has %0 and list-windows no
+    // longer has @0. Asking the wrong one reported healthy agents as gone.
     const panes = mux.livePanes();
     if (panes && !panes.has(agent.pane)) {
-      forgetReplica(store, agent.agent_id, agent.host_id);
       return {
         ok: false,
         reason: "pane_gone",
-        message: `${agentLabel(agent)} is gone -- its pane no longer exists. Cleared.`,
+        message: `${agentLabel(agent)} is gone -- its pane no longer exists.`,
       };
     }
     // Reporting the attach rather than assuming it. A select-window that fails
@@ -269,12 +153,9 @@ export function jumpToAgent(
     };
   }
 
-  // Check the agent's PANE is still there before opening a window to attach to
-  // it. Panes, not windows: `list-windows -a -F '#{window_id}'` cannot answer
-  // the only question that matters -- whether the agent exists -- because the
-  // window on its last event goes stale every time the pane moves. Asking the
-  // wrong one here deleted the replica of a live remote agent.
-  // Without this the attach fails inside a new tmux window that closes
+  // Check the pane is still there before opening a window to attach to it.
+  // Panes, not windows: a recorded window id goes stale every time the pane
+  // moves, so it cannot answer whether the agent exists. Without this the attach fails inside a new tmux window that closes
   // instantly, which is indistinguishable from "enter did nothing" -- the
   // symptom that sent us looking for a quoting bug that did not exist.
   // ssh does not take an argv: it joins its arguments and hands the string to a
@@ -311,24 +192,22 @@ export function jumpToAgent(
       };
     }
 
-    // ssh worked, tmux did not. That is a real fact about the host and the
-    // strongest one available: a successful export only proves the murmur
-    // binary ran, which it does happily on a box whose tmux server is gone --
-    // which is why these agents read as fresh for three hours.
-    forgetHostReplica(store, agent.host_id);
+    // ssh worked, tmux did not. A real fact about the host, and reported as
+    // one: nothing is deleted here. The peer's own next snapshot is what
+    // removes its panes, because only that node may author about them, and a
+    // reader that evicts rows on a probe failure is guessing.
     return {
       ok: false,
       reason: "no_tmux",
-      message: `${target} has no tmux server running, so its agents are gone. Removed them; they will come back when it reports again.`,
+      message: `${target} has no tmux server running, so its agents are gone. They will disappear on the next collect.`,
     };
   }
   const remotePanes = new Set(probe.stdout.split("\n").filter(Boolean).map(asPaneId));
   if (!remotePanes.has(agent.pane)) {
-    forgetReplica(store, agent.agent_id, agent.host_id);
     return {
       ok: false,
       reason: "pane_gone",
-      message: `${agentLabel(agent)} is gone -- ${target} no longer has that pane. Cleared.`,
+      message: `${agentLabel(agent)} is gone -- ${target} no longer has that pane.`,
     };
   }
 

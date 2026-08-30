@@ -1,19 +1,17 @@
 import { spawnSync } from "node:child_process";
 import type { Command } from "commander";
 import {
-  type Agent,
   agentLabel,
   agentLocation,
-  forgetOneAgent,
   type JumpResult,
   jumpToAgent,
   terminalText,
 } from "../agents.js";
-import { age, viewState } from "../fold.js";
 import { glance } from "../glance.js";
-import { loadIdentity } from "../identity.js";
 import { status, statusWithCollect } from "../status.js";
 import { openStore, type Store } from "../store.js";
+import { age, type PaneView, RENDER_PRIORITY, renderState } from "../view.js";
+import { requireIdentity } from "./identity-guard.js";
 
 type PickOptions = { all?: boolean };
 
@@ -28,7 +26,7 @@ type PickOptions = { all?: boolean };
  */
 export type PickDeps = {
   fzf?: (args: string[], input: string, env: NodeJS.ProcessEnv) => string;
-  jump?: (store: Store, agent: Agent) => JumpResult;
+  jump?: (store: Store, agent: PaneView) => JumpResult;
 };
 
 const spawnFzf: NonNullable<PickDeps["fzf"]> = (args, input, env) =>
@@ -39,7 +37,6 @@ const spawnFzf: NonNullable<PickDeps["fzf"]> = (args, input, env) =>
     env,
   }).stdout ?? "";
 
-const PREVIEW_EVENTS = 8;
 const PREVIEW_MESSAGE_MAX = 300;
 
 // Same glyphs the tmux status bar and window labels use, so one symbol means
@@ -48,7 +45,7 @@ const GLYPH: Record<string, string> = {
   crashed: "\u2717", // ✗
   blocked: "!",
   done: "\u2713", // ✓
-  working: "\u25b6", // ▶
+  running: "\u25b6", // ▶
   idle: "\u00b7", // ·
 };
 
@@ -58,7 +55,7 @@ const COLOUR: Record<string, string> = {
   crashed: "\u001b[31m",
   blocked: "\u001b[33m",
   done: "\u001b[36m",
-  working: "\u001b[37m",
+  running: "\u001b[37m",
   idle: "\u001b[90m",
 };
 // Built from a char class rather than written literally: a bare \u001b in a
@@ -78,18 +75,12 @@ const BOLD = "\u001b[1m";
 const DIM = "\u001b[2m";
 const RESET = "\u001b[0m";
 
-// The order the prompt COUNTS appear in, byte-identical to status.ts's own
-// `urgency` list -- and deliberately left duplicated rather than folded into the
-// resolver, which owns state and not presentation.
-//
-// Worth knowing that it disagrees with fold.ts's ATTENTION_ORDER, which sorts
-// ROWS: this leads with `crashed`, that leads with `blocked`. Both are
-// defensible (a dead agent is the most alarming thing to count; a blocked one is
-// the most actionable row to put at the top) and neither is a bug, but they are
-// two answers to "which state matters most" and only one of them can be right
-// for a reader. That is a product call about presentation, not a derivation
-// seam, so it is recorded here rather than quietly unified.
-const URGENCY = ["crashed", "blocked", "done", "working", "idle"] as const;
+// The order the prompt COUNTS appear in: RENDER_PRIORITY, imported rather than
+// restated. This file and status.ts each used to declare their own copy, and
+// fold.ts a third that disagreed about whether `crashed` or `blocked` led -- so
+// two surfaces sorted one list two ways and neither was wrong on its own terms.
+// One table now, and the disagreement is gone rather than documented.
+const URGENCY = RENDER_PRIORITY;
 
 /**
  * Marks the picker as showing orchestrated agents, at the front of the prompt.
@@ -119,10 +110,10 @@ const CREW_MARK = "crew ";
  * Hiding these behind a flag meant the rows that needed a human were the ones a
  * human could not see.
  */
-const NEEDS_HUMAN = new Set(["blocked", "crashed"]);
+const NEEDS_HUMAN = ["blocked", "crashed"] as const;
 
-export function isVisible(agent: Agent): boolean {
-  return agent.driver === "human" || NEEDS_HUMAN.has(agent.state ?? "");
+export function isVisible(agent: PaneView): boolean {
+  return agent.driver === "human" || NEEDS_HUMAN.some((kind) => agent.attention.includes(kind));
 }
 
 /**
@@ -275,11 +266,14 @@ export function isPopup(env: NodeJS.ProcessEnv): boolean {
  * the agent's own host, so resolving it is `jumpToAgent`'s job once a selection
  * comes back.
  */
-export function pickerRow(agent: Agent, showHost: boolean, current: boolean, local = true): string {
-  // The resolver's answer, not a local translation. This was `?? "idle"` here
-  // and in two more places in this file, plus a fourth spelling in status.ts
-  // that also tested `=== "cleared"` -- a condition a folded view cannot carry.
-  const state = viewState(agent);
+export function pickerRow(
+  agent: PaneView,
+  showHost: boolean,
+  current: boolean,
+  local = agent.local,
+): string {
+  // One derivation, shared with the status bar: attention first, then activity.
+  const state = renderState(agent);
   const colour = COLOUR[state] ?? "";
   const glyph = GLYPH[state] ?? "?";
   const marker = current ? `${BOLD}\u25c6${RESET}` : " "; // ◆ you are here
@@ -320,13 +314,19 @@ export function pickerRow(agent: Agent, showHost: boolean, current: boolean, loc
   // how recently we reached its host. A peer we polled a second ago can be
   // serving events from three hours back — which read as fresh until this
   // column existed. `unreachable` is the other axis: the replica itself is old.
+  // Both attention and activity, simultaneously. A running agent with `blocked`
+  // attention is a real and expected state, and the row has room to say so
+  // rather than picking one word and hiding the other.
+  const extra = agent.attention.filter((kind) => kind !== state);
   const flags = [
     agent.driver === "orchestrated" ? "crew" : "",
-    agent.stale ? "unreachable" : "",
-    // A jump already proved this one dead. Say so plainly rather than leaving
-    // the row looking merely old, and sort it last.
-    agent.tmux_down ? "no tmux" : "",
-    age(agent.event_age_ms),
+    // Freshness is a property of the NODE, and it is stated explicitly rather
+    // than inferred from an age: a stale node keeps its last-known fields, and
+    // the reader has to be told those fields are old.
+    agent.freshness === "stale" ? "stale host" : "",
+    ...extra,
+    agent.activity === "running" && state !== "running" ? "running" : "",
+    age(agent.updated_at === null ? null : Date.now() - agent.updated_at),
   ]
     .filter(Boolean)
     .join(" ");
@@ -345,67 +345,75 @@ export function pickerRow(agent: Agent, showHost: boolean, current: boolean, loc
   ]
     .filter(Boolean)
     .join(" ");
-  return `${agent.agent_id}\t${label}`;
+  // Keyed on the PANE, not on an agent id. The pane is the address, it is what
+  // jumps, and an attention-only pane has no agent id at all -- so keying on one
+  // would make exactly the rows that need a human unselectable.
+  return `${agent.host_id}\t${agent.pane}\t${label}`;
 }
 
-function previewText(store: Store, agent: Agent): string {
-  const state = viewState(agent);
+function previewText(store: Store, agent: PaneView): string {
+  const state = renderState(agent);
   const colour = COLOUR[state] ?? "";
   const head = [
     `${colour}${GLYPH[state] ?? "?"} ${state}${RESET}  ${BOLD}${agent.agent_name ? terminalText(agent.agent_name) : agentLabel(agent)}${RESET}`,
     // Says where, and whether "where" is this machine. The glance below is a
     // local capture-pane or an ssh depending on this one fact, so it belongs in
     // the header rather than being inferred from a hostname.
-    agent.host_id === loadIdentity()?.host_id
+    agent.local
       ? `${DIM}here  ${agentLocation(agent)}${RESET}`
       : `${REMOTE}\u2192 ${terminalText(agent.host)}${RESET}  ${DIM}${agentLocation(agent)}${RESET}`,
   ];
+  // The three facts, each named, because they are independent and a reader has
+  // to be able to see all three at once. `activity` is what the pane's own
+  // process said; `attention` is who is wanted; `freshness` is how recently we
+  // reached the node that said either.
   const facts = [
+    `activity ${agent.activity ?? "none (attention only)"}`,
+    agent.attention.length ? `wants    ${agent.attention.join(", ")}` : "",
     agent.workstream ? `stream   ${terminalText(agent.workstream)}` : "",
     agent.role ? `role     ${terminalText(agent.role)}` : "",
     agent.pi_session ? `session  ${terminalText(agent.pi_session)}` : "",
+    agent.cli ? `cli      ${terminalText(agent.cli)}` : "",
     agent.driver === "orchestrated" ? "driver   orchestrated (crew)" : "",
-    agent.stale ? `fetched  ${age(agent.age_ms)} ago` : "",
+    // Two ages, never one. A node polled a second ago can be serving a
+    // three-hour-old fact, and collapsing them is how that read as fresh.
+    agent.updated_at === null ? "" : `said     ${timestamp(agent.updated_at)}`,
+    agent.local
+      ? ""
+      : `fetched  ${agent.fetched_at === null ? "never" : timestamp(agent.fetched_at)}`,
+    agent.freshness === "stale" ? `${DIM}host is stale: fields below are last-known${RESET}` : "",
   ].filter(Boolean);
 
   // The glance is the point of the preview: what is the agent actually doing.
-  // Events are history and answer a different question, so they go underneath
-  // and stay short.
+  // There is no history section any more, because there is no history -- the
+  // store holds current state only, which is the accepted limitation this
+  // rewrite takes in exchange for a model where one writer owns each fact.
   const pane = glance(store, agent);
   const live = pane?.trimEnd()
-    ? [`${DIM}── pane ──${RESET}`, pane.trimEnd()]
-    : [`${DIM}── pane ──${RESET}`, `${DIM}unavailable (host unreachable, or pane gone)${RESET}`];
+    ? [
+        `${DIM}\u2500\u2500 pane \u2500\u2500${RESET}`,
+        pane.trimEnd().slice(-PREVIEW_MESSAGE_MAX * 20),
+      ]
+    : [
+        `${DIM}\u2500\u2500 pane \u2500\u2500${RESET}`,
+        `${DIM}unavailable (host unreachable, or pane gone)${RESET}`,
+      ];
 
-  const events = store
-    .allEvents()
-    .filter((event) => event.agent_id === agent.agent_id)
-    .slice(-PREVIEW_EVENTS);
-  const history = events.length
-    ? events.map((event) => {
-        let message = terminalText(event.message);
-        if (message.length > PREVIEW_MESSAGE_MAX) {
-          message = `${message.slice(0, PREVIEW_MESSAGE_MAX)}…`;
-        }
-        const detail = message && message !== event.state ? `  ${message}` : "";
-        return `${DIM}${timestamp(event.ts)}${RESET}  ${terminalText(event.state).padEnd(8)}${detail}`;
-      })
-    : [`${DIM}no recorded events${RESET}`];
-
-  return [...head, "", ...facts, "", ...live, "", `${DIM}── history ──${RESET}`, ...history].join(
-    "\n",
-  );
+  return [...head, "", ...facts, "", ...live].join("\n");
 }
 
 /**
- * Emit the preview body for one agent. `murmur pick` re-invokes itself here so
+ * Emit the preview body for one pane. `murmur pick` re-invokes itself here so
  * fzf's `--preview` has a per-row command, rather than the picker precomputing
- * every preview up front — which would mean an ssh round-trip per remote agent
+ * every preview up front — which would mean an ssh round-trip per remote pane
  * before the list even paints.
  */
-export function runPreview(store: Store, agentId: string): void {
+export function runPreview(store: Store, paneId: string): void {
+  const identity = requireIdentity();
+  if (!identity) return;
   // Runs as a child of a picker that has just collected, so it reads the store
   // directly rather than syncing again.
-  const agent = status(store).agents.find((candidate) => candidate.agent_id === agentId);
+  const agent = status(store, identity).panes.find((candidate) => candidate.pane === paneId);
   if (!agent) return;
   process.stdout.write(`${previewText(store, agent)}\n`);
 }
@@ -417,10 +425,11 @@ export async function runPick(
 ): Promise<void> {
   const fzf = deps.fzf ?? spawnFzf;
   const jumpTo = deps.jump ?? jumpToAgent;
-  const identity = loadIdentity();
-  const view = await statusWithCollect(store);
-  const agents = view.agents.filter((agent) => options.all || isVisible(agent));
-  const hidden = view.agents.length - agents.length;
+  const identity = requireIdentity();
+  if (!identity) return;
+  const view = await statusWithCollect(store, identity);
+  const agents = view.panes.filter((agent) => options.all || isVisible(agent));
+  const hidden = view.panes.length - agents.length;
 
   if (agents.length === 0) {
     process.stdout.write(
@@ -429,17 +438,15 @@ export async function runPick(
     return;
   }
 
-  const showHost = agents.some((agent) => agent.host_id !== identity?.host_id);
+  const showHost = agents.some((agent) => !agent.local);
   const currentPane = process.env.TMUX_PANE ?? "";
   const input = agents
-    .map((agent) =>
-      pickerRow(agent, showHost, agent.pane === currentPane, agent.host_id === identity?.host_id),
-    )
+    .map((agent) => pickerRow(agent, showHost, agent.pane === currentPane))
     .join("\n");
 
   const counts = new Map<string, number>();
   for (const agent of agents) {
-    const state = viewState(agent);
+    const state = renderState(agent);
     counts.set(state, (counts.get(state) ?? 0) + 1);
   }
   const prompt = URGENCY.filter((state) => counts.get(state))
@@ -456,7 +463,9 @@ export async function runPick(
   const width = process.stdout.columns ?? 0;
   const previewLayout =
     width > 0 && width < 150 ? "bottom:60%,border-top,wrap" : "right:58%,border-left,wrap";
-  const preview = `${process.execPath} ${self} pick --preview {1}`;
+  // Keyed on the pane, which is the address, and on the host so the preview can
+  // tell a local pane from a remote one with the same pane id.
+  const preview = `${process.execPath} ${self} pick --preview {2} --host {1}`;
   // Narrow on the hidden state column with an exact-prefix query, then restore
   // the real query. ctrl-a clears it.
   const filterBinds = [
@@ -472,7 +481,7 @@ export async function runPick(
       "--delimiter",
       "\t",
       "--with-nth",
-      "2..",
+      "3..",
       "--ansi",
       // Literal substring matching, and matching only the visible columns.
       // Default fuzzy scatters query characters across the row: `re` matched
@@ -504,7 +513,11 @@ export async function runPick(
       `${options.all ? CREW_MARK : ""}${basePrompt}`,
       "--header",
       [
-        `enter jump   ^r refresh   ^p preview   del forget   ^u clear`,
+        // No `del forget`. There is no replica to evict: a reader holds one
+        // snapshot per peer, and the next fetch replaces it whole -- so a delete
+        // key could only remove a row the next collect would put straight back,
+        // while looking like it had done something.
+        `enter jump   ^r refresh   ^p preview   ^u clear`,
         // "toggle crew", not "show crew": the header is built once and the
         // binding flips per keypress, so a directional label would be wrong
         // half the time. The prompt's `crew` marker says which way it is
@@ -549,16 +562,6 @@ export async function runPick(
       // as a label, and readable back through $FZF_PROMPT.
       "--bind",
       `alt-a:transform:[[ $FZF_PROMPT == "${CREW_MARK}"* ]] && echo "reload(${process.execPath} ${self} pick --rows)+change-prompt(${basePrompt})" || echo "reload(${process.execPath} ${self} pick --rows --all)+change-prompt(${CREW_MARK}${basePrompt})"`,
-      // Manual dismissal for a row nothing else will clear.
-      //
-      // The delete key, not a ctrl chord. ctrl-shift-d does not exist -- a
-      // terminal sends the same bytes as ctrl-d -- and ctrl-alt-d, while it
-      // does dispatch distinctly, sits one modifier away from ctrl-d in a
-      // header that lists both. One is a filter and the other destroys a row,
-      // so a near-miss is a deleted agent. `delete` is the key that already
-      // means remove this, and it collides with no filter letter.
-      "--bind",
-      `delete:reload(${process.execPath} ${self} pick --forget {1}${allFlag})`,
       ...filterBinds,
       "--no-select-1",
       "--no-exit-0",
@@ -571,17 +574,17 @@ export async function runPick(
     ),
   );
 
-  const selected = stdout.trim().split("\t")[0];
+  const [, selected] = stdout.trim().split("\t");
   if (!selected) return;
   // Resolved against the UNFILTERED list, not `agents`. `agents` is what this
   // process printed at launch; alt-a reloads the rows from a SUBPROCESS, so a
   // crew row revealed that way was never in the parent's array. fzf returned
-  // its agent_id, find() returned undefined, and enter did nothing — the
-  // reveal shipped able to show rows it could not select. Filtering is a
-  // presentation concern and must not gate the action; the id fzf hands back
-  // is authoritative.
-  const agent = view.agents.find((candidate) => candidate.agent_id === selected);
-  // So a miss here means the agent is genuinely gone between the collect and
+  // its key, find() returned undefined, and enter did nothing — the reveal
+  // shipped able to show rows it could not select. Filtering is a presentation
+  // concern and must not gate the action; the key fzf hands back is
+  // authoritative.
+  const agent = view.panes.find((candidate) => candidate.pane === selected);
+  // So a miss here means the pane is genuinely gone between the collect and
   // the keypress, and that is worth saying. Same argument as the jump.ok
   // branch below: in a popup, a silent return is indistinguishable from a dead
   // key.
@@ -599,35 +602,16 @@ export async function runPick(
   }
 }
 
-/**
- * Delete one agent, then print the remaining rows.
- *
- * One command rather than two because fzf's `reload` replaces the list with a
- * command's stdout: doing the delete and the reprint separately would race the
- * reload against the delete and redraw the row it had just removed.
- */
-export async function runForget(
-  store: Store,
-  agentId: string,
-  options: PickOptions = {},
-): Promise<void> {
-  const view = status(store);
-  const agent = view.agents.find((candidate) => candidate.agent_id === agentId);
-  if (agent) forgetOneAgent(store, agent);
-  await runRows(store, options);
-}
-
 /** Print the row list only, for fzf's `reload` binding. */
 export async function runRows(store: Store, options: PickOptions = {}): Promise<void> {
-  const identity = loadIdentity();
-  const view = await statusWithCollect(store);
-  const agents = view.agents.filter((agent) => options.all || isVisible(agent));
-  const showHost = agents.some((agent) => agent.host_id !== identity?.host_id);
+  const identity = requireIdentity();
+  if (!identity) return;
+  const view = await statusWithCollect(store, identity);
+  const agents = view.panes.filter((agent) => options.all || isVisible(agent));
+  const showHost = agents.some((agent) => !agent.local);
   const currentPane = process.env.TMUX_PANE ?? "";
   for (const agent of agents) {
-    process.stdout.write(
-      `${pickerRow(agent, showHost, agent.pane === currentPane, agent.host_id === identity?.host_id)}\n`,
-    );
+    process.stdout.write(`${pickerRow(agent, showHost, agent.pane === currentPane)}\n`);
   }
 }
 
@@ -636,20 +620,17 @@ export function registerPick(program: Command): void {
     .command("pick")
     .description("Pick an agent and jump to it")
     .option("--all", "include orchestrated agents")
-    .option("--preview <agent-id>", "render the preview pane for one agent (internal)")
+    .option("--preview <pane>", "render the preview pane for one pane (internal)")
+    .option("--host <host-id>", "host of the pane being previewed (internal)")
     .option("--rows", "print picker rows only (internal, for reload)")
-    .option("--forget <agent-id>", "drop one agent, then print rows (internal)")
-    .action(
-      async (options: PickOptions & { preview?: string; rows?: boolean; forget?: string }) => {
-        const store = openStore();
-        try {
-          if (options.preview) runPreview(store, options.preview);
-          else if (options.forget) await runForget(store, options.forget, options);
-          else if (options.rows) await runRows(store, options);
-          else await runPick(store, options);
-        } finally {
-          store.close();
-        }
-      },
-    );
+    .action(async (options: PickOptions & { preview?: string; rows?: boolean }) => {
+      const store = openStore();
+      try {
+        if (options.preview) runPreview(store, options.preview);
+        else if (options.rows) await runRows(store, options);
+        else await runPick(store, options);
+      } finally {
+        store.close();
+      }
+    });
 }

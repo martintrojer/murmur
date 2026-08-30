@@ -1,4 +1,4 @@
-import type { PaneId, WindowId } from "../../src/ids.js";
+import type { PaneId } from "../../src/ids.js";
 import type { Mux } from "../../src/mux.js";
 
 /**
@@ -15,17 +15,12 @@ import type { Mux } from "../../src/mux.js";
 export function fakeMux(over: Partial<Mux> = {}): Mux {
   return {
     currentWindow: () => null,
-    liveWindows: () => new Set<WindowId>(),
     livePanes: () => new Set<PaneId>(),
     setWindowBadge: () => {},
     attach: () => true,
     capture: () => null,
-    windowNames: () => new Map(),
     windowForPane: () => null,
     panesInWindow: () => [],
-    windowNamed: () => null,
-    selectWindow: () => true,
-    newWindow: () => true,
     clientName: () => null,
     currentTarget: () => null,
     sessionNamed: () => false,

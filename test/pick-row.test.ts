@@ -1,5 +1,4 @@
 import { expect, test } from "vitest";
-import type { Agent } from "../src/agents.js";
 import {
   FILTER_ALIASES,
   FILTER_KEYS,
@@ -8,33 +7,38 @@ import {
   isVisible,
   pickerRow,
 } from "../src/cli/pick.js";
+import { asPaneId, asSessionId, asWindowId } from "../src/ids.js";
 import { tmux } from "../src/mux.js";
+import type { PaneView } from "../src/view.js";
 
-const base = {
-  agent_id: "H:%1",
+const base: PaneView = {
   host_id: "H",
   host: "bubba",
-  state: "blocked",
-  session: "$0",
-  window: "@6",
-  pane: "%1",
+  local: false,
+  pane: asPaneId("%1"),
+  session: asSessionId("$0"),
+  window: asWindowId("@6"),
   session_name: "dev",
   window_name: "editor",
+  activity: "running",
+  attention: ["blocked"],
+  freshness: "fresh",
+  agent_id: "agent-1",
   agent_name: null,
   pi_session: null,
   workstream: "ws",
   role: null,
   cli: "pi",
   driver: "human",
-  event: null,
+  updated_at: null,
+  snapshot_at: null,
   fetched_at: null,
-  stale: false,
-  age_ms: null,
-} as unknown as Agent;
+};
 
+/** The visible label: the row minus its two hidden key columns and the escapes. */
 function label(row: string): string {
   const ansi = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
-  return (row.split("\t")[1] ?? "").replace(ansi, "");
+  return (row.split("\t")[2] ?? "").replace(ansi, "");
 }
 
 test("the state word is in the searchable label, not a hidden column", () => {
@@ -44,7 +48,9 @@ test("the state word is in the searchable label, not a hidden column", () => {
   // returned 0/5 while the ctrl-key state filters worked. Both now match the
   // one field set.
   const row = pickerRow(base, true, false, false);
-  expect(row.split("\t")).toHaveLength(2);
+  // Two hidden key columns -- host and pane -- then the label. The pane is the
+  // address that jumps; the host says whose pane it is.
+  expect(row.split("\t")).toHaveLength(3);
   expect(label(row)).toContain("blocked");
   expect(label(row)).toContain("bubba");
 });
@@ -163,12 +169,12 @@ test("the session name fills the stream column when there is no workstream", () 
   const withStream = label(pickerRow(base, false, false, true));
   expect(withStream).toContain("ws");
 
-  const noStream = { ...base, workstream: null, session_name: "hacking/murmur" } as typeof base;
+  const noStream = { ...base, workstream: null, session_name: "hacking/murmur" };
   expect(label(pickerRow(noStream, false, false, true))).toContain("hacking/murmur");
 });
 
 test("an agent with neither leaves the column empty rather than printing null", () => {
-  const neither = { ...base, workstream: null, session_name: null } as typeof base;
+  const neither = { ...base, workstream: null, session_name: null };
   const text = label(pickerRow(neither, false, false, true));
   expect(text).not.toContain("null");
   expect(text).not.toContain("undefined");
@@ -186,25 +192,32 @@ test("a popup is tmux without a pane", () => {
 
 test("crew agents are hidden unless they need a human", () => {
   // `driver` exists to separate "an agent you are talking to" from "an agent an
-  // orchestrator placed", and the picker hides the latter because its
-  // supervisor consumes the result. Applied wholesale that was wrong in two
-  // states: an orchestrator cannot answer a question meant for a human, and it
-  // may never retry a worker that died. Those rows needed a human and were the
-  // ones a human could not see.
-  const crew = (state: string) =>
-    isVisible({ driver: "orchestrated", state } as unknown as Parameters<typeof isVisible>[0]);
-  const human = (state: string) =>
-    isVisible({ driver: "human", state } as unknown as Parameters<typeof isVisible>[0]);
+  // orchestrator placed", and the picker hides the latter because its supervisor
+  // consumes the result. Applied wholesale that was wrong in two cases: an
+  // orchestrator cannot answer a question meant for a human, and it may never
+  // retry a worker that died. Those rows needed a human and were the ones a
+  // human could not see.
+  //
+  // The question is asked of ATTENTION now, not of a folded state, so a crew
+  // agent that is busy AND blocked is visible -- which the old single-state
+  // version could not express.
+  const crew = (attention: PaneView["attention"]) =>
+    isVisible({ ...base, driver: "orchestrated", attention });
+  const human = (attention: PaneView["attention"]) =>
+    isVisible({ ...base, driver: "human", attention });
 
-  expect(crew("blocked")).toBe(true);
-  expect(crew("crashed")).toBe(true);
-  expect(crew("done")).toBe(false);
-  expect(crew("working")).toBe(false);
-  expect(crew("cleared")).toBe(false);
+  expect(crew(["blocked"])).toBe(true);
+  expect(crew(["crashed"])).toBe(true);
+  expect(crew(["done"])).toBe(false);
+  expect(crew([])).toBe(false);
+  // Busy and blocked at once: one fact does not hide the other.
+  expect(
+    isVisible({ ...base, driver: "orchestrated", activity: "running", attention: ["blocked"] }),
+  ).toBe(true);
 
-  // A human-driven agent is always visible, whatever it is doing.
-  for (const state of ["blocked", "crashed", "done", "working", "cleared"]) {
-    expect(human(state)).toBe(true);
+  // A human-driven pane is always visible, whatever it is doing.
+  for (const attention of [["blocked"], ["crashed"], ["done"], []] as PaneView["attention"][]) {
+    expect(human(attention)).toBe(true);
   }
 });
 

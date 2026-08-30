@@ -1,8 +1,8 @@
 import type { Command } from "commander";
-import { loadIdentity } from "../identity.js";
 import { asPaneId } from "../ids.js";
-import { type Location, type Mux, tmux } from "../mux.js";
+import { type Mux, tmux } from "../mux.js";
 import { openStore, type Store } from "../store.js";
+import type { Location } from "../types.js";
 
 /**
  * The fields a harness may send, as flags or as a JSON object on stdin.
@@ -93,7 +93,8 @@ export function parsePayload(raw: string): NotifyPayload {
 }
 
 /**
- * Record `blocked` for a pane on behalf of a harness that cannot report itself.
+ * Request `blocked` attention for a pane, on behalf of a harness that cannot
+ * report itself.
  *
  * WHY THIS EXISTS. pi reports from inside itself, through the extension. codex
  * and opencode have no such hook -- they can only run a command when something
@@ -102,40 +103,27 @@ export function parsePayload(raw: string): NotifyPayload {
  * harnesses never show `blocked` again, and because the status bar keeps working
  * for pi agents, nothing looks broken.
  *
- * THE OWNERSHIP EXCEPTION, and why it does not reopen the hole 3281cff closed.
+ * WHAT IT CANNOT DO, and this is now structural rather than careful. The only
+ * thing it may write is an `AttentionRequest`, which has no field for an
+ * agent_id, an owner_pid, an activity, or any owner metadata. So the incident
+ * this verb caused -- three `blocked` rows replacing `working` on panes
+ * %250-%252 and nulling agent_name, workstream, role and driver while all three
+ * pi processes were alive -- is not a bug that was fixed, it is a sentence that
+ * can no longer be said. `attention` is keyed on (pane, kind) and the agents
+ * table is untouched by every statement this path runs.
  *
- * That fix established that only a pane's owner may report for it, because six
- * pids had each written `working` to one row: the extension is linked globally,
- * so every short-lived pi launched inside an agent pane loaded it, read the
- * inherited $TMUX_PANE, claimed the parent's agent_id and wrote events. The
- * parent's row then folded off a dead child's pid.
+ * `blocked` only, hard-coded: an external process cannot know that an agent
+ * started, finished or crashed, so those stay the owner's alone. A harness can
+ * request attention and nothing else.
  *
- * Notify is a deliberate exception, and it is a different act:
- *
- *   - A nested pi CLAIMS TO BE the agent in the pane. It writes `working` with
- *     its own pid, so the row now describes a process that is not the agent and
- *     will die while the agent runs on. That is the corruption.
- *   - A notifier SPEAKS ABOUT the agent in the pane, on the agent's behalf, and
- *     says one thing: someone is wanted here. It writes `blocked`, which
- *     carries no pid at all.
- *
- * `pid: null` is what makes the exception safe rather than merely narrow. The
- * pid field is the crash-detection probe -- `fold` turns `working` into
- * `crashed` when the recorded pid is gone -- so a row with no pid makes no claim
- * about any process's liveness and cannot be mistaken for one. There is nothing
- * for a dying notifier to corrupt, because it never asserted it was the agent.
- *
- * The exception is also narrow in what it can say. `blocked` only, hard-coded:
- * an external process has no way to know that an agent started, finished or
- * crashed, so those states stay the owner's alone. A harness can request
- * attention and nothing else.
+ * NO IDENTITY IS NEEDED, which follows from the model rather than being an
+ * exemption: attention is addressed by pane, and a pane needs no host_id to name
+ * it. So this cannot fail for want of `murmur init`.
  *
  * And the pane comes from the harness's own environment. The codex and opencode
  * hooks run as children of the agent process, in its pane, so $TMUX_PANE names
- * exactly the pane whose agent wants attention -- the same resolution the
- * legacy script used. `--pane` overrides it for a notifier that runs elsewhere,
- * which is the honest way to name a pane you are not in, rather than inheriting
- * one by accident.
+ * exactly the pane whose agent wants attention -- the same resolution the legacy
+ * script used. `--pane` overrides it for a notifier that runs elsewhere.
  */
 export function runNotify(
   store: Store,
@@ -143,53 +131,23 @@ export function runNotify(
   payload: NotifyPayload = {},
   mux: Mux = tmux,
 ): boolean {
-  const identity = loadIdentity();
   const location = resolveLocation(input.pane, mux);
-  // No tmux, no pane, or no identity yet. Silent and successful, because this
-  // runs from another program's notification hook: a harness used outside tmux
-  // must not have its own exit code broken by murmur having nothing to record.
-  if (!identity || !location) return false;
+  // No tmux and no pane. Silent and successful, because this runs from another
+  // program's notification hook: a harness used outside tmux must not have its
+  // own exit code broken by murmur having nothing to record.
+  if (!location) return false;
 
   const { source, message } = notifyFields(input, payload);
-  store.append({
-    // `host:pane`, the same identity the extension builds. A bare pane id would
-    // be a SECOND agent for the pane a pi is already reporting for, so a codex
-    // notification would not clear when its window was looked at.
-    agent_id: `${identity.host_id}:${location.pane}`,
-    session: location.session,
-    window: location.window,
-    pane: location.pane,
-    session_name: location.session_name,
-    window_name: location.window_name,
-    agent_name: null,
-    pi_session: null,
-    workstream: null,
-    role: null,
-    // The harness name goes HERE, not in `driver`, and that is the answer to
-    // whether notify needs a third driver value: it does not.
-    //
-    // `driver` answers "who is waiting on this agent" -- a human, or a
-    // supervisor that consumes the result. It is what makes the picker hide
-    // busy crew and what splits the status counts. A codex agent driven by a
-    // human is `human` on exactly that question, and calling it anything else
-    // would hide it from the picker or count it as crew, both wrong.
-    //
-    // `cli` already answers "which harness" -- the extension sets `cli: "pi"`
-    // for the same purpose. `--source codex` belongs there. It is a free-text
-    // string on the wire, so a new harness needs no schema change, whereas a
-    // third `Driver` value would be an enum change every reader must learn.
-    cli: source,
-    driver: "human",
-    kind: "state",
-    state: "blocked",
+  store.requestAttention({
+    kind: "blocked",
+    location,
     message,
-    // See the ownership note above: no pid, because this row makes no claim
-    // about a process. It is what keeps an external writer from being mistaken
-    // for the agent.
-    pid: null,
-    synthetic: false,
-    reason: "notify",
-    extra: {},
+    // The harness name goes here, not in `driver`. `driver` answers "who is
+    // waiting on this agent" -- a human, or a supervisor consuming the result --
+    // and a codex agent driven by a human is `human` on exactly that question.
+    // `source` answers "who asked", which is the free-text field a new harness
+    // needs no schema change for.
+    source,
   });
 
   // The badge, so the status bar reflects it without waiting for a collect.

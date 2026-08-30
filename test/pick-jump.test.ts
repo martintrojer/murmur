@@ -2,18 +2,18 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import type { Agent } from "../src/agents.js";
 import { isVisible, runPick } from "../src/cli/pick.js";
-import { ensureIdentity } from "../src/identity.js";
+import { createIdentity } from "../src/identity.js";
 import { asPaneId, asSessionId, asWindowId } from "../src/ids.js";
-import { type NewEvent, openStore, type Store } from "../src/store.js";
+import { openStore, type Store } from "../src/store.js";
+import type { AgentMeta, Driver, Location } from "../src/types.js";
+import type { PaneView } from "../src/view.js";
 
 let store: Store;
-let hostId: string;
 
 beforeEach(() => {
   vi.stubEnv("MURMUR_STATE_DIR", mkdtempSync(join(tmpdir(), "murmur-pick-jump-")));
-  hostId = ensureIdentity().host_id;
+  createIdentity("here");
   store = openStore();
 });
 
@@ -23,25 +23,40 @@ afterEach(() => {
   process.exitCode = 0;
 });
 
-function event(over: Partial<NewEvent>): NewEvent {
+function location(pane: string): Location {
   return {
-    agent_id: `${hostId}:%1`,
     session: asSessionId("$0"),
     window: asWindowId("@1"),
-    pane: asPaneId("%1"),
+    pane: asPaneId(pane),
+    session_name: "dev",
+    window_name: pane,
+  };
+}
+
+function meta(driver: Driver): AgentMeta {
+  return {
+    agent_name: null,
+    pi_session: null,
     workstream: "murmur",
     role: null,
     cli: "pi",
-    driver: "human",
-    kind: "state",
-    state: "idle",
-    message: "",
-    pid: null,
-    synthetic: false,
-    reason: "",
-    extra: {},
-    ...over,
+    driver,
   };
+}
+
+/** A local pane with a running agent. */
+function agent(pane: string, driver: Driver = "human"): void {
+  const claim = store.claimAgent({
+    location: location(pane),
+    owner_pid: process.pid,
+    meta: meta(driver),
+  });
+  store.setActivity({
+    agent_id: "agent_id" in claim ? claim.agent_id : "",
+    owner_pid: process.pid,
+    activity: "running",
+    location: location(pane),
+  });
 }
 
 /** A picker whose fzf returns `selected`, recording what it was asked to jump to. */
@@ -54,10 +69,10 @@ async function pickReturning(selected: string): Promise<{ jumped: string[]; rows
     {
       fzf: (_args, input) => {
         rows.push(...input.split("\n"));
-        return `${selected}\n`;
+        return selected;
       },
-      jump: (_store, agent: Agent) => {
-        jumped.push(agent.agent_id);
+      jump: (_store, pane: PaneView) => {
+        jumped.push(pane.pane);
         return { ok: true };
       },
     },
@@ -66,59 +81,61 @@ async function pickReturning(selected: string): Promise<{ jumped: string[]; rows
 }
 
 test("a crew row revealed by alt-a can actually be jumped to", async () => {
-  // The bug: `runPick` built its agent list ONCE, filtered by isVisible, and
-  // resolved fzf's answer against that filtered array. alt-a's reveal is a
-  // `reload(... pick --rows --all)` — rows printed by a SUBPROCESS — so the
-  // parent's array never learned about the crew agent whose row fzf was now
+  // The bug: `runPick` built its list ONCE, filtered by isVisible, and resolved
+  // fzf's answer against that filtered array. alt-a's reveal is a
+  // `reload(... pick --rows --all)` -- rows printed by a SUBPROCESS -- so the
+  // parent's array never learned about the crew pane whose row fzf was now
   // displaying. find() returned undefined and the handler did a bare `return`:
-  // enter did nothing, exit 0, no message. Shipped in ff1a306, which tested the
-  // row rendering but never the jump.
+  // enter did nothing, exit 0, no message.
   //
-  // This test drives the parent WITHOUT --all (the state the user is in when
-  // they press alt-a) and hands back the hidden agent's id, which is exactly
-  // what fzf does after a reveal.
-  const crew = `${hostId}:%9`;
-  store.append(event({}));
-  store.append(
-    event({
-      agent_id: crew,
-      window: asWindowId("@9"),
-      pane: asPaneId("%9"),
-      driver: "orchestrated",
-      state: "working",
-      // A local `working` event with no pid folds to `crashed`, which isVisible
-      // DOES show — the fold cannot trust a working claim it cannot verify. Own
-      // pid so the row folds to a genuinely busy crew agent, the hidden case.
-      pid: process.pid,
-    }),
-  );
+  // Drives the parent WITHOUT --all (the state the user is in when they press
+  // alt-a) and hands back the hidden pane's key, which is what fzf does after a
+  // reveal.
+  agent("%1");
+  agent("%9", "orchestrated");
 
-  const { jumped, rows } = await pickReturning(crew);
-  // Precondition: this agent really is filtered out of the default display,
-  // so the test is exercising the gap and not a coincidence. If isVisible ever
-  // starts showing busy crew, this line fails and says so rather than letting
-  // the assertion below pass for the wrong reason.
-  expect(isVisible({ driver: "orchestrated", state: "working" } as unknown as Agent)).toBe(false);
-  expect(rows.some((row) => row.startsWith(crew))).toBe(false);
+  const { jumped, rows } = await pickReturning("LOCAL\t%9\tlabel");
 
-  expect(jumped).toEqual([crew]);
+  // Precondition: this pane really is filtered out of the default display, so
+  // the test exercises the gap rather than a coincidence.
+  expect(isVisible({ driver: "orchestrated", attention: [] } as unknown as PaneView)).toBe(false);
+  expect(rows.some((row) => row.split("\t")[1] === "%9")).toBe(false);
+
+  expect(jumped).toEqual(["%9"]);
   expect(process.exitCode).not.toBe(1);
 });
 
-test("selecting an agent that is genuinely gone says so instead of exiting silently", async () => {
-  // The other half: once the lookup resolves against the unfiltered list, a
-  // miss means the agent disappeared between the collect and the keypress. In a
-  // popup — the normal way to run this — the window closes the moment runPick
-  // returns, so a bare return is indistinguishable from a dead key. Same
-  // argument the jump.ok branch two lines below already makes.
-  store.append(event({}));
+test("selecting a pane that is genuinely gone says so instead of exiting silently", async () => {
+  // Once the lookup resolves against the unfiltered list, a miss means the pane
+  // disappeared between the collect and the keypress. In a popup -- the normal
+  // way to run this -- the window closes the moment runPick returns, so a bare
+  // return is indistinguishable from a dead key.
+  agent("%1");
   const stderr = vi.spyOn(process.stderr, "write").mockReturnValue(true);
   try {
-    const { jumped } = await pickReturning(`${hostId}:%404`);
+    const { jumped } = await pickReturning("LOCAL\t%404\tlabel");
+
     expect(jumped).toEqual([]);
     expect(process.exitCode).toBe(1);
-    expect(stderr.mock.calls.map(([text]) => String(text)).join("")).toContain(`${hostId}:%404`);
+    expect(stderr.mock.calls.map(([text]) => String(text)).join("")).toContain("%404");
   } finally {
     stderr.mockRestore();
   }
+});
+
+test("an attention-only pane is selectable, which keying on an agent id would break", async () => {
+  // A codex pane has no agent row and therefore no agent id. Keying the picker
+  // on one would make exactly the rows that need a human unselectable -- and
+  // those rows are the reason the notify verb exists.
+  store.requestAttention({
+    kind: "blocked",
+    location: location("%7"),
+    message: "needs input",
+    source: "codex",
+  });
+
+  const { jumped, rows } = await pickReturning("LOCAL\t%7\tlabel");
+
+  expect(rows.some((row) => row.split("\t")[1] === "%7")).toBe(true);
+  expect(jumped).toEqual(["%7"]);
 });

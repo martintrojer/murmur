@@ -15,6 +15,10 @@ export function configDir(): string {
   );
 }
 
+/**
+ * The current-state database. Not `events.db`, which held the deleted event log
+ * and is removed on open rather than migrated.
+ */
 export function dbPath(): string {
-  return join(stateDir(), "events.db");
+  return join(stateDir(), "state.db");
 }

@@ -3,13 +3,7 @@ import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test, vi } from "vitest";
-import {
-  driverFromEnv,
-  endState,
-  mayReport,
-  ownsPane,
-  settledState,
-} from "../src/extension/decide.js";
+import { driverFromEnv, settledState } from "../src/extension/decide.js";
 import { builtArtifact, runBuiltCli } from "./helpers/built.js";
 
 /**
@@ -33,21 +27,25 @@ async function until(condition: () => boolean, _label: string): Promise<void> {
   // behaviour. Let the caller's expect() report it.
 }
 
-test("agent_end reports done only when unseen and not mu-managed", () => {
-  expect(endState(false, false)).toBe("done");
-  expect(endState(true, false)).toBe("cleared");
-  expect(endState(false, true)).toBe("cleared");
-});
-
 test("agent_settled asks for a human only when unseen and not mu-managed", () => {
-  // The whole point of the state. Unfocused plus settled means the agent is
+  // The whole point of the event. Unfocused plus settled means the agent is
   // finished and waiting on you and you are not looking; anything else has
-  // nothing to request, and agent_end has already written the right row.
-  expect(settledState(false, false)).toBe("blocked");
+  // nothing to request.
+  //
+  // `done`, not `blocked`. Completion is what an owner can report; `blocked` is
+  // never authored by an owner, because "someone is wanted here" is a claim only
+  // an outside notifier is in a position to make. That split is what makes
+  // activity and attention independent rather than two spellings of one enum.
+  expect(settledState(false, false)).toBe("done");
   expect(settledState(true, false)).toBeNull();
   expect(settledState(false, true)).toBeNull();
   expect(settledState(true, true)).toBeNull();
 });
+
+// `endState` is gone with `cleared`: agent_end now writes activity `stopped`
+// unconditionally, and there is no per-focus, per-driver decision left to make
+// about it. The focus and driver rules survive only where they belong, on
+// whether attention is raised at all.
 
 test("driver is orchestrated only under a supervisor", () => {
   expect(driverFromEnv({ MU_MANAGED_AGENT: "1" })).toBe("orchestrated");
@@ -159,7 +157,11 @@ test("a failed append closes the store it is dropping", async () => {
     openStore: () => {
       opened += 1;
       return {
-        append: () => {
+        claimAgent: () => ({ outcome: "claimed", agent_id: "a1" }),
+        setActivity: () => {
+          throw new Error("database is locked");
+        },
+        releaseAgent: () => {
           throw new Error("database is locked");
         },
         close: () => {
@@ -223,15 +225,18 @@ test("a transient write failure does not silence the agent for the rest of its l
     openStore: () => {
       opened += 1;
       return {
-        append: (event: { state: string }) => {
+        claimAgent: () => ({ outcome: "claimed", agent_id: "a1" }),
+        setActivity: (update: { activity: string }) => {
           // Fail once, then work -- the shape of a lock contention, not of a
           // missing install.
           if (failNext) {
             failNext = false;
             throw new Error("database is locked");
           }
-          appended.push(event.state);
+          appended.push(update.activity);
+          return true;
         },
+        releaseAgent: () => true,
         close: () => {},
       };
     },
@@ -266,8 +271,8 @@ test("a transient write failure does not silence the agent for the rest of its l
   // must be reopened and the event recorded, not skipped because a previous
   // write failed.
   await handlers.get("agent_start")?.();
-  await until(() => appended.length > 0, "second turn's append");
-  expect(appended).toEqual(["working"]);
+  await until(() => appended.length > 0, "second turn's write");
+  expect(appended).toEqual(["running"]);
   expect(opened).toBe(2);
 
   vi.doUnmock("@martintrojer/murmur/extension-store");
@@ -326,20 +331,23 @@ test("a pane moved to another window keeps its identity and stops badging the ol
   // break-pane, or a keybinding wrapping them) and changes only the window id.
   // Verified against a real tmux: pane %0 went from @0 to @1.
   //
-  // Resolving the window once at startup broke three things at once: the badge
-  // was painted on the window the agent had left, every later event recorded a
-  // window the agent was no longer in (so a jump went to the wrong place), and
-  // `liveWindows()` -- which prunes rows whose window is gone -- deleted the
-  // agent as dead when the old window was closed.
+  // Resolving the window once at startup broke two things at once: the badge was
+  // painted on the window the agent had left, and every later write recorded a
+  // window the agent was no longer in, so a jump went to the wrong place. The
+  // third symptom -- a window-keyed sweep deleting the agent -- is gone with
+  // `liveWindows` itself.
   const appended: { window: string; agent_id: string }[] = [];
   const badges: [string, string | null][] = [];
 
   vi.doMock("@martintrojer/murmur/extension-store", () => ({
     loadIdentity: () => ({ host_id: "H", display_name: "h" }),
     openStore: () => ({
-      append: (event: { window: string; agent_id: string }) => {
-        appended.push({ window: event.window, agent_id: event.agent_id });
+      claimAgent: () => ({ outcome: "claimed", agent_id: "a1" }),
+      setActivity: (update: { agent_id: string; location: { window: string } }) => {
+        appended.push({ window: update.location.window, agent_id: update.agent_id });
+        return true;
       },
+      releaseAgent: () => true,
       close: () => {},
     }),
   }));
@@ -375,15 +383,16 @@ test("a pane moved to another window keeps its identity and stops badging the ol
   // The second event records the NEW window, not the startup one.
   expect(appended.map((event) => event.window)).toEqual(["@1", "@2"]);
 
-  // Identity is the pane, so it survives the move: a new agent_id would make
-  // the moved agent a second row and orphan the first.
-  expect(new Set(appended.map((event) => event.agent_id))).toEqual(new Set(["H:%1"]));
+  // One agent row throughout: the pane is the address and the agent_id belongs
+  // to the PROCESS, so neither changes when the window does. A new id here would
+  // make the moved agent a second row and orphan the first.
+  expect(new Set(appended.map((event) => event.agent_id))).toEqual(new Set(["a1"]));
 
-  // The old window's badge is cleared, or a `working` glyph sits forever on a
+  // The old window's badge is cleared, or a `running` glyph sits forever on a
   // window with no agent. Nothing else can clear it: the badge belongs to the
   // window, and only this process knows the agent left.
   expect(badges).toContainEqual(["@1", null]);
-  expect(badges.at(-1)).toEqual(["@2", "working"]);
+  expect(badges.at(-1)).toEqual(["@2", "running"]);
 
   vi.doUnmock("@martintrojer/murmur/extension-store");
   vi.doUnmock("../src/mux.js");
@@ -424,7 +433,13 @@ test("session_shutdown does not permanently silence the extension, because /relo
   vi.doMock("@martintrojer/murmur/extension-store", () => ({
     loadIdentity: () => ({ host_id: "H", display_name: "h" }),
     openStore: () => ({
-      append: (event: { state: string }) => appended.push(event.state),
+      claimAgent: () => ({ outcome: "claimed", agent_id: "a1" }),
+      setActivity: (update: { activity: string }) => {
+        appended.push(update.activity);
+        return true;
+      },
+      requestAttention: (request: { kind: string }) => appended.push(request.kind),
+      releaseAgent: () => true,
       close: () => {},
     }),
   }));
@@ -454,21 +469,22 @@ test("session_shutdown does not permanently silence the extension, because /relo
   await handlers.get("agent_start")?.();
   await until(() => appended.length === 1, "first turn");
   await handlers.get("session_shutdown")?.();
-  await until(() => appended.length === 2, "reload's own clear");
   await handlers.get("session_start")?.();
   await handlers.get("agent_start")?.();
-  await until(() => appended.length === 3, "turn after reload");
+  await until(() => appended.length === 2, "turn after reload");
 
-  // The turn after the reload must be recorded. Before the fix this was
-  // ["working", "cleared"] -- the reload's own clear, and then silence.
-  expect(appended).toEqual(["working", "cleared", "working"]);
+  // The turn after the reload must be recorded. Before the fix this was one
+  // turn and then silence. session_shutdown itself writes no activity now -- it
+  // RELEASES the agent row, which is not a state anyone reports -- so the
+  // sequence is one entry per real turn.
+  expect(appended).toEqual(["running", "running"]);
 
   // And it must keep working across repeated reloads, not just the first.
   await handlers.get("session_shutdown")?.();
   await handlers.get("session_start")?.();
   await handlers.get("agent_start")?.();
-  await until(() => appended.length === 5, "turn after a second reload");
-  expect(appended).toEqual(["working", "cleared", "working", "cleared", "working"]);
+  await until(() => appended.length === 3, "turn after a second reload");
+  expect(appended).toEqual(["running", "running", "running"]);
 
   vi.doUnmock("@martintrojer/murmur/extension-store");
   vi.doUnmock("../src/mux.js");
@@ -482,13 +498,19 @@ test("session_start re-arms an extension that gave up, so a reload is a real rec
   // murmur, or run `murmur init`. Without re-arming, the fix would not take
   // effect until the agent was restarted, and /reload would look like it did
   // nothing.
-  let identity: { host_id: string } | null = null;
+  let identity: { host_id: string; display_name: string } | null = null;
   const appended: string[] = [];
 
   vi.doMock("@martintrojer/murmur/extension-store", () => ({
     loadIdentity: () => identity,
     openStore: () => ({
-      append: (event: { state: string }) => appended.push(event.state),
+      claimAgent: () => ({ outcome: "claimed", agent_id: "a1" }),
+      setActivity: (update: { activity: string }) => {
+        appended.push(update.activity);
+        return true;
+      },
+      requestAttention: (request: { kind: string }) => appended.push(request.kind),
+      releaseAgent: () => true,
       close: () => {},
     }),
   }));
@@ -524,12 +546,12 @@ test("session_start re-arms an extension that gave up, so a reload is a real rec
   // even with no re-arm at all -- the test would be asserting the wrong
   // mechanism. Confirmed by mutation: with the pair, removing the re-arm still
   // passed.
-  identity = { host_id: "H" };
+  identity = { host_id: "H", display_name: "h" };
   await handlers.get("session_start")?.();
   await handlers.get("agent_start")?.();
-  await until(() => appended.includes("working"), "append after init + reload");
+  await until(() => appended.includes("running"), "write after init + reload");
 
-  expect(appended).toContain("working");
+  expect(appended).toContain("running");
 
   vi.doUnmock("@martintrojer/murmur/extension-store");
   vi.doUnmock("../src/mux.js");
@@ -558,7 +580,13 @@ async function driveExtension(options: { focused: boolean; muManaged?: boolean }
   vi.doMock("@martintrojer/murmur/extension-store", () => ({
     loadIdentity: () => ({ host_id: "H", display_name: "h" }),
     openStore: () => ({
-      append: (event: { state: string }) => appended.push(event.state),
+      claimAgent: () => ({ outcome: "claimed", agent_id: "a1" }),
+      setActivity: (update: { activity: string }) => {
+        appended.push(update.activity);
+        return true;
+      },
+      requestAttention: (request: { kind: string }) => appended.push(request.kind),
+      releaseAgent: () => true,
       close: () => {},
     }),
   }));
@@ -607,16 +635,18 @@ test("an unfocused agent that settles asks for a human, which is what blocked me
   const { handlers, appended, badges } = await driveExtension({ focused: false });
 
   await handlers.get("agent_start")?.();
-  await until(() => appended.length === 1, "the turn's working");
+  await until(() => appended.length === 1, "the turn's running");
   await handlers.get("agent_end")?.();
-  await until(() => appended.length === 2, "the turn's done");
+  await until(() => appended.length === 2, "the turn's stopped");
   await handlers.get("agent_settled")?.();
-  await until(() => appended.length === 3, "the settle's blocked");
+  await until(() => appended.length === 3, "the settle's done attention");
 
-  // The full sequence one unfocused turn now writes. `blocked` is LAST, which
-  // is what makes the fold report it -- see the decision table in decide.ts.
-  expect(appended).toEqual(["working", "done", "blocked"]);
-  expect(badges).toEqual(["working", "done", "blocked"]);
+  // Two axes, written separately, and the order between them no longer decides
+  // anything: activity went running then stopped, and attention is `done`. Under
+  // the event model this was one last-writer-wins sequence, so `blocked` HAD to
+  // be last or the fold reported the wrong thing. Nothing here depends on order.
+  expect(appended).toEqual(["running", "stopped", "done"]);
+  expect(badges).toEqual(["running", null, "done"]);
 
   unmockExtension();
 });
@@ -633,11 +663,11 @@ test("a focused agent that settles says nothing, because the user is already the
   await until(() => appended.length === 2, "the turn's cleared");
   await handlers.get("agent_settled")?.();
   // Waits for something that must not arrive, so the assertion is not just
-  // "the append had not happened yet".
-  await until(() => appended.length === 3, "an append that must not happen");
+  // "the write had not happened yet".
+  await until(() => appended.length === 3, "a write that must not happen");
 
-  expect(appended).toEqual(["working", "cleared"]);
-  expect(badges).toEqual(["working", null]);
+  expect(appended).toEqual(["running", "stopped"]);
+  expect(badges).toEqual(["running", null]);
 
   unmockExtension();
 });
@@ -651,24 +681,28 @@ test("an orchestrated agent that settles stays out of the human's status bar", a
   const { handlers, appended } = await driveExtension({ focused: false, muManaged: true });
 
   await handlers.get("agent_start")?.();
-  await until(() => appended.length === 1, "the turn's working");
+  await until(() => appended.length === 1, "the turn's running");
   await handlers.get("agent_end")?.();
-  await until(() => appended.length === 2, "the turn's cleared");
+  await until(() => appended.length === 2, "the turn's stopped");
   await handlers.get("agent_settled")?.();
-  await until(() => appended.length === 3, "an append that must not happen");
+  await until(() => appended.length === 3, "a write that must not happen");
 
-  expect(appended).toEqual(["working", "cleared"]);
+  expect(appended).toEqual(["running", "stopped"]);
 
   unmockExtension();
 });
 
-test("a new run after a settle overwrites blocked with working, not the other way round", async () => {
-  // The cbcd9c4 failure mode, guarded. That commit let a clear path overwrite
-  // `working` and wiped 50 of 84 turns on one agent. `blocked` is appended
-  // after a run ends, and pi re-enters the loop for a retry, a compaction, or a
-  // queued continuation -- each with its own agent_start. The extension's
-  // promise queue serialises the handlers, so the NEXT run's `working` is
-  // strictly the later write and a stale blocked can never mask a live agent.
+test("a new run after a settle cannot be masked by the attention it left", async () => {
+  // The cbcd9c4 failure mode, and it is now structurally impossible rather than
+  // ordered-correctly. That commit let a clear path overwrite `working` and
+  // wiped 50 of 84 turns on one agent, because attention and activity were one
+  // last-writer-wins field: a `blocked` row written at settle could mask a live
+  // agent's `working` if the writes landed out of order.
+  //
+  // They are separate rows now. A settle's `done` attention and the next run's
+  // `running` activity cannot overwrite each other, whatever order they arrive
+  // in -- a running agent with unacknowledged attention is a valid state that
+  // surfaces show as both.
   const { handlers, appended } = await driveExtension({ focused: false });
 
   await handlers.get("agent_start")?.();
@@ -676,10 +710,9 @@ test("a new run after a settle overwrites blocked with working, not the other wa
   await handlers.get("agent_settled")?.();
   await until(() => appended.length === 3, "the first run, settled");
   await handlers.get("agent_start")?.();
-  await until(() => appended.length === 4, "the next run's working");
+  await until(() => appended.length === 4, "the next run's running");
 
-  expect(appended).toEqual(["working", "done", "blocked", "working"]);
-  expect(appended.at(-1)).toBe("working");
+  expect(appended).toEqual(["running", "stopped", "done", "running"]);
 
   unmockExtension();
 });
@@ -702,56 +735,171 @@ test("agent_settled still reports after a /reload, because session_shutdown is n
   await handlers.get("agent_start")?.();
   await handlers.get("agent_end")?.();
   await handlers.get("agent_settled")?.();
-  await until(() => appended.length === 7, "the run after the reload, settled");
+  await until(() => appended.length === 6, "the run after the reload, settled");
 
-  expect(appended).toEqual(["working", "done", "blocked", "cleared", "working", "done", "blocked"]);
+  expect(appended).toEqual(["running", "stopped", "done", "running", "stopped", "done"]);
 
   unmockExtension();
 });
 
-test("only the pane's own pi claims it, and a nested pi stays silent", () => {
-  // The six-pid bug in one function. `$TMUX_PANE` is inherited, so a pi
-  // launched from inside an agent pane resolves the PARENT's pane and, with the
-  // extension linked globally, writes events as the parent agent.
-  const unclaimed: NodeJS.ProcessEnv = {};
-  expect(ownsPane(unclaimed, "%244", 61980)).toBe(true);
+test("a refused claim means no report and no badge, for the life of the process", async () => {
+  // The six-pid bug, at the decision boundary. $TMUX_PANE is inherited, so a pi
+  // launched inside an agent pane resolves the PARENT's pane and, with the
+  // extension linked globally, used to write as the parent agent.
+  //
+  // The whole defence is now one `claimAgent` answer. `MURMUR_PANE_OWNER`,
+  // `ownsPane`, `ownerClaim` and `mayReport` are deleted: they needed the
+  // environment as transport, so a process launched in a way that dropped it was
+  // undefended, and the marker's own staleness rules were a second thing to get
+  // right. A refusal from the database needs neither.
+  const writes: string[] = [];
+  const badges: (string | null)[] = [];
 
-  // Claimed for THIS pane by ANOTHER pid: whoever is asking is a descendant,
-  // not the owner.
-  expect(ownsPane({ MURMUR_PANE_OWNER: "%244:61980" }, "%244", 80183)).toBe(false);
+  vi.doMock("@martintrojer/murmur/extension-store", () => ({
+    loadIdentity: () => ({ host_id: "H", display_name: "h" }),
+    openStore: () => ({
+      claimAgent: () => ({ outcome: "refused", held_by_pid: 61980 }),
+      setActivity: (update: { activity: string }) => {
+        writes.push(update.activity);
+        return true;
+      },
+      requestAttention: (request: { kind: string }) => writes.push(request.kind),
+      releaseAgent: () => true,
+      close: () => {},
+    }),
+  }));
+  vi.doMock("node:child_process", () => ({ execFileSync: () => "0" }));
+  vi.doMock("../src/mux.js", () => ({
+    tmux: {
+      currentWindow: () => ({
+        session: "$0",
+        window: "@1",
+        pane: "%1",
+        session_name: null,
+        window_name: null,
+      }),
+      setWindowBadge: (_window: string, badge: string | null) => void badges.push(badge),
+    },
+  }));
 
-  // Claimed for a DIFFERENT pane, which is what a marker that outlived its pane
-  // looks like. It says nothing about this pane, so the agent here is the owner
-  // -- the alternative is silencing a legitimate agent forever, which is the
-  // worst failure this tool has.
-  expect(ownsPane({ MURMUR_PANE_OWNER: "%241:79154" }, "%244", 61980)).toBe(true);
+  vi.resetModules();
+  const { default: murmurPi } = await import("../src/extension/murmur-pi.js");
+  const handlers = new Map<string, () => void | Promise<void>>();
+  murmurPi({ on: (event, handler) => handlers.set(event, handler) });
+
+  // A full turn, plus a settle, plus a /reload cycle. None of it may produce a
+  // write or a badge: a nested agent is deliberately invisible, and the refusal
+  // is permanent -- `session_start` must NOT re-arm it, or the nested pi would
+  // start reporting as the parent after the first /reload.
+  await handlers.get("agent_start")?.();
+  await handlers.get("agent_end")?.();
+  await handlers.get("agent_settled")?.();
+  await handlers.get("session_shutdown")?.();
+  await handlers.get("session_start")?.();
+  await handlers.get("agent_start")?.();
+  await until(() => writes.length > 0 || badges.length > 0, "a write that must not happen");
+
+  expect(writes).toEqual([]);
+  expect(badges).toEqual([]);
+
+  unmockExtension();
 });
 
-test("a pi recognises its own claim, so /reload does not silence the real agent", () => {
-  // Found by a failing test, not by reading: pi calls the extension FACTORY
-  // again on /reload, in the same process. A marker that could not identify its
-  // own author would make the owner treat itself as nested on the first
-  // /reload and go silent for the rest of the session -- a strictly worse
-  // version of the bug being fixed, since the parent row would then never
-  // update at all. This is why the claim carries a pid rather than being "1".
-  expect(ownsPane({ MURMUR_PANE_OWNER: "%244:61980" }, "%244", 61980)).toBe(true);
+test("a claim the store retained keeps reporting, which is what /reload needs", async () => {
+  // pi re-runs the extension factory on /reload, in the same process. A check
+  // that could not recognise its own claim would treat the owner as nested and
+  // silence the real agent for the rest of the session -- a strictly worse
+  // version of the bug being fixed. `retained` is the store's answer to that,
+  // and it is keyed on the owner pid rather than on an environment marker.
+  const outcomes = ["claimed", "retained"] as const;
+  for (const outcome of outcomes) {
+    const writes: string[] = [];
+    vi.doMock("@martintrojer/murmur/extension-store", () => ({
+      loadIdentity: () => ({ host_id: "H", display_name: "h" }),
+      openStore: () => ({
+        claimAgent: () => ({ outcome, agent_id: "a1" }),
+        setActivity: (update: { activity: string }) => {
+          writes.push(update.activity);
+          return true;
+        },
+        releaseAgent: () => true,
+        close: () => {},
+      }),
+    }));
+    vi.doMock("../src/mux.js", () => ({
+      tmux: {
+        currentWindow: () => ({
+          session: "$0",
+          window: "@1",
+          pane: "%1",
+          session_name: null,
+          window_name: null,
+        }),
+        setWindowBadge: () => {},
+      },
+    }));
+
+    vi.resetModules();
+    const { default: murmurPi } = await import("../src/extension/murmur-pi.js");
+    const handlers = new Map<string, () => void | Promise<void>>();
+    murmurPi({ on: (event, handler) => handlers.set(event, handler) });
+
+    await handlers.get("agent_start")?.();
+    await until(() => writes.length === 1, `${outcome} reports`);
+    expect(writes, outcome).toEqual(["running"]);
+
+    unmockExtension();
+  }
 });
 
-test("a pid may not supersede a live pid, but takes over from a dead one", () => {
-  const alive = () => true;
-  const dead = () => false;
+test("a stale owner's write returning false is silence, not an error", async () => {
+  // `setActivity` is keyed on (agent_id, owner_pid), so a process whose pane was
+  // taken over by a replacement owner matches nothing and gets `false`. That is
+  // not a failure to retry: it means this process is no longer the owner of
+  // record, and the correct response is to say nothing and keep the handle.
+  let closes = 0;
+  let calls = 0;
 
-  // The floor that alone would have prevented the corruption: two live
-  // processes cannot both be the agent in one pane.
-  expect(mayReport(80183, 61980, alive)).toBe(false);
-  // A legitimate RESTART. Pane %89 has two pids for good reason: the old agent
-  // exited and a new one owns the pane now. No grace period, no horizon.
-  expect(mayReport(80183, 61980, dead)).toBe(true);
-  // The owner reporting its own next event, which is nearly every event.
-  expect(mayReport(61980, 61980, alive)).toBe(true);
-  // Nothing recorded, or a row with no pid (done/blocked/cleared all carry
-  // null): nothing to protect, so the write proceeds. Fails OPEN on purpose --
-  // pidAlive says "alive" when it cannot answer, which would otherwise REJECT.
-  expect(mayReport(61980, null, alive)).toBe(true);
-  expect(mayReport(61980, 0, alive)).toBe(true);
+  vi.doMock("@martintrojer/murmur/extension-store", () => ({
+    loadIdentity: () => ({ host_id: "H", display_name: "h" }),
+    openStore: () => ({
+      claimAgent: () => ({ outcome: "claimed", agent_id: "a1" }),
+      setActivity: () => {
+        calls += 1;
+        return false;
+      },
+      releaseAgent: () => false,
+      close: () => {
+        closes += 1;
+      },
+    }),
+  }));
+  vi.doMock("../src/mux.js", () => ({
+    tmux: {
+      currentWindow: () => ({
+        session: "$0",
+        window: "@1",
+        pane: "%1",
+        session_name: null,
+        window_name: null,
+      }),
+      setWindowBadge: () => {},
+    },
+  }));
+
+  vi.resetModules();
+  const { default: murmurPi } = await import("../src/extension/murmur-pi.js");
+  const handlers = new Map<string, () => void | Promise<void>>();
+  murmurPi({ on: (event, handler) => handlers.set(event, handler) });
+
+  await handlers.get("agent_start")?.();
+  await until(() => calls === 1, "the first refused write");
+  await handlers.get("agent_start")?.();
+  await until(() => calls === 2, "the second refused write");
+
+  // Still trying, still holding the same handle: a false is not a dropped store.
+  expect(calls).toBe(2);
+  expect(closes).toBe(0);
+
+  unmockExtension();
 });

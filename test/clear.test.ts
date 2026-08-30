@@ -3,311 +3,183 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, expect, test } from "vitest";
 import { clearPane } from "../src/cli/clear.js";
-import { ensureIdentity } from "../src/identity.js";
-import { asPaneId, asSessionId, asWindowId } from "../src/ids.js";
-import { type Mux, pidAlive } from "../src/mux.js";
-import { openStore } from "../src/store.js";
+import { asPaneId, asSessionId, asWindowId, type WindowId } from "../src/ids.js";
+import { openStore, type Store } from "../src/store.js";
+import type { AgentMeta, AttentionKind, Location } from "../src/types.js";
 import { fakeMux } from "./helpers/fake-mux.js";
 
 beforeEach(() => {
   process.env.MURMUR_STATE_DIR = mkdtempSync(join(tmpdir(), "murmur-clear-"));
 });
 
-test("clearing a sibling pane does not clear the agent in the same window", () => {
-  const identity = ensureIdentity();
-  const store = openStore();
-  store.append({
-    agent_id: `${identity.host_id}:%1`,
+function location(pane: string, window = "@1"): Location {
+  return {
     session: asSessionId("$1"),
-    window: asWindowId("@1"),
-    pane: asPaneId("%1"),
-    workstream: "murmur",
-    role: null,
-    cli: "pi",
-    driver: "human",
-    kind: "state",
-    state: "done",
-    message: "",
-    pid: null,
-    synthetic: false,
-    reason: "",
-    extra: {},
-  });
-  store.close();
+    window: asWindowId(window),
+    pane: asPaneId(pane),
+    session_name: null,
+    window_name: null,
+  };
+}
 
-  const clearedWindows: string[] = [];
-  const mux = fakeMux({ setWindowBadge: (window) => void clearedWindows.push(window) });
-
-  clearPane("%2", mux);
-
-  const afterWrongPane = openStore();
-  expect(afterWrongPane.allEvents().filter((event) => event.state === "cleared")).toHaveLength(0);
-  afterWrongPane.close();
-  expect(clearedWindows).toEqual([]);
-
-  clearPane("%1", mux);
-
-  const afterAgentPane = openStore();
-  expect(afterAgentPane.allEvents().at(-1)).toMatchObject({
-    agent_id: `${identity.host_id}:%1`,
-    pane: asPaneId("%1"),
-    window: asWindowId("@1"),
-    state: "cleared",
-  });
-  afterAgentPane.close();
-  expect(clearedWindows).toEqual(["@1"]);
-});
-
-test("a pane murmur does not own still gets its badge cleared", () => {
-  // The tms picker and the status bar read @agent_state from tmux, not from
-  // murmur. A badge murmur never wrote — an orphan from the agent-attention
-  // era, or a window it never recorded — used to be unclearable: clear() bailed
-  // when it found no event, so the glyph sat in the picker forever because
-  // nothing else would ever come along to clear it. The badge is tmux's.
-  const cleared: (string | null)[] = [];
-  const mux = fakeMux({
-    setWindowBadge: (window, state) => {
-      cleared.push(state === null ? window : null);
-    },
-    windowForPane: () => asWindowId("@42"),
-  });
-  clearPane("%unknown", mux);
-  expect(cleared).toEqual(["@42"]);
-});
-
-const NEW_EVENT = {
-  session: asSessionId("$1"),
-  window: asWindowId("@1"),
-  pane: asPaneId("%1"),
-  session_name: null,
-  window_name: null,
-  agent_name: null,
+const META: AgentMeta = {
+  agent_name: "worker-1",
   pi_session: null,
   workstream: "murmur",
   role: null,
   cli: "pi",
-  driver: "human" as const,
-  kind: "state",
-  state: "done",
-  message: "",
-  pid: null,
-  synthetic: false,
-  reason: "",
-  extra: {},
+  driver: "human",
 };
 
-const NOOP_MUX: Mux = fakeMux();
-
-test("a sibling shell pane does not clear the agent's badge", () => {
-  // The badge is a window option, but "the user looked" is only true of one
-  // pane. Clearing on any pane in the window let a shell pane next to an agent
-  // wipe its badge on focus -- the exact case --pane exists to distinguish. The
-  // existing sibling test above never caught this: its fake mux returns no
-  // panes, so the branch was unreachable.
-  const identity = ensureIdentity();
+/** Seed the store, then close it: `clearPane` opens its own handle. */
+function seed(work: (store: Store) => void): void {
   const store = openStore();
-  store.append({ ...NEW_EVENT, agent_id: `${identity.host_id}:%agent`, pane: asPaneId("%agent") });
-  store.close();
-
-  const cleared: string[] = [];
-  const mux: Mux = {
-    ...NOOP_MUX,
-    windowForPane: () => asWindowId("@1"),
-    panesInWindow: () => [asPaneId("%agent"), asPaneId("%shell")],
-    setWindowBadge: (window, state) => {
-      if (state === null) cleared.push(window);
-    },
-  };
-  // Focusing the shell, which murmur has no row for.
-  clearPane("%shell", mux);
-  expect(cleared).toEqual([]);
-});
-
-test("an already-cleared row still clears a stale badge", () => {
-  // The row and the badge can disagree: a `cleared` event written by a path
-  // that did not touch tmux leaves the option set, and returning early on
-  // state === "cleared" meant nothing ever reconciled them. A done badge then
-  // sat in the status bar and the tms picker permanently.
-  const identity = ensureIdentity();
-  const store = openStore();
-  store.append({
-    ...NEW_EVENT,
-    agent_id: `${identity.host_id}:%p`,
-    pane: asPaneId("%p"),
-    window: asWindowId("@5"),
-    state: "cleared",
-  });
-  store.close();
-
-  const cleared: string[] = [];
-  const mux: Mux = {
-    ...NOOP_MUX,
-    windowForPane: () => asWindowId("@5"),
-    panesInWindow: () => [asPaneId("%p")],
-    setWindowBadge: (window, state) => {
-      if (state === null) cleared.push(window);
-    },
-  };
-  clearPane("%p", mux);
-  expect(cleared).toEqual(["@5"]);
-});
-
-test("focusing a working agent does not clear it", () => {
-  // The bug, found by watching a real session: 50 of 84 turns on the author's
-  // own agent were cleared within a minute of starting, several within seconds.
-  // Switching back to an agent's pane while it was thinking wiped its state.
-  //
-  // `clear` runs from tmux focus hooks, so the only fact it knows is "the user
-  // looked at this pane". That cancels an attention REQUEST -- blocked, done,
-  // crashed -- but `working` is not a request: it is the agent reporting what it
-  // is doing, and looking at it does not make it stop. Overwriting it also
-  // breaks murmur's own rule that facts only the author can know are authored
-  // by the author, since only the agent knows whether it is still working.
-  //
-  // The consequence was severe because `working` is only re-asserted at the
-  // start of a turn: once cleared mid-turn, the agent read idle until its NEXT
-  // turn began, which for a long turn is many minutes.
-  //
-  // The pid must be a LIVE one. This test used to seed 4242 and pass, but only
-  // because clear read the raw row: a dead pid is the CRASHED case, which focus
-  // must clear, so the fixture was asserting the opposite of its own name once
-  // clear started folding. `process.pid` is alive by construction.
-  const identity = ensureIdentity();
-  const store = openStore();
-  store.append({
-    ...NEW_EVENT,
-    agent_id: `${identity.host_id}:%1`,
-    state: "working",
-    pid: process.pid,
-  });
-  store.close();
-
-  const badges: (string | null)[] = [];
-  clearPane("%1", fakeMux({ setWindowBadge: (_window, state) => void badges.push(state) }));
-
-  const after = openStore();
-  const events = after.allEvents();
-  // No `cleared` appended: the agent is still working, and only it may say
-  // otherwise.
-  expect(events.at(-1)?.state).toBe("working");
-  after.close();
-
-  // And the badge is left alone. A `working` badge is not an attention request
-  // either, so there is nothing for focus to acknowledge.
-  expect(badges).toEqual([]);
-});
-
-test("focusing an agent whose pid is gone clears the crash the user was shown", () => {
-  // USER-REPORTED: an agent shows `crashed` in the picker, and switching to it
-  // never clears it. Ever.
-  //
-  // `crashed` is DERIVED, never stored: a `working` row whose pid is gone folds
-  // to `crashed` at read time, and that is what the picker and the status bar
-  // render. `clear` read the raw stored row, saw `working`, found it absent from
-  // CLEARABLE and returned -- so `crashed` was in the whitelist from the start
-  // and yet nothing was ever clearable by it. Live proof on the author's box,
-  // pane %1: stored state `working` pid 32298, displayed state `crashed`, pid
-  // dead, and `murmur clear --pane %1` left it crashed.
-  //
-  // Focus must acknowledge what was DISPLAYED, so clear folds first.
-  const identity = ensureIdentity();
-  const store = openStore();
-  store.append({ ...NEW_EVENT, agent_id: `${identity.host_id}:%1`, state: "working", pid: 32298 });
-  store.close();
-
-  const badges: (string | null)[] = [];
-  clearPane(
-    "%1",
-    fakeMux({ setWindowBadge: (_window, badge) => void badges.push(badge) }),
-    () => false,
-  );
-
-  const after = openStore();
-  expect(after.allEvents().at(-1)?.state).toBe("cleared");
-  after.close();
-  // And the badge, which the same early return also left set: nothing else ever
-  // reconciles it, so a dead agent's glyph sat in the status bar permanently.
-  expect(badges).toEqual([null]);
-});
-
-test("focusing a working agent whose pid is ALIVE still does not clear it", () => {
-  // The cbcd9c4 regression, and the reason the fix above must fold rather than
-  // add `working` to CLEARABLE. A dead-pid `working` row and a live-pid one are
-  // byte-identical in the store; only the pid probe separates them. If clear
-  // ever stops making that distinction, this is the test that says so, and the
-  // cost is 50 of 84 turns wiped mid-flight again.
-  const identity = ensureIdentity();
-  const store = openStore();
-  store.append({ ...NEW_EVENT, agent_id: `${identity.host_id}:%1`, state: "working", pid: 32298 });
-  store.close();
-
-  const badges: (string | null)[] = [];
-  clearPane(
-    "%1",
-    fakeMux({ setWindowBadge: (_window, badge) => void badges.push(badge) }),
-    () => true,
-  );
-
-  const after = openStore();
-  expect(after.allEvents().at(-1)?.state).toBe("working");
-  after.close();
-  expect(badges).toEqual([]);
-});
-
-test("a pid probe that throws leaves a working agent alone", () => {
-  // Fail closed, both halves.
-  //
-  // A probe that cannot answer must never become permission to overwrite a
-  // running agent's state. Two mechanisms enforce that and this test covers the
-  // outer one: a probe that THROWS unwinds to clear's own catch, so no `cleared`
-  // row is appended. The inner one is `pidAlive` itself, which returns dead only
-  // on ESRCH -- EPERM and every other errno read as alive, which folds to
-  // `working`, which is not clearable.
-  const identity = ensureIdentity();
-  const store = openStore();
-  store.append({ ...NEW_EVENT, agent_id: `${identity.host_id}:%1`, state: "working", pid: 32298 });
-  store.close();
-
-  clearPane("%1", fakeMux(), () => {
-    throw new Error("probe unavailable");
-  });
-
-  const after = openStore();
-  expect(after.allEvents().at(-1)?.state).toBe("working");
-  after.close();
-});
-
-test("pidAlive reports death only on ESRCH", () => {
-  // The inner half of fail-closed, and the reason clear can trust the fold. A
-  // liveness answer of "alive" is the safe default because it folds to
-  // `working`, which focus may not clear. Asserted here rather than inferred:
-  // this is the property the whole fix rests on.
-  expect(pidAlive(process.pid)).toBe(true);
-  // pid 1 exists on every unix and is not ours, so kill(1, 0) is EPERM for a
-  // non-root process -- not ESRCH, therefore alive.
-  expect(pidAlive(1)).toBe(true);
-  // Nothing is alive at pid 0x7FFFFFFF; ESRCH is the only errno it can give.
-  expect(pidAlive(0x7fffffff)).toBe(false);
-});
-
-test("focusing an agent that wants attention still clears it", () => {
-  // The other side, and the reason clear exists at all. blocked, done and
-  // crashed are all "look at me"; focusing the pane IS looking, so the request
-  // is satisfied and must stop being shown -- otherwise the badge outlives the
-  // thing it was reporting and sits in the status bar forever.
-  for (const state of ["blocked", "done", "crashed"] as const) {
-    process.env.MURMUR_STATE_DIR = mkdtempSync(join(tmpdir(), `murmur-clear-${state}-`));
-    const identity = ensureIdentity();
-    const store = openStore();
-    store.append({ ...NEW_EVENT, agent_id: `${identity.host_id}:%1`, state });
+  try {
+    work(store);
+  } finally {
     store.close();
-
-    const badges: (string | null)[] = [];
-    clearPane("%1", fakeMux({ setWindowBadge: (_window, badge) => void badges.push(badge) }));
-
-    const after = openStore();
-    expect(after.allEvents().at(-1)?.state).toBe("cleared");
-    after.close();
-    expect(badges).toEqual([null]);
   }
+}
+
+function read<T>(work: (store: Store) => T): T {
+  const store = openStore();
+  try {
+    return work(store);
+  } finally {
+    store.close();
+  }
+}
+
+/** Windows the mux was asked to clear. */
+function badgeRecorder(): { cleared: WindowId[]; set: (w: WindowId, s: unknown) => void } {
+  const cleared: WindowId[] = [];
+  return {
+    cleared,
+    set: (window, state) => {
+      if (state === null) cleared.push(window);
+    },
+  };
+}
+
+test("focus acknowledges every kind of attention on the pane", () => {
+  // The reason clear exists. blocked, done and crashed all mean "look at me";
+  // focusing the pane IS looking, so the request is satisfied and must stop
+  // being shown -- otherwise the badge outlives the thing it reported.
+  //
+  // All kinds at once, in one statement, because (pane, kind) is the key and a
+  // crashed row must not survive a focus that acknowledged the done next to it.
+  seed((store) => {
+    for (const kind of ["blocked", "done", "crashed"] as AttentionKind[]) {
+      store.requestAttention({ kind, location: location("%1"), message: kind, source: "pi" });
+    }
+  });
+  const badges = badgeRecorder();
+
+  clearPane(
+    "%1",
+    fakeMux({
+      windowForPane: () => asWindowId("@1"),
+      panesInWindow: () => [asPaneId("%1")],
+      setWindowBadge: badges.set,
+    }),
+  );
+
+  expect(read((store) => store.localPanes())).toEqual([]);
+  expect(badges.cleared).toEqual(["@1"]);
+});
+
+test("focus cannot touch the agent in the pane, whatever it is doing", () => {
+  // The whole `CLEARABLE` whitelist, the resolver call and the pid probe existed
+  // to stop a focus hook overwriting a running agent -- because focus used to
+  // write a `cleared` EVENT, which superseded whatever the agent had said. 50 of
+  // 84 turns on one agent were wiped that way, several within seconds of
+  // starting.
+  //
+  // None of that machinery is needed now, and this is why: focus can only run
+  // `DELETE FROM attention WHERE pane = ?`. There is no state it must refuse to
+  // clear, because there is nothing it can clear except attention. Asserted for
+  // a RUNNING agent with a live pid, which is the case that used to be destroyed.
+  const before = read((store) => {
+    const claim = store.claimAgent({
+      location: location("%1"),
+      owner_pid: process.pid,
+      meta: META,
+    });
+    store.setActivity({
+      agent_id: "agent_id" in claim ? claim.agent_id : "",
+      owner_pid: process.pid,
+      activity: "running",
+      location: location("%1"),
+    });
+    return store.localPanes();
+  });
+
+  clearPane("%1", fakeMux({ windowForPane: () => asWindowId("@1") }));
+
+  expect(read((store) => store.localPanes())).toEqual(before);
+  expect(before[0]?.agent).toMatchObject({ activity: "running", agent_name: "worker-1" });
+});
+
+test("a pane murmur has never seen still gets its badge cleared", () => {
+  // The tms picker and the status bar read @agent_state from tmux, not from
+  // murmur. A badge murmur never wrote -- an orphan from the agent-attention
+  // era, or a window it never recorded -- used to be unclearable, so the glyph
+  // sat in the picker forever because nothing else would ever clear it.
+  const badges = badgeRecorder();
+
+  clearPane(
+    "%unknown",
+    fakeMux({ windowForPane: () => asWindowId("@42"), setWindowBadge: badges.set }),
+  );
+
+  expect(badges.cleared).toEqual(["@42"]);
+});
+
+test("a sibling pane that still wants attention keeps the badge lit", () => {
+  // The badge is a WINDOW option while "the user looked" is only true of one
+  // pane, so focusing a shell next to a finished agent must not wipe its badge.
+  //
+  // The question is now asked of ATTENTION rather than of "any non-cleared
+  // state", which is the fix: a busy agent next door is not a reason to keep an
+  // attention badge lit, and it used to be.
+  seed((store) => {
+    store.requestAttention({
+      kind: "done",
+      location: location("%agent"),
+      message: "",
+      source: "pi",
+    });
+    store.claimAgent({ location: location("%busy"), owner_pid: process.pid, meta: META });
+  });
+  const badges = badgeRecorder();
+  const mux = fakeMux({
+    windowForPane: () => asWindowId("@1"),
+    panesInWindow: () => [asPaneId("%agent"), asPaneId("%busy"), asPaneId("%shell")],
+    setWindowBadge: badges.set,
+  });
+
+  // Focusing the shell: the agent next door still wants attention.
+  clearPane("%shell", mux);
+  expect(badges.cleared).toEqual([]);
+
+  // Focusing the finished agent: nothing else in the window wants attention now,
+  // because the merely BUSY pane is not a reason to keep the badge.
+  clearPane("%agent", mux);
+  expect(badges.cleared).toEqual(["@1"]);
+});
+
+test("clear is silent and total when nothing can answer", () => {
+  // It runs inside the tmux server, from a focus hook, so it must never throw
+  // and never print -- and it must still clear what it can.
+  expect(() => clearPane("")).not.toThrow();
+  expect(() =>
+    clearPane(
+      "%1",
+      fakeMux({
+        windowForPane: () => {
+          throw new Error("no tmux");
+        },
+      }),
+    ),
+  ).not.toThrow();
 });

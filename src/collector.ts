@@ -1,30 +1,10 @@
 import type { Channel } from "./channel.js";
-import {
-  type Envelope,
-  eventFromWire,
-  reapDeadAgents,
-  SCHEMA_VERSION,
-  synthesizeCrashes,
-} from "./export.js";
+import { tmux } from "./mux.js";
+import { parseSnapshot, SnapshotInvalidError } from "./snapshot.js";
 import type { Store } from "./store.js";
-import type { Event } from "./types.js";
+import { STALENESS_MS } from "./view.js";
 
-/**
- * How long a peer may go unfetched before it renders stale.
- *
- * Not derived from a collect interval, because murmur has no scheduler: there
- * is no timer here, and `collect` runs only when a command asks for it. In
- * practice the cadence is the operator's tmux `status-interval`, since
- * `murmur status` collects and tmux re-runs it on a tick.
- *
- * So this is a judgement about the operator's setup, not arithmetic on a
- * constant murmur controls. Sixty seconds is comfortably above a default 15s
- * status bar -- a peer needs to miss several ticks before it is called out,
- * which keeps one slow fetch from flickering the HUD. A status bar slower than
- * this will show every peer permanently stale; that is the number to change if
- * so.
- */
-export const STALENESS_MS = 60_000;
+export { STALENESS_MS };
 
 // A reachable peer is cheap — milliseconds on a warm control socket, still
 // only a couple hundred cold. The cap is not about those.
@@ -38,16 +18,12 @@ export const STALENESS_MS = 60_000;
 // Eight keeps the realistic fleet fully parallel while bounding that.
 export const MAX_CONCURRENT_PEERS = 8;
 
-// The cap alone does not bound the collect, which is what an earlier version of
-// this comment got wrong. The per-peer ssh timeout applies once per wave, so
-// nine unreachable peers cost two waves and seventeen cost three: the pool
-// serialises the timeouts it is there to limit. At a 5s status-interval that is
-// exactly the tick overlap the concurrency work set out to remove, just moved
-// to a longer peer list.
-//
-// So the whole collect gets its own deadline, independent of peer count. Peers
-// still in flight when it expires are abandoned and render stale, which is
-// already the designed outcome for a host that did not answer in time.
+// The cap alone does not bound the collect. The per-peer ssh timeout applies
+// once per wave, so nine unreachable peers cost two waves: the pool serialises
+// the timeouts it exists to limit. So the whole collect gets its own deadline,
+// independent of peer count. Peers still in flight when it expires are
+// abandoned and render stale, which is already the designed outcome for a host
+// that did not answer in time.
 //
 // Four seconds: under a 5s tick, and above one full wave (a 3s exec ceiling
 // plus overhead) so a single wave is never cut short by the deadline itself.
@@ -95,7 +71,8 @@ async function mapSettled<T, R>(
 export type CollectResult = {
   peer: string;
   ok: boolean;
-  ingested: number;
+  /** Panes in the snapshot we just stored. Zero is a normal, valid answer. */
+  panes: number;
   error?: string;
   /**
    * True when the peer could not be reached at all, as opposed to answering
@@ -104,7 +81,7 @@ export type CollectResult = {
    * A fleet normally has nodes that are asleep or switched off, so this is the
    * expected outcome rather than a fault, and callers use it to stay quiet
    * about the ordinary case while still reporting a peer that is reachable but
-   * broken -- a bad schema version, a missing binary, a corrupt export.
+   * broken -- a bad snapshot version, a missing binary, an auth problem.
    */
   unreachable?: boolean;
 };
@@ -115,12 +92,15 @@ export type CollectResult = {
  * ssh exits 255 for its own failures and prints a recognisable line, and the
  * exec wrapper puts both in the message. Matching on the text is unpleasant but
  * it is the only signal available: the channel seam returns an Error, not an
- * exit status, and widening it to carry one would push ssh's exit conventions
- * into every future channel.
+ * exit status.
+ *
+ * `Permission denied` is deliberately NOT here. An auth misconfiguration is
+ * reachable-but-broken and an operator task; classing it as "asleep, probably"
+ * is how a fixable setup error stays invisible for weeks.
  */
 function isUnreachable(message: string): boolean {
   return (
-    /Host is down|No route to host|Connection refused|Connection timed out|Connection closed|Operation timed out|Network is unreachable|Name or service not known|Could not resolve hostname|Permission denied|timed out after/i.test(
+    /Host is down|No route to host|Connection refused|Connection timed out|Connection closed|Operation timed out|Network is unreachable|Name or service not known|Could not resolve hostname|timed out after/i.test(
       message,
     ) || /\bssh:/.test(message)
   );
@@ -140,61 +120,23 @@ export function describeFailure(peer: string, message: string): string {
     return `${peer}: unreachable (${(reason?.[1] ?? "ssh failed").trim()})`;
   }
   // Reachable but wrong: keep the message, since it is the diagnosis, but bound
-  // it so a corrupt export cannot print a screenful.
+  // it so a corrupt snapshot cannot print a screenful.
   const detail = collapsed.length > 160 ? `${collapsed.slice(0, 157)}...` : collapsed;
   return `${peer}: ${detail}`;
 }
 
-/** Re-read a peer's whole log, for when its epoch says our watermark is stale. */
-async function refetchFromZero(
-  channel: Channel,
-  peer: { target: string },
-): Promise<{ envelope: Envelope; events: Event[] }> {
-  return parseJsonl(await channel.exec(peer.target, ["murmur", "export", "--since", "0"]));
-}
-
 /**
- * Thrown when a peer's wire schema is newer than this node understands.
- *
- * A distinct error type rather than a bare Error because the envelope is still
- * WORTH RECORDING when this fires. The refusal is exactly the pairing an
- * operator needs to see in `peer list`, and before this the throw happened
- * before `upsertPeer` ran -- so the peer row kept host_id, display_name and
- * version all null, and the one case the version column exists for was the one
- * case it could not explain. Verified against a real store before changing it.
- */
-class SchemaTooNewError extends Error {
-  constructor(readonly envelope: Envelope) {
-    super(`unsupported schema version ${envelope.schema_version} (supports ${SCHEMA_VERSION})`);
-    this.name = "SchemaTooNewError";
-  }
-}
-
-function parseJsonl(output: string): { envelope: Envelope; events: Event[] } {
-  const lines = output.trim().split("\n");
-  const envelope = JSON.parse(lines.shift() ?? "") as Envelope;
-  if (envelope.schema_version > SCHEMA_VERSION) {
-    throw new SchemaTooNewError(envelope);
-  }
-  return {
-    envelope,
-    events: lines.map((line) => eventFromWire(JSON.parse(line) as Record<string, unknown>)),
-  };
-}
-
-/**
- * Peers are fetched concurrently and applied serially.
+ * Fetch every peer's snapshot, validate it, and replace the cache whole.
  *
  * Concurrent because an unreachable peer costs the full ssh timeout, and a
- * serial loop charged that to every other peer behind it: three asleep laptops
- * made `murmur status` hang for thirty seconds and let the HUD tick overlap
- * itself. Fanning out makes the whole collect cost the slowest peer, not the
- * sum — capped at MAX_CONCURRENT_PEERS in flight and bounded overall by
- * COLLECT_DEADLINE_MS.
+ * serial loop charged that to every peer behind it: three asleep laptops made
+ * `murmur status` hang for thirty seconds. Applied serially in peer order,
+ * because better-sqlite3 is synchronous and a stable order keeps the result list
+ * aligned with `store.peers()`.
  *
- * Applied serially, in peer order, because better-sqlite3 is synchronous: there
- * is nothing to win by interleaving writes, and keeping the order stable keeps
- * the result list aligned with `store.peers()`.
+ * One round trip per peer, and there is no second "refetch from zero" trip
+ * because there is no watermark to be wrong: the document is complete, so what
+ * arrives either replaces the cache entirely or does not touch it.
  */
 export async function collect(
   store: Store,
@@ -217,38 +159,11 @@ export async function collect(
       });
     // Settled, not raw: a peer that fails while we are still applying an
     // earlier one would otherwise be an unhandled rejection for as long as it
-    // sits in the queue, which Node reports and future Node kills the process
-    // over.
+    // sits in the queue.
     const fetches = await mapSettled(
       peers,
       MAX_CONCURRENT_PEERS,
-      async (peer) => {
-        const first = parseJsonl(
-          await channel.exec(peer.target, ["murmur", "export", "--since", String(peer.watermark)]),
-        );
-        // The peer's log is a different incarnation from the one our watermark
-        // indexes, so the watermark is meaningless: its seqs restarted at 1 and
-        // are all BELOW what we asked for. Ask again from zero.
-        //
-        // A second round trip, and only on the collect that first notices --
-        // which is a wipe, so roughly never. Re-reading a peer from zero is
-        // already the recovery this codebase uses elsewhere (removePeer,
-        // forgetReplica, a salvaged peer after our own reset) and is cheap
-        // because ingest is idempotent on (host_id, seq).
-        //
-        // Only when BOTH epochs are known. A null on either side means "no
-        // information": an older peer sends no epoch, and a peer we have never
-        // successfully collected from has none stored. Treating unknown as
-        // changed would re-read every peer on every collect, forever.
-        if (
-          peer.epoch !== null &&
-          first.envelope.epoch !== undefined &&
-          first.envelope.epoch !== peer.epoch
-        ) {
-          return { ...(await refetchFromZero(channel, peer)), reset: true };
-        }
-        return { ...first, reset: false };
-      },
+      async (peer) => parseSnapshot(await channel.exec(peer.target, ["murmur", "export"])),
       bounded,
     );
     for (const [index, peer] of peers.entries()) {
@@ -260,136 +175,54 @@ export async function collect(
         // outcome for a host that did not answer in time.
         if (!fetch) throw new Error("collect deadline passed before this peer answered");
         if (fetch.status === "rejected") throw fetch.reason;
-        const { envelope, events, reset } = fetch.value;
-        // Drop the old incarnation's rows BEFORE ingesting the new ones, and
-        // this ordering is the whole of it. `ingest` is INSERT OR IGNORE on
-        // (host_id, seq), and a wiped peer re-uses seq 1..n for DIFFERENT
-        // agents -- so without the delete the stale rows win on primary-key
-        // conflict and the new incarnation is silently discarded. Re-reading
-        // from zero alone does not fix this hole; it makes it quieter.
-        if (reset) store.forgetHost(envelope.host_id);
-        const ingested = store.ingest(events);
-        const origin = events.filter((event) => event.host_id === envelope.host_id);
-        // A reset restarts the peer's seqs, so the old watermark is not a floor
-        // any more -- keeping it would leave us permanently past a shorter log.
-        const floor = reset ? 0 : peer.watermark;
-        const watermark = origin.reduce((highest, event) => Math.max(highest, event.seq), floor);
-        store.upsertPeer({
-          name: peer.name,
-          target: peer.target,
-          host_id: envelope.host_id,
-          display_name: envelope.display_name,
-          watermark,
-          fetched_at: now,
-          // New events mean the node is authoring again, so whatever a jump
-          // observed about its tmux is out of date. Only clear on actual new
-          // events: an export that returns nothing proves the binary ran, not
-          // that tmux is back, which is the distinction that let a dead host
-          // look healthy for three hours.
-          //
-          // Keyed on the watermark advancing, not on ingest's insert count.
-          // Two reasons the count was wrong. Ingest is INSERT OR IGNORE, so a
-          // retry after a partial apply re-sees the same events and reports
-          // zero -- leaving a recovered host marked down until it happened to
-          // author again. And the count includes rows from other origins that
-          // this peer merely relayed, which say nothing about whether this
-          // peer's tmux is back.
-          tmux_down_at: watermark > floor ? null : peer.tmux_down_at,
-          // Remember which incarnation this watermark indexes. Undefined (an
-          // older peer that sends no epoch) is stored as null: "still unknown",
-          // which is what keeps the comparison above from firing on every
-          // collect against a node that will never send one.
-          epoch: envelope.epoch ?? null,
-          // What it is running, for `peer list`. Reported, never enforced:
-          // `schema_version` is the only field the collector reasons about, and
-          // a murmur version differing is worth showing but is not by itself a
-          // problem. Undefined from an older peer stores as null, i.e. unknown.
-          murmur_version: envelope.murmur_version ?? null,
-          schema_version: envelope.schema_version,
-        });
-        results.push({ peer: peer.name, ok: true, ingested });
+        // Every field the cache derives comes out of the document itself, so
+        // the cache structurally cannot disagree with the snapshot it holds.
+        store.replacePeerSnapshot(peer.name, { ok: true, snapshot: fetch.value, at: now });
+        results.push({ peer: peer.name, ok: true, panes: fetch.value.panes.length });
       } catch (error) {
-        // A peer refused for being too new still told us who it is and what it
-        // runs, and that is the whole point of recording it: this is the pairing
-        // `peer list` needs to explain. Everything else is left alone --
-        // fetched_at in particular, so a refused peer renders stale rather than
-        // freshly synced, which an existing test pins.
-        if (error instanceof SchemaTooNewError) {
-          store.upsertPeer({
-            name: peer.name,
-            target: peer.target,
-            host_id: error.envelope.host_id,
-            display_name: error.envelope.display_name,
-            murmur_version: error.envelope.murmur_version ?? null,
-            schema_version: error.envelope.schema_version,
-          });
-        }
+        const message = error instanceof Error ? error.message : String(error);
+        store.replacePeerSnapshot(peer.name, { ok: false, error: message, at: now });
         // Reported through the return value, never printed here. `collect` runs
         // from `murmur status` on every status-bar tick, and from `pick` inside
         // a display-popup, so a single sleeping laptop wrote to stderr forever
         // and corrupted both. Only the `collect` command -- which a human ran
-        // on purpose -- prints. See registerCollect.
-        const message = error instanceof Error ? error.message : String(error);
+        // on purpose -- prints.
         results.push({
           peer: peer.name,
           ok: false,
-          ingested: 0,
+          panes: 0,
           error: message,
-          unreachable: isUnreachable(message.replace(/\s+/g, " ")),
+          // A peer that answered with a bad document is reachable but broken,
+          // and must be visibly so rather than silently stale.
+          unreachable:
+            error instanceof SnapshotInvalidError
+              ? false
+              : isUnreachable(message.replace(/\s+/g, " ")),
         });
       }
     }
   } catch (error) {
     // The whole collect failed rather than one peer -- a broken peer table, say.
-    // Still not printed: the caller decides. Recorded against no peer so a
-    // caller that reports failures has something to report.
+    // Still not printed: the caller decides.
     results.push({
       peer: "",
       ok: false,
-      ingested: 0,
+      panes: 0,
       error: error instanceof Error ? error.message : String(error),
     });
   } finally {
     clearTimeout(timer);
   }
 
-  // Once per collect, outside the peer loop and outside its try, for two
-  // reasons.
-  //
-  // It used to run per successful peer, so four peers meant four DELETEs with a
-  // window function over the whole table on every status-bar tick, to enforce a
-  // horizon measured in days. Idempotent work, repeated.
-  //
-  // And it ran only when a peer succeeded, so the single-machine case -- no
-  // peers at all, the everyday path -- pruned never and grew local events
-  // forever. The horizon is a property of the log, not of federation.
-  //
-  // Retention must not be able to fail a command, hence its own try.
+  // The only housekeeping left, and it runs once per invocation including with
+  // zero peers -- which is why it is here rather than on `export`, which only
+  // runs when a peer asks over ssh. A single-machine node would otherwise
+  // reconcile never. Idempotent, so `buildLocalSnapshot` calling it too is a
+  // cheap repeat rather than a second policy.
   try {
-    store.prune();
-    // Reap this host's agents whose tmux pane is gone and whose last word was
-    // `cleared`. Housekeeping, alongside retention, and for the same reason it
-    // lives here: this runs once per invocation including with zero peers, so
-    // the single-machine case is covered.
-    //
-    // It could not live in `export` alone, which is where reconcileDeadAgents was
-    // called from -- export runs when a PEER asks over ssh, so a node with no
-    // peers never reaped, and four dead crew rows sat in the author's picker
-    // indefinitely. Only the owning host can do this: `live` is its own tmux.
-    reapDeadAgents(store);
-    // Same argument, same reason it is here rather than on export: only the
-    // authoring host can tell that one of ITS pids is gone. A reader folds a
-    // remote `working` row with `() => true`, so a peer can never derive
-    // `crashed` for this host -- if this node does not write the row, no node
-    // ever learns it, and the replica shows `working` forever.
-    //
-    // After reapDeadAgents, not before: reaping drops agents whose pane is gone
-    // and whose last word was already `cleared`, which are rows synthesis has
-    // no business resurrecting a `crashed` for.
-    synthesizeCrashes(store);
+    store.reconcileLocal({ panes: tmux.livePanes(), now });
   } catch {
-    // Retention is housekeeping: it must not fail a command, and it must not
-    // report either. A failed prune costs disk, which the next collect retries.
+    // Housekeeping must not fail a command, and it must not report either.
   }
   return results;
 }

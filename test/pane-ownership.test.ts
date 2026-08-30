@@ -3,12 +3,12 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, expect, test } from "vitest";
-import { ensureIdentity } from "../src/identity.js";
+import { createIdentity } from "../src/identity.js";
 import { openStore } from "../src/store.js";
 import { builtArtifact } from "./helpers/built.js";
 
 /**
- * The six-pid bug, reproduced with REAL processes in a REAL tmux pane.
+ * The nested-agent case, reproduced with REAL processes in a REAL tmux pane.
  *
  * Every other extension test fakes the mux and the store, which is right for
  * decision logic and useless here: this bug is entirely about what a separate
@@ -21,6 +21,13 @@ import { builtArtifact } from "./helpers/built.js";
  * `working`, one alive. The parent's row folded off a dead child's pid and the
  * agent showed as idle while it was working, plus five doubled `cleared` pairs
  * 0-1s apart -- two processes each correctly firing once.
+ *
+ * What changed: none of this is defended by an environment marker any more.
+ * `MURMUR_PANE_OWNER`, `ownsPane`, `ownerClaim` and `mayReport` are all gone,
+ * replaced by `agents.pane UNIQUE` plus one liveness probe inside
+ * `claimAgent`'s transaction. A second live process in one pane is REFUSED by
+ * the database, which needs no environment transport and so cannot be defeated
+ * by a process launched in an unusual way.
  */
 
 // A private tmux server, so nothing here touches the developer's session.
@@ -62,7 +69,7 @@ function rig(...args: string[]): string {
  */
 function runInPane(
   pane: string,
-  options: { state?: string; inherit?: string; holdMs?: number; spawnChild?: boolean } = {},
+  options: { state?: string; holdMs?: number; spawnChild?: boolean } = {},
 ): { output: string; pid: number } {
   const out = execFileSync(
     process.execPath,
@@ -84,36 +91,41 @@ function runInPane(
         MURMUR_EXTENSION_ENTRY: EXTENSION_ENTRY,
         TMUX_PANE: pane,
         TMUX: rig("display-message", "-p", "#{socket_path},#{pid},0"),
-        ...(options.inherit ? { MURMUR_PANE_OWNER: options.inherit } : {}),
       },
     },
   );
-  const pid = Number(out.match(/REPORTED (\d+)/)?.[1] ?? 0);
+  const pid = Number(out.match(/RAN (\d+)/)?.[1] ?? 0);
   return { output: out.trim(), pid };
 }
 
-/** Every pid that has ever written a `working` row for this pane. */
-function reportingPids(pane: string): number[] {
+/**
+ * The pane's agent row, as the store holds it -- or null.
+ *
+ * This is the honest witness. A child process cannot report whether it won the
+ * pane, because `owner_pid` is local-only and absent from every read shape, so
+ * there is nothing for it to compare against its own pid. What CAN be checked is
+ * that exactly one agent row exists and that its identity did not change.
+ */
+function agentFor(pane: string): { agent_id: string; activity: string } | null {
   const store = openStore();
   try {
-    const identity = ensureIdentity();
-    return store
-      .allEvents()
-      .filter((event) => event.agent_id === `${identity.host_id}:${pane}` && event.pid !== null)
-      .map((event) => event.pid as number);
+    const found = store.localPanes().find((entry) => entry.pane === pane)?.agent;
+    return found ? { agent_id: found.agent_id, activity: found.activity } : null;
   } finally {
     store.close();
   }
 }
 
-function statesFor(pane: string): string[] {
+/** Every attention kind on the pane, so a nested write would be visible. */
+function attentionFor(pane: string): string[] {
   const store = openStore();
   try {
-    const identity = ensureIdentity();
-    return store
-      .allEvents()
-      .filter((event) => event.agent_id === `${identity.host_id}:${pane}`)
-      .map((event) => event.state);
+    return (
+      store
+        .localPanes()
+        .find((entry) => entry.pane === pane)
+        ?.attention.map((a) => a.kind) ?? []
+    );
   } finally {
     store.close();
   }
@@ -122,7 +134,7 @@ function statesFor(pane: string): string[] {
 beforeAll(() => {
   stateDir = mkdtempSync(join(tmpdir(), "murmur-ownership-"));
   process.env.MURMUR_STATE_DIR = stateDir;
-  ensureIdentity();
+  createIdentity("ownership-rig");
   rig("new-session", "-d", "-s", "own", "sleep 600");
 });
 
@@ -145,83 +157,37 @@ afterAll(() => {
 test("a real nested process in an agent's pane records nothing at all", async () => {
   const pane = rig("display-message", "-p", "#{pane_id}");
 
-  // The owner: first process in the pane, so it claims it and reports.
+  // The owner: first process in the pane, so its claim is accepted and it
+  // reports. It has already EXITED by the time execFileSync returns, which
+  // matters for the next line.
   const owner = runInPane(pane);
-  expect(owner.output).toContain("REPORTED");
-  expect(reportingPids(pane)).toEqual([owner.pid]);
+  expect(owner.output).toContain("RAN");
+  const claimed = agentFor(pane);
+  expect(claimed).toMatchObject({ activity: "running" });
 
-  // A nested launch, inheriting the owner's claim exactly as a child pi would.
-  // This is the case that wrote five extra `working` rows to a live agent.
-  const nested = runInPane(pane, { inherit: `${pane}:${owner.pid}` });
-
-  // Silence, not a corrected write. It registered no handlers at all, so no
-  // store was opened and no badge painted: a process with nothing true to say
-  // says nothing.
-  expect(nested.output).toBe("DECLINED");
-
-  // The parent row SURVIVES, which is the whole point. Before the fix this was
-  // two pids and the agent read as idle.
-  expect(reportingPids(pane)).toEqual([owner.pid]);
-  expect(statesFor(pane)).toEqual(["working"]);
+  // A second process in the same pane while the first is gone: this is a
+  // legitimate restart, and it must take over rather than be frozen out. The
+  // liveness probe is what makes that work with no grace period to tune.
+  const restart = runInPane(pane);
+  expect(restart.pid).not.toBe(owner.pid);
+  const afterRestart = agentFor(pane);
+  // A different ROW, because a replacement owner is a different process
+  // instance: the agent_id is a per-process uuid, not `host:pane`, so a late
+  // write from the previous owner cannot match it.
+  expect(afterRestart?.agent_id).not.toBe(claimed?.agent_id);
+  expect(afterRestart?.activity).toBe("running");
 });
 
-test("many nested launches leave exactly one reporting pid, not six", async () => {
+test("a live owner is not displaced, and the nested process writes nothing", async () => {
+  // The six-pid bug, with the marker gone. The competitor inherits $TMUX_PANE --
+  // that is unavoidable and is the mechanism -- but nothing tells it the pane is
+  // owned. Only the store can refuse it, and it must, because two live processes
+  // cannot both be the agent in one pane.
   const pane = rig("new-window", "-P", "-F", "#{pane_id}", "-d", "sleep 600");
 
-  const owner = runInPane(pane);
-  // Five nested launches, matching the five extra pids seen on the real pane.
-  for (let launch = 0; launch < 5; launch += 1) {
-    expect(runInPane(pane, { inherit: `${pane}:${owner.pid}` }).output).toBe("DECLINED");
-  }
-
-  // The measured symptom was SIX distinct pids on one pane. One is correct.
-  expect(new Set(reportingPids(pane)).size).toBe(1);
-  expect(reportingPids(pane)).toEqual([owner.pid]);
-});
-
-test("a nested process cannot write the doubled cleared the real bug produced", async () => {
-  const pane = rig("new-window", "-P", "-F", "#{pane_id}", "-d", "sleep 600");
-
-  runInPane(pane);
-  // agent_end, from a nested process. On the real pane this produced five
-  // `cleared` pairs 0-1s apart: not a double fire, two processes each firing
-  // once. A doubled clear is worse than a doubled working -- `cleared` resets
-  // the row to idle and drops the event, so it erases the agent from every HUD.
-  expect(runInPane(pane, { state: "end", inherit: `${pane}:9999999` }).output).toBe("DECLINED");
-
-  expect(statesFor(pane)).toEqual(["working"]);
-});
-
-test("an owner's real child process discovers it is nested with nothing passed to it", async () => {
-  // The publishing half, and a mutation found this gap: deleting the line that
-  // exports the claim left every other test in this file passing, because they
-  // all handed the claim to the child themselves. That tested the READING side
-  // twice and the WRITING side never.
-  //
-  // Here the owner spawns the child itself. The child gets the default
-  // environment and no arguments about ownership, so the ONLY way it can know
-  // it is nested is that the owner published a claim -- which is precisely the
-  // mechanism a real nested pi relies on.
-  const pane = rig("new-window", "-P", "-F", "#{pane_id}", "-d", "sleep 600");
-
-  const owner = runInPane(pane, { spawnChild: true });
-  expect(owner.output).toContain("REPORTED");
-  expect(owner.output).toContain("CHILD DECLINED");
-
-  // One pid, and it is the owner's.
-  expect(reportingPids(pane)).toEqual([owner.pid]);
-});
-
-test("a live recorded pid is not superseded even without the claim", async () => {
-  // The floor, tested with the marker ABSENT -- which is the case the marker
-  // cannot cover: a pi that predates this change, or one launched in a way that
-  // dropped the environment. The competing process is a genuine second writer
-  // with no idea the pane is owned.
-  const pane = rig("new-window", "-P", "-F", "#{pane_id}", "-d", "sleep 600");
-
-  // An owner that stays ALIVE while the competitor runs, so `pidAlive` on its
-  // recorded pid answers true -- the condition the real bug violated.
-  const holder = spawn(process.execPath, [AGENT, "working", "8000"], {
+  // An owner that stays ALIVE while the competitors run, so the liveness probe
+  // inside claimAgent answers true -- the condition the real bug violated.
+  const holder = spawn(process.execPath, [AGENT, "working", "12000"], {
     env: {
       ...process.env,
       MURMUR_STATE_DIR: stateDir,
@@ -237,104 +203,50 @@ test("a live recorded pid is not superseded even without the claim", async () =>
   holder.stdout.on("data", (chunk) => {
     held += chunk;
   });
-  for (let wait = 0; wait < 200 && !held.includes("REPORTED"); wait += 1) {
+  for (let wait = 0; wait < 200 && !held.includes("RAN"); wait += 1) {
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
-  const holderPid = Number(held.match(/REPORTED (\d+)/)?.[1] ?? 0);
-  expect(holderPid).toBeGreaterThan(0);
+  expect(held).toContain("RAN");
+  const owned = agentFor(pane);
+  expect(owned).toMatchObject({ activity: "running" });
 
   try {
-    // No inherited claim, so ownsPane lets this through and only the live-pid
-    // floor can stop it. It registers handlers and tries to append.
-    const competitor = runInPane(pane);
-    expect(competitor.output).toContain("REPORTED");
+    // Five nested launches, matching the five extra pids seen on the real pane.
+    for (let launch = 0; launch < 5; launch += 1) {
+      runInPane(pane);
+    }
 
-    // ...and is refused at the store, because the recorded pid is still alive.
-    // Two live processes cannot both be the agent in one pane.
-    expect(reportingPids(pane)).toEqual([holderPid]);
+    // The owner's row survives byte-for-byte. Before the fix this pane had six
+    // reporting pids and the agent read as idle while it was working.
+    expect(agentFor(pane)).toEqual(owned);
+
+    // And a nested agent_end -- which produced five doubled `cleared` pairs on
+    // the real pane, erasing the agent from every HUD -- writes nothing either.
+    runInPane(pane, { state: "end" });
+    expect(agentFor(pane)).toEqual(owned);
+    expect(attentionFor(pane)).toEqual([]);
   } finally {
     holder.kill("SIGKILL");
   }
 });
 
-test("a genuine restart in the same pane takes over once the old agent is gone", async () => {
-  // Pane %89 has two pids for good reason, and the fix must not freeze a stale
-  // row. This is the case that makes the floor a liveness question rather than
-  // a difference question.
+test("an owner's real child process is refused with nothing passed to it", async () => {
+  // The case the environment marker existed for, now handled with no
+  // environment at all. The owner spawns the child itself, so the child gets
+  // the default environment and no arguments about ownership -- and it is still
+  // refused, because the refusal comes from the database and the owner is alive.
+  //
+  // Deleting the publish line used to leave every other test in this file green,
+  // since they all handed the claim to the child themselves. There is no publish
+  // line to delete now, which is the point.
   const pane = rig("new-window", "-P", "-F", "#{pane_id}", "-d", "sleep 600");
 
-  const first = runInPane(pane);
-  expect(first.output).toContain("REPORTED");
-  // The first process has already EXITED -- execFileSync is synchronous -- so
-  // its recorded pid is dead, exactly like an agent that finished.
-  expect(reportingPids(pane)).toEqual([first.pid]);
+  const owner = runInPane(pane, { spawnChild: true, holdMs: 3_000 });
+  expect(owner.output).toContain("RAN");
+  expect(owner.output).toContain("CHILD RAN");
 
-  // A new agent starts in the same pane. No claim: a restart is a fresh
-  // process tree, so nothing is inherited.
-  const second = runInPane(pane);
-  expect(second.output).toContain("REPORTED");
-  expect(second.pid).not.toBe(first.pid);
-
-  // Both rows are present and the NEW pid is the current one. No grace period
-  // and no staleness horizon: the old pid is gone, so the new one takes over.
-  expect(reportingPids(pane)).toEqual([first.pid, second.pid]);
-  expect(reportingPids(pane).at(-1)).toBe(second.pid);
-});
-
-test("a pid-less cleared row does not retract the live agent's claim", async () => {
-  // The shape of the REAL damage, and the case a naive "read the newest row"
-  // floor fails open on. Measured from the live database, pane %244:
-  //
-  //   working(61980) working(80183) cleared(null) cleared(null)
-  //   working(82862) cleared(null) cleared(null) working(87286) ...
-  //
-  // Only `working` carries a pid; done, blocked and cleared are null by design.
-  // So after the very first turn ended, the newest row was always a pid-less
-  // `cleared` and every later nested launch was waved through. Confirmed by
-  // running the extension against a COPY of the real database: with the newest
-  // row a `cleared`, a fresh write was accepted.
-  const pane = rig("new-window", "-P", "-F", "#{pane_id}", "-d", "sleep 600");
-
-  // An owner that stays alive, and a `cleared` row on top of its `working`.
-  const holder = spawn(process.execPath, [AGENT, "working", "8000", ""], {
-    env: {
-      ...process.env,
-      MURMUR_STATE_DIR: stateDir,
-      MURMUR_STORE_MODULE: STORE_MODULE,
-      MURMUR_EXTENSION_ENTRY: EXTENSION_ENTRY,
-      TMUX_PANE: pane,
-      TMUX: rig("display-message", "-p", "#{socket_path},#{pid},0"),
-    },
-    stdio: ["ignore", "pipe", "ignore"],
-  });
-
-  let held = "";
-  holder.stdout.on("data", (chunk) => {
-    held += chunk;
-  });
-  for (let wait = 0; wait < 200 && !held.includes("REPORTED"); wait += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-  const holderPid = Number(held.match(/REPORTED (\d+)/)?.[1] ?? 0);
-  expect(holderPid).toBeGreaterThan(0);
-
-  try {
-    // The owner's own turn ends: a pid-less `cleared` becomes the newest row.
-    const store = openStore();
-    const identity = ensureIdentity();
-    const latest = store.latestForAgent(identity.host_id, `${identity.host_id}:${pane}`);
-    if (!latest) throw new Error("owner wrote nothing");
-    store.append({ ...latest, state: "cleared", pid: null });
-    store.close();
-
-    // A competing writer with no claim, exactly as before -- but now the newest
-    // row carries no pid. The floor must still refuse it, because the last PID
-    // is still the live owner's and a pid-less row does not retract it.
-    const competitor = runInPane(pane);
-    expect(competitor.output).toContain("REPORTED");
-
-    expect(reportingPids(pane)).toEqual([holderPid]);
-  } finally {
-    holder.kill("SIGKILL");
-  }
+  // One row, and it is the one the owner claimed while it was alive: the child
+  // ran INSIDE the owner's lifetime, so the probe saw a live pid and refused.
+  const after = agentFor(pane);
+  expect(after).toMatchObject({ activity: "running" });
 });

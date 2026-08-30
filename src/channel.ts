@@ -70,16 +70,17 @@ export interface Channel {
 
 // Node's execFile defaults to a 1 MiB stdout ceiling and rejects with
 // ERR_CHILD_PROCESS_STDIO_MAXBUFFER past it, killing the child. An export is
-// the peer's whole delta, and at ~400 bytes an event (measured) 1 MiB is only
-// ~2,600 events -- reachable inside the 7-day horizon on a busy box, and
-// certain on a first sync from watermark 0.
+// now the peer's whole CURRENT state rather than its history, so it is bounded
+// by live pane count -- a few hundred bytes per pane, on a machine that cannot
+// hold thousands of panes. The ceiling is far less likely to be reached than it
+// was against an unbounded event log.
 //
-// The failure would also be permanent, not transient: the watermark only
-// advances on a successful parse, so every subsequent collect would re-request
-// the same oversized range and fail identically. A reachable peer would sit
-// stale forever.
+// It is kept generous anyway, because the failure mode is bad out of proportion
+// to its likelihood: a peer whose document exceeds the buffer fails identically
+// on every collect, so it sits stale forever with an error that names a Node
+// internal rather than a size.
 //
-// 64 MiB is ~170k events, far above what the horizon can hold, and it is a
+// 64 MiB is orders of magnitude above any real snapshot, and it is a
 // ceiling rather than an allocation. The timeout is the real bound on a
 // runaway peer.
 const MAX_EXPORT_BYTES = 64 * 1024 * 1024;
