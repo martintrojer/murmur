@@ -44,9 +44,13 @@ export function tmuxStatus(view: Status): string {
   const needsHuman = new Set<string>(NEEDS_HUMAN);
   const total = (state: RenderState): number =>
     view.counts[state] + (needsHuman.has(state) ? view.orchestrated_counts[state] : 0);
-  return RENDER_PRIORITY.filter((state) => total(state) > 0)
-    .map((state) => `${state}\t${total(state)}\n`)
-    .join("");
+  return (
+    RENDER_PRIORITY.filter((state) => total(state) > 0)
+      // The tmux renderer's public vocabulary predates the internal activity
+      // rename. Keep that external protocol stable until the renderer is updated.
+      .map((state) => `${state === "running" ? "working" : state}\t${total(state)}\n`)
+      .join("")
+  );
 }
 
 /**

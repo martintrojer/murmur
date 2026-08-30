@@ -242,7 +242,7 @@ test("tmux status emits urgent counts and never agent-supplied text", () => {
 
   const output = tmuxStatus(status(store, IDENTITY));
 
-  expect(output).toBe("crashed\t2\nblocked\t1\ndone\t1\nrunning\t1\nidle\t1\n");
+  expect(output).toBe("crashed\t2\nblocked\t1\ndone\t1\nworking\t1\nidle\t1\n");
   expect(output).not.toContain(injection);
 });
 
