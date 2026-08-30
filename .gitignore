@@ -9,5 +9,4 @@ dist/
 # were how the design got settled and executed; ARCHITECTURE.md is what survives
 # of them. Kept on disk because the reasoning is still useful locally, untracked
 # because a spec that stops matching the code is worse than no spec.
-docs/plans/
-docs/specs/
+docs/
