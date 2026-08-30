@@ -3,7 +3,7 @@
 Notable changes per release. Written for someone deciding whether to upgrade,
 so it says what changed for a user rather than listing every commit.
 
-## Unreleased
+## 0.2.0
 
 **murmur now stores current state instead of an event log, and every node
 publishes one complete snapshot of it.** This is a rewrite of the model, and it
@@ -91,7 +91,7 @@ a remote process is alive -- a remote pane's activity is whatever its own node
 last said, and a stale node keeps its last-known values beside a warning.
 ARCHITECTURE.md lists all eight accepted limitations.
 
-Tests went 134 to 238 across 28 files, and they changed character with the model:
+Tests went 134 to 239 across 28 files, and they changed character with the model:
 the ones that matter now assert what is *impossible* -- a notifier cannot touch
 an agent row, a focus hook cannot change activity, no read path carries a pid --
 several of them structurally, over the whole returned object graph rather than by
