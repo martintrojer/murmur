@@ -653,14 +653,15 @@ test("an unfocused agent that settles asks for a human, which is what blocked me
 
 test("a focused agent that settles says nothing, because the user is already there", async () => {
   // There is no attention to request from someone who is looking at the pane.
-  // agent_end has already written `cleared`; a second row would only make the
-  // agent's "last said something" age reset for no reported change.
+  // agent_end has already written activity `stopped`, which is the whole of what
+  // a finished run means here; an attention row on top would be a request aimed
+  // at a human who is already reading the pane.
   const { handlers, appended, badges } = await driveExtension({ focused: true });
 
   await handlers.get("agent_start")?.();
-  await until(() => appended.length === 1, "the turn's working");
+  await until(() => appended.length === 1, "the turn's running");
   await handlers.get("agent_end")?.();
-  await until(() => appended.length === 2, "the turn's cleared");
+  await until(() => appended.length === 2, "the turn's stopped");
   await handlers.get("agent_settled")?.();
   // Waits for something that must not arrive, so the assertion is not just
   // "the write had not happened yet".
