@@ -3,10 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import {
-  clearDeadWindows,
   eventFromWire,
   exportJsonl,
   reapDeadAgents,
+  reconcileDeadAgents,
   SCHEMA_VERSION,
 } from "../src/export.js";
 import { asPaneId, asSessionId, asWindowId, type PaneId } from "../src/ids.js";
@@ -160,10 +160,10 @@ test("re-export reproduces an unknown event line byte for byte", () => {
   expect(second).toBe(first);
 });
 
-test("an agent whose window is gone and which already said cleared is dropped", () => {
+test("an agent whose pane is gone and which already said cleared is dropped", () => {
   // Two correct rules met and leaked. Retention keeps the newest event per
   // agent forever so a long-idle agent does not vanish from the list; and
-  // clearDeadWindows only ever CONVERTED a live row to `cleared`, skipping one
+  // reconcileDeadAgents only ever CONVERTED a live row to `cleared`, skipping one
   // that was already cleared because there was nothing to supersede. So a dead
   // agent's final `cleared` was protected by pruning and removed by nothing.
   //
@@ -175,17 +175,17 @@ test("an agent whose window is gone and which already said cleared is dropped", 
   s.append(localEvent({ agent_id: "alive", pane: asPaneId("%here"), state: "cleared" }));
   const hostId = s.allEvents()[0]?.host_id ?? "";
 
-  clearDeadWindows(s, hostId, new Set([asWindowId("@w")]), new Set([asPaneId("%here")]));
+  reconcileDeadAgents(s, hostId, new Set([asWindowId("@w")]), new Set([asPaneId("%here")]));
 
   const remaining = new Set(s.allEvents().map((event) => event.agent_id));
   expect(remaining.has("dead")).toBe(false);
-  // A live window is untouched, however long it has been idle.
+  // A live pane is untouched, however long it has been idle.
   expect(remaining.has("alive")).toBe(true);
 });
 
-test("an unacknowledged state on a dead window is superseded, never deleted", () => {
+test("an unacknowledged state on a dead pane is superseded, never deleted", () => {
   // The narrowness that makes the deletion safe. blocked, done and crashed are
-  // facts a human has not seen yet, and sweeping them away because the window
+  // facts a human has not seen yet, and sweeping them away because the pane
   // closed would hide exactly the failures this tool exists to surface -- an
   // agent that died mid-task would simply disappear. They become a synthetic
   // `cleared` instead, which keeps the history and the reason.
@@ -194,7 +194,7 @@ test("an unacknowledged state on a dead window is superseded, never deleted", ()
   }
   const hostId = s.allEvents()[0]?.host_id ?? "";
 
-  clearDeadWindows(s, hostId, new Set([asWindowId("@w")]), new Set([asPaneId("%here")]));
+  reconcileDeadAgents(s, hostId, new Set([asWindowId("@w")]), new Set([asPaneId("%here")]));
 
   for (const state of ["blocked", "done", "crashed"]) {
     const events = s.allEvents().filter((event) => event.agent_id === `dead-${state}`);
@@ -208,7 +208,7 @@ test("an unacknowledged state on a dead window is superseded, never deleted", ()
 });
 
 test("housekeeping removes dead rows but authors nothing", () => {
-  // Why the delete half is callable on its own. clearDeadWindows ran only from
+  // Why the delete half is callable on its own. reconcileDeadAgents ran only from
   // `export`, which happens when a PEER asks over ssh -- so a node with no
   // peers reaped never, which is the everyday single-machine case. Housekeeping
   // now runs from `collect`, on every invocation.

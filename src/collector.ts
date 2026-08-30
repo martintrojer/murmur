@@ -282,12 +282,12 @@ export async function collect(
   // Retention must not be able to fail a command, hence its own try.
   try {
     store.prune();
-    // Reap this host's agents whose tmux window is gone and whose last word was
+    // Reap this host's agents whose tmux pane is gone and whose last word was
     // `cleared`. Housekeeping, alongside retention, and for the same reason it
     // lives here: this runs once per invocation including with zero peers, so
     // the single-machine case is covered.
     //
-    // It could not live in `export` alone, which is where clearDeadWindows was
+    // It could not live in `export` alone, which is where reconcileDeadAgents was
     // called from -- export runs when a PEER asks over ssh, so a node with no
     // peers never reaped, and four dead crew rows sat in the author's picker
     // indefinitely. Only the owning host can do this: `live` is its own tmux.

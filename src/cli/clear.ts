@@ -123,7 +123,7 @@ export function clearPane(raw: string, mux: Mux = tmux): void {
       // badge in place on a fresh install -- which is what the comment above
       // was already warning about.
       if (window && !windowHasAgent(window, pane, identity?.host_id, mux, store)) {
-        mux.setState(window, null);
+        mux.setWindowBadge(window, null);
       }
       return;
     }
@@ -132,7 +132,7 @@ export function clearPane(raw: string, mux: Mux = tmux): void {
     // tmux, and nothing else reconciles them. Clear the option and return
     // without appending a second, redundant `cleared` event.
     if (owner.state === "cleared") {
-      mux.setState(owner.window, null);
+      mux.setWindowBadge(owner.window, null);
       return;
     }
 
@@ -173,7 +173,7 @@ export function clearPane(raw: string, mux: Mux = tmux): void {
       // An append that fails must not stop the badge clearing below: the badge
       // is tmux state, and leaving it set is the visible failure.
     }
-    mux.setState(owner.window, null);
+    mux.setWindowBadge(owner.window, null);
   } catch {
     // Focus hooks run inside the tmux server: they must always be silent and total.
   } finally {

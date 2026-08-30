@@ -106,7 +106,7 @@ export default function murmurPi(pi: ExtensionAPI): void {
     // the status bar and tms picker both read it.
     if (location.window !== lastWindow) {
       try {
-        tmux.setState(lastWindow, null);
+        tmux.setWindowBadge(lastWindow, null);
       } catch {
         // Best effort; the new window's badge matters more than the old one's.
       }
@@ -222,7 +222,7 @@ export default function murmurPi(pi: ExtensionAPI): void {
   pi.on("agent_start", () => {
     void enqueue(async () => {
       const location = here();
-      tmux.setState(location.window, "working");
+      tmux.setWindowBadge(location.window, "working");
       await append("working", process.pid, location);
     });
   });
@@ -231,7 +231,7 @@ export default function murmurPi(pi: ExtensionAPI): void {
     void enqueue(async () => {
       const location = here();
       const state = endState(focused(location.pane), muManaged);
-      tmux.setState(location.window, state === "cleared" ? null : state);
+      tmux.setWindowBadge(location.window, state === "cleared" ? null : state);
       await append(state, null, location);
     });
   });
@@ -246,7 +246,7 @@ export default function murmurPi(pi: ExtensionAPI): void {
   pi.on("session_shutdown", async () => {
     await enqueue(async () => {
       const location = here();
-      tmux.setState(location.window, null);
+      tmux.setWindowBadge(location.window, null);
       await append("cleared", null, location);
       // Always let go of the handle: on a quit nothing follows, and on a
       // reload the store must be reopened rather than reused across the

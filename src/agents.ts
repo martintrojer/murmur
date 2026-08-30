@@ -201,7 +201,7 @@ export function forgetOneAgent(store: Store, agent: Agent, mux: Mux = tmux): voi
   const identity = loadIdentity();
   if (agent.host_id === identity?.host_id) {
     try {
-      mux.setState(agent.window, null);
+      mux.setWindowBadge(agent.window, null);
     } catch {
       // Best effort: the row still goes.
     }

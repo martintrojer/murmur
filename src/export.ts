@@ -96,24 +96,10 @@ function synthesizeCrashes(store: Store, hostId: string, isAlive: LiveCheck): vo
 }
 
 /**
- * Clear agents whose tmux window is gone.
+ * Drop this host's agents whose pane is gone and whose last state is already
+ * `cleared`.
  *
- * A window that dies takes its agent with it, but the log's newest row still
- * says `blocked`, so every peer keeps showing an agent that cannot be jumped
- * to -- the fold has nothing to supersede that row with. Only the authoring
- * node can tell, which is why this runs on export beside crash synthesis
- * rather than on the reader.
- *
- * `cleared` is the right state: it already means "no longer wants attention"
- * and resets the fold to none. An appended event rather than an export-time
- * filter, so the fact replicates once and explains itself, instead of every
- * peer having to re-derive it from an absence.
- */
-/**
- * Drop this host's agents whose tmux window is gone and whose last state is
- * already `cleared`.
- *
- * The delete-only half of clearDeadWindows, callable without building an
+ * The delete-only half of reconcileDeadAgents, callable without building an
  * export. Housekeeping runs from `collect`, which happens on every invocation
  * including with no peers; export only runs when a peer asks over ssh, so a
  * single-machine node reaped never.
@@ -133,15 +119,6 @@ export function reapDeadAgents(store: Store, panes: Set<PaneId> | null = tmux.li
   }
 
   for (const event of newest.values()) {
-    // Keyed on the PANE, not the window, and that distinction deleted ten live
-    // agents on the author's machine.
-    //
-    // `agent_id` is `host:pane`, and a pane keeps its id when it moves between
-    // windows -- move-pane, break-pane, or closing and reopening a window. So
-    // the window id on an agent's last event goes stale routinely while the
-    // agent is still running, and sweeping on windows read that as "the agent
-    // is gone". Verified against real tmux: after move-pane the pane id was
-    // unchanged and the old window id had vanished from liveWindows().
     if (panes.has(event.pane)) continue;
 
     // Only a row that already says "nothing to see". blocked, done and crashed
@@ -152,7 +129,32 @@ export function reapDeadAgents(store: Store, panes: Set<PaneId> | null = tmux.li
   }
 }
 
-export function clearDeadWindows(
+/**
+ * Reconcile this host's agents against the panes that still exist.
+ *
+ * A pane that dies takes its agent with it, but the log's newest row still says
+ * `blocked`, so every peer keeps showing an agent that cannot be jumped to --
+ * the fold has nothing to supersede that row with. Only the authoring node can
+ * tell, which is why this runs on export beside crash synthesis rather than on
+ * the reader.
+ *
+ * `cleared` is the right state: it already means "no longer wants attention"
+ * and resets the fold to none. An appended event rather than an export-time
+ * filter, so the fact replicates once and explains itself, instead of every
+ * peer having to re-derive it from an absence.
+ *
+ * The PANES decide, and that is the whole of the rule this function got wrong
+ * once. `agent_id` is `host:pane` and a pane keeps its id when it moves between
+ * windows -- move-pane, break-pane, a window closed and reopened -- so the
+ * window on an agent's last event goes stale routinely while the agent runs on.
+ * Keying on it deleted ten live agents in one sweep. Verified against real
+ * tmux: after move-pane the pane id was unchanged and the old window id had
+ * vanished from `liveWindows()`.
+ *
+ * `live` is therefore not a second liveness key. It is only the null-check that
+ * proves tmux could answer at all.
+ */
+export function reconcileDeadAgents(
   store: Store,
   hostId: string,
   live: Set<WindowId> | null,
@@ -171,18 +173,6 @@ export function clearDeadWindows(
   }
 
   for (const event of newest.values()) {
-    // The PANE decides whether the agent is gone, not the window.
-    //
-    // `agent_id` is `host:pane`, and a pane keeps its id when it moves between
-    // windows -- move-pane, break-pane, or a window closed and reopened. So the
-    // window id on an agent's last event goes stale routinely while the agent
-    // is still running. Keying on the window read that as death and, on the
-    // author's machine, deleted ten live agents in one sweep. Verified against
-    // real tmux: after move-pane the pane id was unchanged and the old window
-    // id had vanished from liveWindows().
-    //
-    // The window set is still taken, and still null-checked above, because a
-    // tmux that cannot answer must stop the whole sweep.
     if (panes.has(event.pane)) continue;
 
     // Gone AND already saying "nothing to see": drop it. Without this the row
@@ -198,6 +188,9 @@ export function clearDeadWindows(
       ...rest,
       state: "cleared",
       synthetic: true,
+      // On the wire, so it stays as it is despite naming a window: peers and
+      // stored rows already carry this string, and renaming a reason code is a
+      // schema change, not a vocabulary fix.
       reason: "window_gone",
       message: "",
     });
@@ -212,7 +205,7 @@ export function exportJsonl(
 ): string {
   const identity = ensureIdentity();
   synthesizeCrashes(store, identity.host_id, isAlive);
-  if (live !== undefined) clearDeadWindows(store, identity.host_id, live);
+  if (live !== undefined) reconcileDeadAgents(store, identity.host_id, live);
 
   const envelope: Envelope = {
     schema_version: SCHEMA_VERSION,

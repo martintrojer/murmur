@@ -234,7 +234,7 @@ test("forgetting a local agent clears its tmux badge as well as the row", () => 
   const identity = ensureIdentity();
   const cleared: (string | null)[] = [];
   const spy = fakeMux({
-    setState: (window, state) => void cleared.push(state === null ? window : state),
+    setWindowBadge: (window, state) => void cleared.push(state === null ? window : state),
   });
   const agent = {
     agent_id: `${identity.host_id}:%1`,

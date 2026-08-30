@@ -21,7 +21,12 @@ export interface Mux {
   currentWindow(): Location | null;
   liveWindows(): Set<WindowId> | null;
   livePanes(): Set<PaneId> | null;
-  setState(window: WindowId, state: AgentState | null): void;
+  // Sets `@agent_state` on a WINDOW, even though the attention it expresses
+  // belongs to a pane. The asymmetry is tmux's: the status bar and the `tms`
+  // picker read a window option, and there is no per-pane equivalent they
+  // would read instead. Its consequence is that a pane moving between windows
+  // must clear the badge it left behind, since nothing else knows it moved.
+  setWindowBadge(window: WindowId, state: AgentState | null): void;
   // Reports whether the attach actually happened. runTmux swallows failures to
   // return null, and a jump that silently failed looked exactly like "enter did
   // nothing" -- the symptom the remote probe was added to prevent, reproduced
@@ -74,12 +79,17 @@ function runTmux(args: string[]): string | null {
  *
  * Neither rescues a name starting with `@`, `$` or `%`: those introduce tmux's
  * window, session and pane id syntax. remoteSessionName keeps them out.
+ *
+ * Both take a session NAME -- not a SessionId, which is why neither is branded.
+ * `exactPaneTarget` is named for what it RETURNS, a tmux target-pane, because
+ * what it takes and what it produces are different things and the old name
+ * `exactPane` read as though it took a pane.
  */
 export function exactSession(session: string): string {
   return `=${session}`;
 }
 
-export function exactPane(session: string): string {
+export function exactPaneTarget(session: string): string {
   return `=${session}:`;
 }
 
@@ -156,7 +166,7 @@ export const tmux: Mux = {
     return new Set(out.split("\n").filter(Boolean).map(asPaneId));
   },
 
-  setState(window, state) {
+  setWindowBadge(window, state) {
     if (state === null) {
       runTmux(["set-window-option", "-qu", "-t", window, "@agent_state"]);
     } else {
@@ -254,7 +264,7 @@ export const tmux: Mux = {
   },
 
   setSessionOption(session, option, value) {
-    runTmux(["set-option", "-t", exactPane(session), option, value]);
+    runTmux(["set-option", "-t", exactPaneTarget(session), option, value]);
   },
 
   switchClient(client, session) {

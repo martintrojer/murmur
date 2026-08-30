@@ -36,7 +36,7 @@ test("clearing a sibling pane does not clear the agent in the same window", () =
   store.close();
 
   const clearedWindows: string[] = [];
-  const mux = fakeMux({ setState: (window) => void clearedWindows.push(window) });
+  const mux = fakeMux({ setWindowBadge: (window) => void clearedWindows.push(window) });
 
   clearPane("%2", mux);
 
@@ -66,7 +66,7 @@ test("a pane murmur does not own still gets its badge cleared", () => {
   // nothing else would ever come along to clear it. The badge is tmux's.
   const cleared: (string | null)[] = [];
   const mux = fakeMux({
-    setState: (window, state) => {
+    setWindowBadge: (window, state) => {
       cleared.push(state === null ? window : null);
     },
     windowForPane: () => asWindowId("@42"),
@@ -114,7 +114,7 @@ test("a sibling shell pane does not clear the agent's badge", () => {
     ...NOOP_MUX,
     windowForPane: () => asWindowId("@1"),
     panesInWindow: () => [asPaneId("%agent"), asPaneId("%shell")],
-    setState: (window, state) => {
+    setWindowBadge: (window, state) => {
       if (state === null) cleared.push(window);
     },
   };
@@ -144,7 +144,7 @@ test("an already-cleared row still clears a stale badge", () => {
     ...NOOP_MUX,
     windowForPane: () => asWindowId("@5"),
     panesInWindow: () => [asPaneId("%p")],
-    setState: (window, state) => {
+    setWindowBadge: (window, state) => {
       if (state === null) cleared.push(window);
     },
   };
@@ -173,7 +173,7 @@ test("focusing a working agent does not clear it", () => {
   store.close();
 
   const badges: (string | null)[] = [];
-  clearPane("%1", fakeMux({ setState: (_window, state) => void badges.push(state) }));
+  clearPane("%1", fakeMux({ setWindowBadge: (_window, state) => void badges.push(state) }));
 
   const after = openStore();
   const events = after.allEvents();
@@ -200,7 +200,7 @@ test("focusing an agent that wants attention still clears it", () => {
     store.close();
 
     const badges: (string | null)[] = [];
-    clearPane("%1", fakeMux({ setState: (_window, badge) => void badges.push(badge) }));
+    clearPane("%1", fakeMux({ setWindowBadge: (_window, badge) => void badges.push(badge) }));
 
     const after = openStore();
     expect(after.allEvents().at(-1)?.state).toBe("cleared");

@@ -165,7 +165,7 @@ test("a failed append closes the store it is dropping", async () => {
         session_name: null,
         window_name: null,
       }),
-      setState: () => {},
+      setWindowBadge: () => {},
     },
   }));
 
@@ -231,7 +231,7 @@ test("a transient write failure does not silence the agent for the rest of its l
         session_name: null,
         window_name: null,
       }),
-      setState: () => {},
+      setWindowBadge: () => {},
     },
   }));
 
@@ -281,7 +281,7 @@ test("a missing murmur is given up on after one attempt, not retried per event",
         session_name: null,
         window_name: null,
       }),
-      setState: () => {},
+      setWindowBadge: () => {},
     },
   }));
 
@@ -340,7 +340,7 @@ test("a pane moved to another window keeps its identity and stops badging the ol
         session_name: null,
         window_name: null,
       }),
-      setState: (target: string, state: string | null) => badges.push([target, state]),
+      setWindowBadge: (target: string, state: string | null) => badges.push([target, state]),
     },
   }));
 
@@ -423,7 +423,7 @@ test("session_shutdown does not permanently silence the extension, because /relo
         session_name: null,
         window_name: null,
       }),
-      setState: () => {},
+      setWindowBadge: () => {},
     },
   }));
 
@@ -487,7 +487,7 @@ test("session_start re-arms an extension that gave up, so a reload is a real rec
         session_name: null,
         window_name: null,
       }),
-      setState: () => {},
+      setWindowBadge: () => {},
     },
   }));
 

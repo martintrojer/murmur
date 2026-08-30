@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { rmSync } from "node:fs";
 import { afterAll, expect, test } from "vitest";
-import { exactPane, exactSession } from "../src/mux.js";
+import { exactPaneTarget, exactSession } from "../src/mux.js";
 
 // A private tmux server, so nothing here can touch the developer's session.
 // Every call carries -L; a bare `tmux` would hit whatever server is running.
@@ -66,8 +66,8 @@ test("the option target needs a trailing colon and the client target must not ha
   // outright with "no such session", and the exact form is `=name:` -- the
   // empty window/pane part resolving to the session's current pane.
   expect(rigFails("set-option", "-t", exactSession("keep"), "status", "off")).toBe(true);
-  expect(rigFails("set-option", "-t", exactPane("keep"), "status", "off")).toBe(false);
-  expect(rig("show-options", "-t", exactPane("keep"), "status")).toBe("status off");
+  expect(rigFails("set-option", "-t", exactPaneTarget("keep"), "status", "off")).toBe(false);
+  expect(rig("show-options", "-t", exactPaneTarget("keep"), "status")).toBe("status off");
 
   // switch-client -t takes a target-SESSION, where the pane form is wrong.
   // With no client attached both fail, so assert on the ERROR rather than the
@@ -82,7 +82,7 @@ test("the option target needs a trailing colon and the client target must not ha
     }
   };
   expect(noClient(exactSession("keep"))).toContain("no current client");
-  expect(noClient(exactPane("keep"))).toContain("no current client");
+  expect(noClient(exactPaneTarget("keep"))).toContain("no current client");
 });
 
 test("an exact target does not match a longer session by prefix", () => {
@@ -91,16 +91,16 @@ test("an exact target does not match a longer session by prefix", () => {
   // against the wrong session rather than failing. Only the `=` prefix is safe,
   // and murmur names wrapper sessions after peers, so collisions are ordinary.
   rig("new-session", "-d", "-s", "bubba~", "sleep 300");
-  rig("set-option", "-t", exactPane("bubba~"), "status", "on");
+  rig("set-option", "-t", exactPaneTarget("bubba~"), "status", "on");
 
   // No session named `bub` exists; the bare form finds `bubba~` anyway.
   expect(rigFails("set-option", "-t", "bub:", "status", "off")).toBe(false);
-  expect(rig("show-options", "-t", exactPane("bubba~"), "status")).toBe("status off");
+  expect(rig("show-options", "-t", exactPaneTarget("bubba~"), "status")).toBe("status off");
 
   // The exact form refuses, which is the behaviour murmur depends on.
-  rig("set-option", "-t", exactPane("bubba~"), "status", "on");
-  expect(rigFails("set-option", "-t", exactPane("bub"), "status", "off")).toBe(true);
-  expect(rig("show-options", "-t", exactPane("bubba~"), "status")).toBe("status on");
+  rig("set-option", "-t", exactPaneTarget("bubba~"), "status", "on");
+  expect(rigFails("set-option", "-t", exactPaneTarget("bub"), "status", "off")).toBe(true);
+  expect(rig("show-options", "-t", exactPaneTarget("bubba~"), "status")).toBe("status on");
 });
 
 test("a bare target cannot address a session whose name starts with a sigil", () => {
@@ -116,5 +116,5 @@ test("a bare target cannot address a session whose name starts with a sigil", ()
   // trailing colon makes even a sigil name addressable. Stripping the sigil is
   // still worth doing -- a session called `@bubba` is a trap for every tmux
   // command a human types at it by hand, not just for murmur's own calls.
-  expect(rigFails("set-option", "-t", exactPane("@sigil"), "status", "off")).toBe(false);
+  expect(rigFails("set-option", "-t", exactPaneTarget("@sigil"), "status", "off")).toBe(false);
 });
