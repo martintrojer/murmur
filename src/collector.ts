@@ -106,8 +106,14 @@ export const COLLECT_JITTER_MS = 20_000;
  * to treat as "did not answer". Tasks already in flight are not cancelled --
  * there is nothing to cancel a forked ssh with here -- but they no longer hold
  * the collect open, because the deadline races the pool rather than joining it.
+ *
+ * Exported for `doctor`, which fans out the same way over the same peers and
+ * must not grow a second pool: a private copy there would be a second answer to
+ * "how many ssh processes may murmur have in flight", and the two would drift.
+ * The DEADLINE is the caller's, because that is the one thing the two surfaces
+ * genuinely disagree about -- see DOCTOR_DEADLINE_MS.
  */
-async function mapSettled<T, R>(
+export async function mapSettled<T, R>(
   items: readonly T[],
   limit: number,
   task: (item: T) => Promise<R>,
