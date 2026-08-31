@@ -611,6 +611,83 @@ rendering a picker needs targets, and only ones it can reach. Identity is
 node's `host_id` and display name, which `peer add` records immediately rather
 than throwing away.
 
+Asymmetry is design, but it has a consequence nobody was told about: **if B does
+not peer A, B's picker cannot see A's agents, and no local surface can say so.**
+From A everything reads healthy, because from A it *is*. That was invisible on
+every surface until `murmur doctor`, which surveys each peer over ssh and
+reports it — asking `murmur export` for the peer's `host_id` and `murmur peer
+list --json` for its roster, since a snapshot structurally cannot carry a roster
+(below) and `peer list` carries no `host_id`. Two calls per peer, and identity is
+compared on `host_id` only: names are local handles and `hostname` can be a
+container id, so comparing rosters by name would report naming drift as
+asymmetry and miss genuine duplicates.
+
+It is *reported*, never called a fault. A doctor that flagged every asymmetry
+would cry wolf on the normal case — the laptop and the NAT'd server above — and
+train the operator to ignore it, so asymmetry is an observation and exits 0.
+Only a duplicate `host_id` and a snapshot-version mismatch are problems, because
+both are cases where murmur's own behaviour is provably wrong. Version skew is
+not recomputed there: `doctor` calls the same `versionCell` `peer list` uses, so
+the two cannot disagree about one peer.
+
+"Island" is scoped to one hop and says so: *no peer that this node surveyed peers
+this host*, not "no node in the fleet". `doctor` asks its own peers and stops —
+multi-hop survey is a crawler, needing loop detection, a depth bound and a story
+for a node reachable from B but not from here, all to report on machines this
+node cannot fix anyway.
+
+`doctor --topology` adds the fact hub advice needs and murmur otherwise lacks:
+who can reach whom. One `ssh A "ssh B true"` per ordered pair — a bare `true`, so
+it measures transport alone with no dependency on murmur existing on B, since
+"unreachable" and "reachable but murmur missing" have different fixes. Which node
+*can* be a hub is then a set intersection over the matrix rather than a
+preference, and a spoke counts only when reachability is proven in **both**
+directions, because the spoke collects from the hub and the hub collects from the
+spoke. When no node qualifies, nothing is recommended and the partition is
+reported instead. Measured on the author's fleet while building it: two peers
+reach nothing at all, no peer can resolve this node's own display name, and
+therefore no whole-fleet hub exists. A recommendation would have been wrong.
+
+A failed probe is not a negative. It becomes `unreachable` only when the target
+is demonstrably up — it answered this node's survey seconds earlier — and
+otherwise it is `unknown`, because a firewall and a sleeping laptop are
+indistinguishable from one dial and hub advice built on the confusion would flip
+between runs as machines sleep. Nothing a survey learns is written to the store:
+it is a diagnostic that reaches out, not state murmur caches, and caching it
+would make `peer list` report facts no collect established.
+
+**The snapshot carries no peer roster, deliberately.** Publishing one would be
+the obvious way to make the fleet self-describing, and it is refused: a snapshot's
+contract is "my panes, complete and authoritative", which is exactly what makes
+"absent from a snapshot means absent" true. A roster is neither complete nor
+authoritative — it is one node's local configuration, and its truth lives on the
+node being described rather than the one describing. Putting membership into that
+document would also make every membership question a format question, needing a
+version bump and a coordinated fleet upgrade, which is a heavy price so soon
+after 0.2.1 given that `parseSnapshot` rejects a mismatched version outright.
+Surveying over ssh needs no format change and no fleet-wide upgrade, and it is
+honest about what it is: a question asked now, not a fact murmur stores.
+
+**Only `collect` could ever be relayed, which is why there is no broker.** Three
+surfaces need a path to a pane's host, and they are not alike:
+
+| surface | needs |
+|---|---|
+| collect | `ssh <target> murmur export` |
+| glance (the picker's preview) | `ssh <target> tmux capture-pane` |
+| jump | `ssh <target>`, interactively |
+
+Glance and jump are inherently point-to-point — a captured pane and an
+interactive session cannot be served by a third party that holds neither — so a
+relay could only ever deduplicate `collect`. And `collect` is the cheap one:
+~400 bytes per pane, ~1.2KB for a whole snapshot, measured. A broker would
+therefore dedupe the cheapest of the three, leave both interactive paths exactly
+as they are, and add a daemon, a listening port and a second auth story to do it.
+That is the argument that outlives any one command, and it is why gossip and a
+NATS-style bus lost: they addressed payload, and payload was never the problem.
+The real cost was one forked ssh per peer per repaint, and it was fixed by
+throttling — see the collect floor in limitation 3.
+
 **Zero knobs.** Every exported setting is one the user can get wrong invisibly.
 Two are irreducible: `peers` (only the operator knows their fleet) and `theme`.
 Collection concurrency, deadlines and the staleness threshold are constants. The
@@ -871,9 +948,25 @@ each was cheaper to accept than to solve:
    only peer names and targets salvaged. A node serving the old event format is
    reported as reachable-but-broken, which is the honest description: the two
    cannot federate.
-3. **No incremental sync.** Every collect transfers each peer's whole snapshot.
-   It is bounded by live pane count, so it is small — but it is O(panes) per
-   tick rather than O(changes).
+3. **No incremental sync.** Every collect transfers each peer's whole snapshot,
+   so it is O(panes) rather than O(changes) — bounded by live pane count, and
+   small in absolute terms: ~400 bytes per pane and ~1.2KB for a whole snapshot,
+   measured. It is no longer *per tick*, though, and that was the part that
+   mattered. Fetch rate used to be tied to redraw rate, because `murmur status`
+   collects and tmux re-runs it every `status-interval`; the cost is quadratic in
+   a mesh and multiplied again per attached client, since the interval fires per
+   client. An ambient collect now skips a peer attempted within
+   `COLLECT_FLOOR_MS` ± `COLLECT_JITTER_MS / 2` (30s ± 10s), measured at 1.08s →
+   0.05s for `murmur status` against four real peers. Keyed on
+   `last_attempt_at`, not `fetched_at`: the expensive peer is the one that does
+   *not* answer, since it holds a forked ssh until `ConnectTimeout`, and keying
+   on success would exempt exactly the sleeping laptops the floor exists to stop
+   hammering. The jitter is drawn per peer per call and is what stops the floor
+   becoming a synchroniser — a bare floor makes a fleet converge on hitting one
+   machine in the same instant, permanently. Only ambient callers pass a floor:
+   `murmur collect` is a person asking, and the picker is a keypress, including
+   its `^r` refresh, where a floor would be a refresh key that silently does
+   nothing.
 4. **No nested agents.** A second live process in one pane is refused and
    reports nothing. A pane shows at most one agent.
 5. **No remote liveness inference.** `owner_pid` never crosses the wire, so a

@@ -180,7 +180,63 @@ picker to a key:
 murmur peer list         # your peers, and when each was last seen
 murmur peer list --all   # also ssh hosts that could become peers
 murmur peer add devbox   # an ssh target; identity is discovered
+murmur doctor            # survey each peer over ssh: what only a fleet view shows
+murmur doctor --topology # also probe who can reach whom, and compute hub options
 ```
+
+`peer list` answers "what have I configured, and when did I last hear from it"
+from local state. `doctor` dials out and asks each peer about *itself*, which is
+the only way to see the thing no local surface can: **membership is per node, so
+the fact that you peer a machine does not mean it peers you** — and if it does
+not, its picker cannot see your agents. Nothing is written and nothing is
+repaired; the commands to fix it are printed for you to run. Exit status is 0 for
+observations and 1 only for a real problem, so it is safe in a script.
+
+```
+$ murmur doctor
+Surveyed 4 peers, 4 answered.
+
+  bubba        bubba does not peer this node (mtrojer-mac), so its picker cannot see this node's agents
+  ...
+  mtrojer-mac  no peer that this node surveyed peers this host (mtrojer-mac); 4 of 4 surveyed peers cannot see this node's agents
+
+To check:
+
+  ssh bubba murmur peer add mtrojer-mac
+```
+
+Those suggestions name this node by the name it calls itself, and that name is
+not guaranteed to resolve *from the peer's side* — which is why they are printed
+as commands to check rather than run for you. On the author's own fleet no peer
+can resolve `mtrojer-mac` at all, so each one needs an address those hosts can
+actually reach. `murmur peer add` accepts a target that does not answer yet and
+discovers identity on the first successful collect, so trying costs nothing.
+
+`--topology` is a second, opt-in phase, because it costs one ssh dial per
+ordered pair — 4 peers is 20 — where the survey costs one per peer. Plain
+`doctor` answers "is my fleet mutual?"; `--topology` answers "what fleet shapes
+are even possible here?", which is a question you ask once while setting up.
+
+```
+$ murmur doctor --topology
+Probed 20 ordered pairs across 5 nodes.
+
+  mtrojer-mac  reaches all 4
+  bubba        reaches nothing; cannot reach mtrojer-mac, gardenpc, linuxpc, macmini
+  linuxpc      reaches gardenpc, macmini; cannot reach mtrojer-mac, bubba
+  macmini      reaches bubba, gardenpc, linuxpc; cannot reach mtrojer-mac
+
+No single node can hub this whole fleet. The largest star available is
+linuxpc serving {linuxpc, macmini}, which leaves out mtrojer-mac, bubba, gardenpc.
+```
+
+Reachability is not uniform and not symmetric, so which node *can* be a hub is
+arithmetic on that matrix rather than a preference. When no node qualifies,
+nothing is recommended and the partition is reported instead — a hub that half
+the fleet cannot reach is worse than no hub. A pair whose target was not
+demonstrably up is reported `unknown` rather than unreachable, because a
+sleeping laptop and a firewall need different fixes and only one of them is a
+fact about the pair.
 
 Nodes being asleep or switched off is the normal state of a fleet, so nothing
 warns about it on a polling path: `murmur status` and `murmur pick` stay silent

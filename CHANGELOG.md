@@ -3,6 +3,97 @@
 Notable changes per release. Written for someone deciding whether to upgrade,
 so it says what changed for a user rather than listing every commit.
 
+## Unreleased
+
+**The picker's name column shows `murmur`, not `hacking/murmur`.** 0.2.1 fixed
+*which* source a name comes from; this fixes how the session name is rendered
+once it gets there. Session names are conventionally paths — that is how `tms`
+and similar tools name them — and the last segment is the part that identifies
+the work, so that is what the name column shows now.
+
+That fallback is hit more often than it looks: an agent has no name from a richer
+source unless mu set one or you ran pi's `/name`, because pi's own auto-namer runs
+when a session closes. So a live hand-started pi — exactly the agent you are
+looking at — fell through to the session name. The full path is not lost; it is
+still in the stream column beside the name, so the row is strictly more
+informative than before at the same width. Names you or mu chose are never
+shortened.
+
+**`murmur status` no longer reaches your peers on every status-bar repaint.**
+Collection was driven by the tmux status bar — `status` collects, and tmux re-runs
+it every `status-interval` — so fetch rate was tied to redraw rate. On a
+four-peer node `murmur status` took 1.08s; it now takes 0.05s. If your status bar
+felt sluggish, or you saw a lot of ssh processes on a machine doing nothing in
+particular, that is this.
+
+An ambient collect now skips a peer attempted in the last 30s (±10s of jitter, so
+a fleet does not converge on hitting one machine at the same instant). Commands
+you run yourself are unaffected: `murmur collect` fetches every peer, and so does
+the picker, including its `^r` refresh. The visible trade is that a peer's data
+can be up to ~40s old in the status bar rather than one tick old; the staleness
+threshold is well above that, so a reachable peer still reads as fresh.
+
+**New: `murmur doctor` reports what only a fleet-wide view can see.** Membership
+is per node, so peering a machine does not mean it peers you — and if it does
+not, its picker cannot see your agents. No local surface could tell you that,
+because from your node everything reads healthy. `doctor` surveys each peer over
+ssh and names it, along with duplicate hosts configured twice, snapshot-version
+skew, one machine known under different names, and peers it could not survey at
+all.
+
+```
+$ murmur doctor
+Surveyed 4 peers, 4 answered.
+
+  bubba        bubba does not peer this node (mtrojer-mac), so its picker cannot see this node's agents
+  ...
+
+To check:
+
+  ssh bubba murmur peer add mtrojer-mac
+```
+
+It is read-only — nothing is written to the store and there is no `--fix`, since
+every repair runs on another machine. Repairs are printed for you to run. Exit
+status is 0 for observations and 1 only for a real problem, so it is safe in a
+script, and asymmetry is an observation: reachability is *meant* to be
+one-directional in places, and a check that failed on the normal case would be a
+check you learn to ignore. `--json` gives the finding list with machine-readable
+severity.
+
+Worth knowing before you act on its advice: the suggested commands name your node
+by the name it calls itself, and that name may not resolve from the peer's side.
+On the author's fleet none of them could resolve it, so each suggestion needed an
+address the far host can reach.
+
+**New: `murmur doctor --topology` computes which fleet shapes are actually
+possible.** Opt-in, because it costs one ssh dial per ordered pair (4 peers is
+20) where the survey costs one per peer.
+
+```
+$ murmur doctor --topology
+Probed 20 ordered pairs across 5 nodes.
+
+  mtrojer-mac  reaches all 4
+  bubba        reaches nothing; cannot reach mtrojer-mac, gardenpc, linuxpc, macmini
+  linuxpc      reaches gardenpc, macmini; cannot reach mtrojer-mac, bubba
+  macmini      reaches bubba, gardenpc, linuxpc; cannot reach mtrojer-mac
+
+No single node can hub this whole fleet. The largest star available is
+linuxpc serving {linuxpc, macmini}, which leaves out mtrojer-mac, bubba, gardenpc.
+```
+
+When no node can hub the fleet it recommends nothing and reports the partition,
+which is the useful half — a hub half the fleet cannot reach is worse than no
+hub. When one exists it prints the commands to build it, and states what a star
+costs: spokes see the hub and the hub sees everyone, but spokes do not see each
+other. A pair whose target was not demonstrably up is `unknown` rather than
+unreachable, so a sleeping laptop is never reported as a firewall.
+
+No upgrade coordination needed for any of this: the snapshot format is unchanged,
+and `doctor` works against peers running 0.2.1. A peer too old for `peer list
+--json` is reported as needing an upgrade rather than as broken.
+
 ## 0.2.1
 
 **Agents are named by their tmux session, not by whatever process tmux found
