@@ -1,6 +1,8 @@
 import type { Channel } from "./channel.js";
+import { versionCell } from "./cli/peer.js";
 import { describeFailure } from "./collector.js";
 import { parseSnapshot } from "./snapshot.js";
+import type { PeerRecord } from "./types.js";
 
 /**
  * Bound for a whole doctor run, and deliberately NOT COLLECT_DEADLINE_MS.
@@ -203,4 +205,299 @@ export async function surveyPeer(channel: Channel, target: string): Promise<Surv
   } catch (error) {
     return failure(target, "roster-invalid", error);
   }
+}
+
+/**
+ * Whether a finding is an operator task or just a fact about the fleet.
+ *
+ * The line is the one `collect` already draws between unreachable (expected,
+ * exit 0) and reachable-but-broken (exit 1): a problem is something murmur can
+ * say is definitely wrong, an observation is something only a human can judge.
+ * Asymmetry is deliberately on the observation side -- see `diagnose`.
+ */
+export type Severity = "observation" | "problem";
+
+export type FindingKind =
+  | "duplicate-host-id"
+  | "snapshot-skew"
+  | "asymmetry"
+  | "island"
+  | "naming-drift"
+  | "unsurveyable";
+
+export type Finding = {
+  kind: FindingKind;
+  severity: Severity;
+  /**
+   * The handle the operator would type: a peer's local name, or this node's
+   * display_name for a finding about this node. Never a host_id -- that is how
+   * findings are computed, not how they are read.
+   */
+  subject: string;
+  /** One sentence, complete on its own, so a renderer never has to compose. */
+  message: string;
+  /** A command to run, or null when there is nothing safe to suggest. */
+  remedy: string | null;
+};
+
+/**
+ * This node's peers, as `store.peers()` already returns them.
+ *
+ * A structural subset of PeerRecord rather than a new shape, so the caller
+ * hands over what it has and the compiler checks the overlap: a renamed column
+ * breaks here rather than silently reading undefined.
+ */
+export type LocalPeer = Pick<
+  PeerRecord,
+  "name" | "target" | "host_id" | "display_name" | "murmur_version" | "snapshot_version"
+>;
+
+/** This node: who it is, and who it has configured. */
+export type LocalNode = {
+  host_id: string;
+  display_name: string;
+  peers: LocalPeer[];
+};
+
+/** One host this node can name, with the identity every check compares on. */
+type KnownHost = {
+  host_id: string;
+  /** The host's OWN self-report, from a snapshot. The only cross-node label. */
+  display_name: string | null;
+  /** What this node calls it. `null` for this node itself. */
+  localName: string | null;
+  /** The ssh target this node uses, for a remedy that can be copied. */
+  target: string | null;
+};
+
+/**
+ * `describeFailure` prefixes the target, which reads twice once a finding has
+ * already named the peer. Dropped here rather than in the survey, because the
+ * prefix is right for a `peer list` error line and wrong inside a sentence.
+ */
+function withoutTargetPrefix(target: string, detail: string): string {
+  return detail.startsWith(`${target}: `) ? detail.slice(target.length + 2) : detail;
+}
+
+/**
+ * Whether one row of a peer's roster is about `host`.
+ *
+ * The hard part of the whole diagnosis, because `peer list --json` carries no
+ * host_id: a roster row is a local handle, an ssh target and -- only if that
+ * peer has ever actually heard from the host -- the name the host published for
+ * itself. So the match is made on that self-report, `display_name`, which both
+ * sides got from the same `export` document. That is not the same thing as
+ * trusting `hostname` as an identity: it is never used to tell two hosts apart,
+ * only to recognise a host that already named itself the same way to two nodes.
+ *
+ * When the row has no self-report at all, that peer has never reached the host,
+ * and the local handle is the only thing left. It is a weak match and it is used
+ * only in that case, since a name is local: comparing rosters by name in general
+ * reports naming drift as asymmetry and misses genuine duplicates.
+ */
+function rowIsAbout(row: RosterEntry, host: KnownHost): boolean {
+  if (host.display_name === null) return false;
+  if (row.hostname !== null) return row.hostname === host.display_name;
+  return row.name === host.display_name || row.target === host.display_name;
+}
+
+/**
+ * Findings from this node's configuration plus what its peers said. Pure.
+ *
+ * SEVERITY IS NOT A FEELING. Only two things are problems: one machine
+ * configured twice on this node, and a peer whose snapshot version this node
+ * rejects. Both are cases where murmur's own behaviour is provably wrong --
+ * double the ssh work for one host, or state that cannot flow at all.
+ *
+ * Everything else is an observation, and asymmetry most of all. ARCHITECTURE.md
+ * makes reachability deliberately one-directional -- "a laptop reaches a server,
+ * and the server does not reach a laptop behind NAT" -- so a doctor that called
+ * every asymmetry a fault would cry wolf on the normal case and teach the
+ * operator to ignore the command. It is still reported, because the consequence
+ * (that peer's picker cannot see this node's agents) is invisible on every other
+ * surface.
+ *
+ * Version skew is delegated to `versionCell`, never recomputed. `peer list`
+ * already decides what an incompatible pairing is and already prints it; a
+ * second definition is how this repository got NEEDS_HUMAN as two literals in
+ * two files, and a doctor that disagreed with `peer list` about one peer would
+ * be worse than no doctor.
+ */
+export function diagnose(local: LocalNode, surveys: SurveyResult[]): Finding[] {
+  const findings: Finding[] = [];
+  const answered = surveys.filter((survey): survey is { ok: true } & PeerSurvey => survey.ok);
+  const byTarget = new Map(answered.map((survey) => [survey.target, survey]));
+  const nameOf = (target: string) =>
+    local.peers.find((peer) => peer.target === target)?.name ?? target;
+
+  // This node plus every peer it has an identity for. A survey beats the cache:
+  // it was taken just now, and a peer added while unreachable has no cached
+  // identity at all until the first collect.
+  const self: KnownHost = {
+    host_id: local.host_id,
+    display_name: local.display_name,
+    localName: null,
+    target: null,
+  };
+  const hosts: KnownHost[] = [self];
+  for (const peer of local.peers) {
+    const survey = byTarget.get(peer.target);
+    const host_id = survey?.host_id ?? peer.host_id;
+    if (host_id === null) continue;
+    hosts.push({
+      host_id,
+      display_name: survey?.display_name ?? peer.display_name,
+      localName: peer.name,
+      target: peer.target,
+    });
+  }
+
+  // Duplicate host_id -- PROBLEM. Compared on host_id and nothing else: two
+  // names for one machine means every command pays two ssh round trips for one
+  // host, and nothing looks wrong until you notice the doubled work.
+  // `peerAddDecision` catches this at add time, but only for a peer whose
+  // identity was known then, so a peer added while asleep gets here first.
+  const seen = new Map<string, KnownHost>();
+  for (const host of hosts) {
+    if (host.localName === null) continue;
+    const first = seen.get(host.host_id);
+    if (first === undefined) {
+      seen.set(host.host_id, host);
+      continue;
+    }
+    const label = host.display_name ?? host.host_id;
+    findings.push({
+      kind: "duplicate-host-id",
+      severity: "problem",
+      subject: host.localName,
+      message:
+        `${first.localName} and ${host.localName} are the same machine (${label}), ` +
+        `so every command reaches it twice`,
+      remedy: `murmur peer remove ${host.localName}`,
+    });
+  }
+
+  // Snapshot skew -- PROBLEM, and entirely `versionCell`'s answer, including the
+  // text. Reproducing either the rule or the wording here is what the spec
+  // forbids.
+  for (const peer of local.peers) {
+    const cell = versionCell(peer);
+    if (!cell.incompatible) continue;
+    findings.push({
+      kind: "snapshot-skew",
+      severity: "problem",
+      subject: peer.name,
+      message:
+        `${peer.name} speaks an incompatible snapshot version (${cell.text}); ` +
+        `state will not sync until murmur versions match`,
+      remedy: `ssh ${peer.target} npm i -g @martintrojer/murmur`,
+    });
+  }
+
+  const peersThisNode = answered.filter((survey) =>
+    survey.roster.some((row) => rowIsAbout(row, self)),
+  );
+
+  // Asymmetry -- OBSERVATION. Only a surveyed peer can be asked, so a peer that
+  // did not answer is absent from this check rather than assumed either way.
+  for (const survey of answered) {
+    if (peersThisNode.includes(survey)) continue;
+    const name = nameOf(survey.target);
+    findings.push({
+      kind: "asymmetry",
+      severity: "observation",
+      subject: name,
+      message: `${name} does not peer this node (${local.display_name}), so its picker cannot see this node's agents`,
+      // display_name is what the operator would type, but it is not guaranteed
+      // to resolve from THAT host's ssh config, which murmur cannot see. So it
+      // is a command to check, and `peer add` tolerates a target that does not
+      // answer.
+      remedy: `ssh ${survey.target} murmur peer add ${local.display_name}`,
+    });
+  }
+
+  // Island -- OBSERVATION, and SCOPED TO ONE HOP. The wording is the finding:
+  // `doctor` asks this node's peers for their rosters and stops there, so it
+  // knows nothing about machines it never contacted. "No peer that this node
+  // surveyed peers this host" is exactly what was measured; "nobody in the
+  // fleet" would be a claim about hosts that were never asked.
+  //
+  // Requires at least one answer: with nothing surveyed there is no evidence of
+  // isolation, only absence of evidence.
+  if (answered.length > 0 && peersThisNode.length === 0) {
+    findings.push({
+      kind: "island",
+      severity: "observation",
+      subject: local.display_name,
+      message:
+        `no peer that this node surveyed peers this host (${local.display_name}); ` +
+        `${answered.length} of ${answered.length} surveyed peers cannot see this node's agents`,
+      remedy: null,
+    });
+  }
+
+  // Naming drift -- OBSERVATION. One host_id wearing different local handles on
+  // different nodes. Harmless to murmur and confusing to humans, which is
+  // exactly what an observation is for: the operator reading "gardenpc" in one
+  // picker and "garden" in another has no way to know it is one machine.
+  for (const host of hosts) {
+    const names = new Map<string, string[]>();
+    const record = (name: string, where: string) => {
+      const nodes = names.get(name);
+      if (nodes) nodes.push(where);
+      else names.set(name, [where]);
+    };
+    if (host.localName !== null) record(host.localName, "here");
+    for (const survey of answered) {
+      // A node does not name itself in its own roster, and its own handle for a
+      // host it is not is what we are collecting.
+      if (survey.host_id === host.host_id) continue;
+      for (const row of survey.roster) {
+        if (rowIsAbout(row, host)) record(row.name, nameOf(survey.target));
+      }
+    }
+    if (names.size < 2) continue;
+    const label = host.display_name ?? host.host_id;
+    const spelled = [...names]
+      .map(([name, nodes]) => `"${name}" on ${nodes.join(", ")}`)
+      .join("; ");
+    findings.push({
+      kind: "naming-drift",
+      severity: "observation",
+      subject: host.localName ?? local.display_name,
+      message: `one machine (${label}) is configured under different names: ${spelled}`,
+      remedy: null,
+    });
+  }
+
+  // Unsurveyable -- OBSERVATION, always. A fleet normally has a laptop asleep
+  // and a box switched off, and a diagnostic that called that a failure would be
+  // wrong on most runs. Reported per FAILED CALL, because that is what decides
+  // the action: an old murmur needs an upgrade, an unreachable host needs the
+  // network, and those must not read alike.
+  for (const survey of surveys) {
+    if (survey.ok) continue;
+    const name = nameOf(survey.target);
+    const detail = withoutTargetPrefix(survey.target, survey.detail);
+    findings.push({
+      kind: "unsurveyable",
+      severity: "observation",
+      subject: name,
+      message:
+        survey.reason === "roster-unsupported"
+          ? `${name} runs a murmur too old to report its roster, so it could not be checked -- upgrade that host`
+          : `${name} could not be surveyed -- ${detail}`,
+      remedy:
+        survey.reason === "roster-unsupported"
+          ? `ssh ${survey.target} npm i -g @martintrojer/murmur`
+          : null,
+    });
+  }
+
+  // Returned in the order they were appended, which is already problems first
+  // and then the operator's own peer order. There is no sort: a comparator here
+  // would be a second, weaker statement of an ordering the check order above
+  // already makes, and one that no longer failed if the checks were reordered.
+  // The order is pinned by a test instead.
+  return findings;
 }
