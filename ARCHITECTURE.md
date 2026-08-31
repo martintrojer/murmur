@@ -611,24 +611,22 @@ rendering a picker needs targets, and only ones it can reach. Identity is
 node's `host_id` and display name, which `peer add` records immediately rather
 than throwing away.
 
-Asymmetry is design, but it has a consequence nobody was told about: **if B does
-not peer A, B's picker cannot see A's agents, and no local surface can say so.**
-From A everything reads healthy, because from A it *is*. That was invisible on
-every surface until `murmur doctor`, which surveys each peer over ssh and
-reports it — asking `murmur export` for the peer's `host_id` and `murmur peer
-list --json` for its roster, since a snapshot structurally cannot carry a roster
-(below) and `peer list` carries no `host_id`. Two calls per peer, and identity is
-compared on `host_id` only: names are local handles and `hostname` can be a
-container id, so comparing rosters by name would report naming drift as
-asymmetry and miss genuine duplicates.
+Asymmetry is design with an unreported consequence: **if B does not peer A, B's
+picker cannot see A's agents, and no local surface can say so.** From A
+everything reads healthy, because from A it is.
 
-It is *reported*, never called a fault. A doctor that flagged every asymmetry
-would cry wolf on the normal case — the laptop and the NAT'd server above — and
-train the operator to ignore it, so asymmetry is an observation and exits 0.
-Only a duplicate `host_id` and a snapshot-version mismatch are problems, because
-both are cases where murmur's own behaviour is provably wrong. Version skew is
-not recomputed there: `doctor` calls the same `versionCell` `peer list` uses, so
-the two cannot disagree about one peer.
+`murmur doctor` surveys each peer over ssh and reports it. Two calls per peer —
+`murmur export` for the `host_id`, `murmur peer list --json` for the roster —
+because a snapshot structurally cannot carry a roster (below) and `peer list`
+carries no `host_id`. Identity is compared on `host_id` only: names are local
+handles and `hostname` can be a container id, so comparing by name would report
+naming drift as asymmetry and miss genuine duplicates.
+
+Asymmetry is *reported*, never called a fault, and exits 0. Flagging the normal
+case — the laptop and the NAT'd server above — would train the operator to ignore
+the command. Only a duplicate `host_id` and a snapshot-version mismatch are
+problems, because both are murmur behaving provably wrongly. Skew is not
+recomputed: `doctor` calls the same `versionCell` `peer list` uses.
 
 "Island" is scoped to one hop and says so: *no peer that this node surveyed peers
 this host*, not "no node in the fleet". `doctor` asks its own peers and stops —
@@ -638,15 +636,17 @@ node cannot fix anyway.
 
 `doctor --topology` adds the fact hub advice needs and murmur otherwise lacks:
 who can reach whom. One `ssh A "ssh B true"` per ordered pair — a bare `true`, so
-it measures transport alone with no dependency on murmur existing on B, since
-"unreachable" and "reachable but murmur missing" have different fixes. Which node
-*can* be a hub is then a set intersection over the matrix rather than a
-preference, and a spoke counts only when reachability is proven in **both**
-directions, because the spoke collects from the hub and the hub collects from the
-spoke. When no node qualifies, nothing is recommended and the partition is
-reported instead. Measured on the author's fleet while building it: two peers
-reach nothing at all, no peer can resolve this node's own display name, and
-therefore no whole-fleet hub exists. A recommendation would have been wrong.
+it measures transport alone, since "unreachable" and "reachable but murmur
+missing" have different fixes.
+
+Which node *can* hub is then a set intersection over the matrix, not a
+preference. A spoke counts only when reachability is proven in **both**
+directions, since the spoke collects from the hub and the hub from the spoke.
+When no node qualifies, nothing is recommended and the partition is reported.
+
+Measured while building it: on the author's fleet two peers reach nothing, no
+peer can resolve this node's own display name, and no whole-fleet hub exists. A
+recommendation would have been wrong.
 
 A failed probe is not a negative. It becomes `unreachable` only when the target
 is demonstrably up — it answered this node's survey seconds earlier — and
@@ -677,15 +677,15 @@ surfaces need a path to a pane's host, and they are not alike:
 | glance (the picker's preview) | `ssh <target> tmux capture-pane` |
 | jump | `ssh <target>`, interactively |
 
-Glance and jump are inherently point-to-point — a captured pane and an
-interactive session cannot be served by a third party that holds neither — so a
-relay could only ever deduplicate `collect`. And `collect` is the cheap one:
-~400 bytes per pane, ~1.2KB for a whole snapshot, measured. A broker would
-therefore dedupe the cheapest of the three, leave both interactive paths exactly
-as they are, and add a daemon, a listening port and a second auth story to do it.
-That is the argument that outlives any one command, and it is why gossip and a
-NATS-style bus lost: they addressed payload, and payload was never the problem.
-The real cost was one forked ssh per peer per repaint, and it was fixed by
+Glance and jump are inherently point-to-point: a captured pane and an interactive
+session cannot be served by a third party holding neither. So a relay could only
+deduplicate `collect` — and `collect` is the cheap one, ~400 bytes per pane and
+~1.2KB per snapshot, measured.
+
+A broker would therefore dedupe the cheapest of the three, leave both interactive
+paths untouched, and add a daemon, a port and a second auth story to do it. That
+is why gossip and a NATS-style bus lost: they address payload, and payload was
+never the problem. The cost was one forked ssh per peer per repaint, fixed by
 throttling — see the collect floor in limitation 3.
 
 **Zero knobs.** Every exported setting is one the user can get wrong invisibly.
@@ -716,83 +716,38 @@ deferral is the main reason murmur is small.
 
 ## Why not something else
 
-Investigated against herdr 0.8.2, a T3 Code checkout, and `mu`, all built and
-run locally rather than judged from their READMEs.
+Version numbers and roadmap status are deliberately absent here: they were true
+on the day they were checked and are the first thing to rot. What follows is the
+structural difference, which does not move.
 
-| | multi-machine view | pi support | state source |
-| --- | --- | --- | --- |
-| herdr | no — 1:1, planned, blocked | yes | screen-scraped |
-| T3 Code | no — "unbuilt" by its own docs | no — 14-method adapter | driven |
-| mu | state sync yes, agents no | yes | reported |
-| **murmur** | **yes** | **yes, in-process** | **reported from inside** |
+**Terminal multiplexers built for agents** (herdr and similar) own the panes and
+infer state by matching terminal output. Two consequences: every machine must run
+that multiplexer, which is not a choice you always have, and state is scraped
+rather than reported. murmur takes tmux as given and has the agent report from
+inside its own process.
 
-### herdr
+**Harness control surfaces** (T3 Code and similar) run a server that owns agent
+sessions, with clients over RPC. Their remote *access* is strong. The structural
+cost is the adapter: driving an agent you do not live inside needs a per-harness
+driver, where murmur's extension runs in-process and calls the store directly.
 
-A Rust terminal multiplexer built for coding agents: workspaces, tabs, panes, a
-per-pane `idle/working/blocked/done` sidebar, a socket API. Evaluated as a tmux
-replacement and rejected on its own terms.
+**Orchestrators** (`mu`) place work and replicate writes from many nodes, so they
+need an op-log, watermarks and conflict resolution. murmur observes and never
+places work, so single-writer-per-node caching removes all of it. **murmur
+observes, mu orchestrates.** Merging is plausible — murmur would give mu global
+agent addressing — but remote orchestration is a much harder problem than remote
+observation, and it is not murmur's.
 
-On multi-machine it is strictly 1:1. `--remote <target>` takes a single target,
-no subcommand has a `--host` flag, and `--remote` *replaces* the view rather
-than adding to it: two machines means two sessions and a full switch between
-them. Multi-client is the maintainer's stated top priority, gated behind a
-long-running server/client refactor.
+Taken from these tools, and worth stating because each is load-bearing above:
+integration installs that write hooks into each agent's own config (`murmur link
+pi`); reusing one authenticated connection; remoteness expressed at the
+connection layer rather than by splitting the runtime; identity as a stable UUID
+rather than a hostname; and ambient sync with no daemon, where every invocation
+syncs before the verb and no watcher outlives the command.
 
-Waiting would not help. The scope is one client attaching to multiple *herdr*
-servers, so every machine must run herdr — including machines where you cannot
-choose the multiplexer. And herdr detects state by matching terminal output, so
-adopting it trades reporting from inside the agent for screen-scraping.
-
-Taken from it: integration installs that write hooks into each agent's own
-config directory (`murmur link pi`), reusing one authenticated connection, and
-its own stated non-goals: no merged PTYs across machines, no moving work between
-hosts, host as a lightweight label. Rejected: the always-present sidebar, not
-for its ~4 columns but because it is fixed to one edge and cannot become a
-horizontal strip, while a status row is overhead already paid.
-
-### T3 Code
-
-An "agent harness control surface": a server owning agent sessions plus web,
-desktop and mobile clients over one RPC WebSocket.
-
-Its remote access is well ahead of herdr: direct ws/wss, bearer pairing, relay
-tunnels, mesh-VPN serve and desktop-managed SSH, all shipped. But the aggregated
-view is unbuilt by its own internals docs — multiple live connections exist, a
-fused cross-machine overview does not.
-
-It also does not support pi, and adding it is expensive: a provider needs a
-driver plus a fourteen-method adapter, and the reference implementation is over
-1700 lines. murmur's adapter problem is smaller structurally: T3 Code drives an
-agent it does not live inside, while murmur's extension runs *in process* and
-calls the store directly.
-
-Taken from it: the rule that *remoteness is expressed at the connection layer,
-never by splitting the runtime* (murmur's channel seam is exactly this),
-transport is not an identity, and environment identity as a stable UUID rather
-than a hostname.
-
-### mu
-
-An agent orchestrator: workstreams, a task DAG, agents in panes, isolated
-workspaces. It solved machine identity and cross-machine sync for its own
-problem, which is a genuinely harder one: mu replicates *writes* from many
-nodes, so it needs an op-log and per-peer watermarks.
-
-Two ideas taken directly. Sync is ambient rather than a daemon: every invocation
-syncs before the verb, and no watcher outlives the command. And sync never fails
-a command — every ambient entry point is total, and a dead peer warns and
-returns.
-
-One idea deliberately not taken: mu's generic replicated KV. A generic op-log
-needs conflict resolution, which single-writer-per-node caching skips entirely,
-and a murmur with `put`/`del` over arbitrary entities would just *be* mu. The
-same reasoning is why murmur ships no log of its own — nothing here is authored
-by two parties, so there is nothing to merge.
-
-**Relationship:** murmur observes, mu orchestrates. Merging is plausible later,
-since murmur would give mu global agent addressing and remote observation. But
-remote *orchestration* is much harder than remote observation, and none of it is
-murmur's problem.
+Deliberately not taken: a generic replicated KV. A generic op-log needs conflict
+resolution, which single-writer caching skips entirely, and a murmur with
+`put`/`del` over arbitrary entities would just *be* mu.
 
 ## The extension's lifecycle assumptions
 

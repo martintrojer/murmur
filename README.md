@@ -2,12 +2,11 @@
 
 **Every coding agent you have running, on every machine, in one list.**
 
-You have agents on your laptop, your desktop, and a box somewhere else. One of
-them is blocked waiting on you right now. Which one?
+You have agents on your laptop, your desktop, and a box somewhere else. One is
+blocked waiting on you. Which one?
 
-Today you find out by walking the machines. Attach here, glance there, try to
-remember where you left that session. murmur answers the question in one
-keystroke, then jumps you to the agent on whichever machine it turns out to be.
+Without murmur you walk the machines to find out. murmur answers in one
+keystroke and jumps you to the agent, wherever it is running.
 
 ```
      state    agent                          workstream    host           age / flags
@@ -17,53 +16,33 @@ keystroke, then jumps you to the agent on whichever machine it turns out to be.
    · idle     worker-2                        infra           here          crew
 ```
 
-Pick a row and press enter. Local agents are a window switch away; remote ones
-open over ssh. The preview beside the list shows the last few lines the agent
-printed, so you can tell "waiting on me" from "still thinking" without going
-there at all.
-
-## Why it exists
-
-The tools in this space are excellent at one machine and stop there.
-[herdr](https://herdr.dev) is strictly one client to one server, and its
-multi-client work is blocked behind an unfinished refactor. T3 Code has better
-remote *access* than anything else here, but lists the aggregated view as
-unbuilt in its own docs. Both infer agent state by matching terminal output.
-
-murmur takes a different bet. The agent reports its own state from inside the
-process, and the machines exchange nothing more complicated than "here is
-everything I currently know". Knowing what is happening is the hard part, and reporting
-it from inside the agent is what makes it reliable.
+Pick a row, press enter. Local agents are a window switch; remote ones open over
+ssh. The preview shows the last lines the agent printed, so you can tell "waiting
+on me" from "still thinking" without going there.
 
 ## What it is
 
-- **A state layer over tmux:** tmux keeps owning your panes. murmur owns the
-  answer to "what is every agent doing right now".
-- **Reported state, not scraped:** a pi extension reports from inside the agent.
-  Nothing screen-scrapes, and a crash is detected from a pid rather than guessed
-  from output.
-- **Current state only:** each node publishes one complete snapshot of what its
-  panes are doing right now. No history, no log, nothing to replay — which is
-  why a peer's whole answer can be replaced in one write and absence means
-  absence.
-- **No daemon, no listening socket, no master:** peers are pulled over ssh when
-  you run a command. Every node can aggregate; none is special.
-- **Fast with one machine:** it replaced a local-only script and got quicker
-  doing it, ~50 ms to first paint against 250 ms. Configuring zero peers is the
-  common case, and nothing about it is degraded.
+- **A state layer over tmux.** tmux owns your panes; murmur owns the answer to
+  "what is every agent doing right now".
+- **Reported state, not scraped.** A pi extension reports from inside the agent,
+  so a crash is detected from a pid rather than guessed from output.
+- **Current state only.** Each node publishes one complete snapshot. No history
+  and nothing to replay, which is why a peer's answer is replaced in one write
+  and absence means absence.
+- **No daemon, no socket, no master.** Peers are pulled over ssh when you run a
+  command. Every node aggregates; none is special.
+- **Fast with one machine.** ~50 ms to first paint. Zero peers is the common
+  case and nothing about it is degraded.
 
 ## What it is not
 
-It does not orchestrate. It observes and connects, and never places work; that
-is [`mu`](https://github.com/martintrojer/mu)'s job.
-
-It is not a remote terminal. You can glance at a remote pane or jump to it, but
-there is no frame streaming and no resize negotiation, which is most of why it
-stays small.
-
-It does not replace your multiplexer. See
-[ARCHITECTURE.md](ARCHITECTURE.md#why-not-something-else) for the comparison
-against herdr, T3 Code and `mu`.
+- **Not an orchestrator.** It observes and connects, never places work. That is
+  [`mu`](https://github.com/martintrojer/mu)'s job.
+- **Not a remote terminal.** Glance at a pane or jump to it; there is no frame
+  streaming or resize negotiation. That deferral is most of why murmur is small.
+- **Not a multiplexer.** tmux stays. See
+  [ARCHITECTURE.md](ARCHITECTURE.md#why-not-something-else) for how murmur
+  relates to adjacent tools.
 
 ## Requirements
 
@@ -184,59 +163,63 @@ murmur doctor            # survey each peer over ssh: what only a fleet view sho
 murmur doctor --topology # also probe who can reach whom, and compute hub options
 ```
 
-`peer list` answers "what have I configured, and when did I last hear from it"
-from local state. `doctor` dials out and asks each peer about *itself*, which is
-the only way to see the thing no local surface can: **membership is per node, so
-the fact that you peer a machine does not mean it peers you** — and if it does
-not, its picker cannot see your agents. Nothing is written and nothing is
-repaired; the commands to fix it are printed for you to run. Exit status is 0 for
-observations and 1 only for a real problem, so it is safe in a script.
+`peer list` reads local state: what you configured, and when you last heard from
+it. `doctor` dials out and asks each peer about *itself* — the only way to see
+what no local surface can: **membership is per node, so peering a machine does
+not mean it peers you.** If it does not, its picker cannot see your agents.
+
+`doctor` writes nothing and repairs nothing; it prints the commands. Exit 0 for
+observations, 1 only for a real problem, so it is safe in a script.
 
 ```
 $ murmur doctor
 Surveyed 4 peers, 4 answered.
+5 observations, nothing broken.
 
-  bubba        bubba does not peer this node (mtrojer-mac), so its picker cannot see this node's agents
-  ...
-  mtrojer-mac  no peer that this node surveyed peers this host (mtrojer-mac); 4 of 4 surveyed peers cannot see this node's agents
+Not visible to the fleet
+  mtrojer-mac  none of the 4 surveyed peers can see this node
 
-To check:
+One-way peering
+  These do not peer this node, so their pickers cannot see its agents.
+  bubba     does not peer mtrojer-mac
+  gardenpc  does not peer mtrojer-mac
 
+Do this
   ssh bubba murmur peer add mtrojer-mac
+  ssh gardenpc murmur peer add mtrojer-mac
 ```
 
-Those suggestions name this node by the name it calls itself, and that name is
-not guaranteed to resolve *from the peer's side* — which is why they are printed
-as commands to check rather than run for you. On the author's own fleet no peer
-can resolve `mtrojer-mac` at all, so each one needs an address those hosts can
-actually reach. `murmur peer add` accepts a target that does not answer yet and
-discovers identity on the first successful collect, so trying costs nothing.
+Suggestions name this node as it calls itself, and that name may not resolve from
+the peer's side — hence "check", not "run for you". `peer add` accepts a target
+that does not answer yet and discovers identity on the first collect, so trying
+costs nothing.
 
-`--topology` is a second, opt-in phase, because it costs one ssh dial per
-ordered pair — 4 peers is 20 — where the survey costs one per peer. Plain
-`doctor` answers "is my fleet mutual?"; `--topology` answers "what fleet shapes
-are even possible here?", which is a question you ask once while setting up.
+`--topology` is opt-in: it costs one dial per ordered pair (4 peers is 20) where
+the survey costs one per peer. Plain `doctor` answers "is my fleet mutual?";
+`--topology` answers "what shapes are possible here?", which you ask once while
+setting up.
 
 ```
 $ murmur doctor --topology
-Probed 20 ordered pairs across 5 nodes.
+Reachability  20 ordered pairs probed across 5 nodes
+               REACHES                 CANNOT REACH
+  mtrojer-mac  all 4                   -
+  bubba        -                       mtrojer-mac gardenpc linuxpc macmini
+  linuxpc      gardenpc macmini        mtrojer-mac bubba
+  macmini      bubba gardenpc linuxpc  mtrojer-mac
 
-  mtrojer-mac  reaches all 4
-  bubba        reaches nothing; cannot reach mtrojer-mac, gardenpc, linuxpc, macmini
-  linuxpc      reaches gardenpc, macmini; cannot reach mtrojer-mac, bubba
-  macmini      reaches bubba, gardenpc, linuxpc; cannot reach mtrojer-mac
-
-No single node can hub this whole fleet. The largest star available is
-linuxpc serving {linuxpc, macmini}, which leaves out mtrojer-mac, bubba, gardenpc.
+Hub  linuxpc  serves {linuxpc, macmini}, leaves out mtrojer-mac, bubba, gardenpc
 ```
 
-Reachability is not uniform and not symmetric, so which node *can* be a hub is
-arithmetic on that matrix rather than a preference. When no node qualifies,
-nothing is recommended and the partition is reported instead — a hub that half
-the fleet cannot reach is worse than no hub. A pair whose target was not
-demonstrably up is reported `unknown` rather than unreachable, because a
-sleeping laptop and a firewall need different fixes and only one of them is a
-fact about the pair.
+Which node *can* hub is arithmetic on that matrix, not a preference. When none
+qualifies, nothing is recommended and the partition is reported — a hub half the
+fleet cannot reach is worse than no hub. A pair whose target was not
+demonstrably up reads `unknown`, not unreachable: a sleeping laptop and a
+firewall need different fixes.
+
+A star also costs something the output states every time it names one: spokes see
+the hub and the hub sees every spoke, but **spokes do not see each other**, since
+`export` publishes local panes only.
 
 Nodes being asleep or switched off is the normal state of a fleet, so nothing
 warns about it on a polling path: `murmur status` and `murmur pick` stay silent
@@ -248,35 +231,31 @@ could not reach.
 bind -N "agent state picker" a display-popup -E -w 80% -h 60% "murmur pick"
 ```
 
-In the picker: `^r` refreshes, `^p` cycles the preview, and `^u` clears the
-filter. `M-b` / `M-w` / `M-d` / `M-x` filter to blocked,
-running, done or crashed, and `M-a` toggles orchestrated agents in and out of
-the list. Alt rather than ctrl because `^b` is tmux's own prefix, which a popup
-never receives. Typing matches the agent name, its workstream or tmux
-session, and its host, as literal substrings rather than scattered characters.
+In the picker: `^r` refreshes, `^p` cycles the preview, `^u` clears the filter.
+`M-b` / `M-w` / `M-d` / `M-x` filter to blocked, running, done or crashed; `M-a`
+toggles orchestrated agents. Alt rather than ctrl because `^b` is tmux's prefix,
+which a popup never receives. Typing matches agent name, workstream or tmux
+session, and host, as literal substrings.
 
 `murmur status` prints per-state counts for a status bar. Everything else is
 `--help`.
 
 ## Jumping to a remote agent
 
-A remote jump opens the `ssh -t <host> tmux attach` in a local tmux session of
-its own, named after the peer with a trailing `~`. That session sets two options
-on itself, and both are why the jump does not feel like nested tmux:
+A remote jump runs `ssh -t <host> tmux attach` in its own local tmux session,
+named after the peer with a trailing `~`. That session sets two options on
+itself, which is why it does not feel like nested tmux:
 
-- `status off` — no local status bar, so the remote's own bar is the only one on
-  screen and the jump reads as a full-screen ssh.
-- `prefix None` — no local prefix at all, so `^b` goes straight to the remote.
-  No `^b b`, and no second prefix to learn.
+- `status off` — the remote's bar is the only one on screen.
+- `prefix None` — `^b` goes straight to the remote. No `^b b` to learn.
 
-Both are per-session, so your other sessions keep their prefix and status bar.
-When you leave the remote — inner `^b d`, the remote session ending, or the ssh
-dropping — the wrapper returns you to the exact window you jumped from and
-disappears. Jumping to the same host twice reuses the one session.
+Both are per-session, so your other sessions are unaffected. Leaving the remote
+(inner `^b d`, the session ending, or the ssh dropping) returns you to the window
+you jumped from and destroys the wrapper. Jumping to the same host twice reuses
+one session.
 
-The tradeoff: while you are inside the wrapper, the local tmux has no prefix, so
-you cannot reach it. If you want an escape hatch that does not involve the
-remote, bind one key in the root table:
+The tradeoff: inside the wrapper the local tmux has no prefix, so you cannot
+reach it. For an escape hatch, bind one key in the root table:
 
 ```tmux
 # Alt-Escape detaches out of a murmur wrapper session, and does nothing
@@ -302,9 +281,9 @@ shows each peer's version for exactly this. Upgrade the fleet together.
 
 ## Documentation
 
-[ARCHITECTURE.md](ARCHITECTURE.md) explains how it works: the three independent
-facts the whole model rests on, why it exists rather than the alternatives, what
-it deliberately cannot do, and what is unfinished.
+[ARCHITECTURE.md](ARCHITECTURE.md): the three independent facts the model rests
+on, the design choices and what they cost, what murmur deliberately cannot do,
+and what is unfinished.
 
 ---
 
