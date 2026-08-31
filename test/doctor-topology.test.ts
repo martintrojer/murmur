@@ -194,9 +194,7 @@ test("a viable whole-fleet hub is computed and named", async () => {
   const hub = bestHub(hubCandidates(topology));
   expect(hub?.star).toHaveLength(3);
   const output = renderTopology(topology);
-  expect(output).toContain(
-    "A star hubbed at mtrojer-mac is possible, and would serve the whole fleet.",
-  );
+  expect(output).toContain("serves the whole fleet");
   expect(output).toContain("  ssh bubba murmur peer add mtrojer-mac\n");
   expect(output).toContain("  ssh gardenpc murmur peer add mtrojer-mac\n");
 });
@@ -212,14 +210,16 @@ test("when no hub exists it recommends nothing and says so", async () => {
   );
   expect(bestHub(hubCandidates(topology))).toBeNull();
   const output = renderTopology(topology);
-  expect(output).toContain("No node can serve as a hub for this fleet, and none is recommended.");
+  // The FACT, not the sentence: no hub named, and nothing suggested.
+  expect(output).toMatch(/Hub\s+.*none possible/);
   // RECOMMENDS NOTHING: no build instructions and no node named as a hub.
-  expect(output).not.toContain("To build it:");
+  expect(output).not.toContain("To build that star");
   expect(output).not.toContain("murmur peer add");
   // The partition is reported instead, which is the true and useful half.
-  expect(output).toContain("bubba        reaches nothing");
-  expect(output).toContain("gardenpc     reaches nothing");
-  expect(output).toContain("mtrojer-mac  reaches all 2");
+  // The matrix still reports each node's own reach, in whatever layout.
+  expect(output).toMatch(/bubba\s+-\s/);
+  expect(output).toMatch(/gardenpc\s+-\s/);
+  expect(output).toMatch(/mtrojer-mac\s+all 2/);
 });
 
 test("bubba reaching nothing is never named as a hub", async () => {
@@ -246,7 +246,7 @@ test("bubba reaching nothing is never named as a hub", async () => {
   expect(hub?.node).not.toBe("bubba");
   // The best available star excludes bubba rather than pretending it fits.
   expect(hub?.star).not.toContain("bubba");
-  expect(renderTopology(topology)).toContain("which leaves out bubba");
+  expect(renderTopology(topology)).toMatch(/leaves out .*bubba/);
 });
 
 test("the largest workable subset is named along with what it leaves out", async () => {
@@ -265,9 +265,9 @@ test("the largest workable subset is named along with what it leaves out", async
     reachableFromHere(surveys("macmini", "gardenpc", "linuxpc")),
   );
   const output = renderTopology(topology);
-  expect(output).toContain("No single node can hub this whole fleet.");
-  expect(output).toContain("mtrojer-mac serving {mtrojer-mac, macmini, gardenpc}");
-  expect(output).toContain("which leaves out linuxpc");
+  expect(output).toMatch(/Hub\s+mtrojer-mac/);
+  expect(output).toContain("serves {mtrojer-mac, macmini, gardenpc}");
+  expect(output).toMatch(/leaves out .*linuxpc/);
   // Only the spokes that are actually served get a command.
   expect(output).toContain("  ssh macmini murmur peer add mtrojer-mac\n");
   expect(output).not.toContain("ssh linuxpc murmur peer add");
@@ -284,9 +284,9 @@ test("the cost of a star is always stated when a star is recommended", async () 
   // The one thing an operator adopting a star is most likely to assume wrongly.
   expect(output).toContain("SPOKES WOULD NOT SEE EACH OTHER");
   // And the mechanism, so it reads as a consequence rather than a rule.
-  expect(output).toContain("publishes a node's own panes only");
+  expect(output).toContain("publishes a node's own\n  panes only");
   expect(output).toContain("a hub cannot re-serve what it learned");
-  expect(output).toContain("A star is not a mesh, and choosing one is choosing that.");
+  expect(output).toContain("A star is not a mesh.");
 });
 
 test("unknown pairs are reported separately from real negatives", async () => {
@@ -299,8 +299,9 @@ test("unknown pairs are reported separately from real negatives", async () => {
   const output = renderTopology(topology);
   // "cannot reach" is a fact to act on; "unknown" is an absence of information.
   // Merging them would have the operator act on the wrong one.
-  expect(output).toContain("unknown for linuxpc");
-  expect(output).toContain("mtrojer-mac  reaches macmini; unknown for linuxpc");
+  // A dedicated UNKNOWN column, present only because this fleet has one.
+  expect(output).toContain("UNKNOWN");
+  expect(output).toMatch(/mtrojer-mac\s+macmini\s+-\s+linuxpc/);
   // linuxpc never answered, so nothing about it is called a negative.
   expect(output).not.toContain("cannot reach linuxpc");
 });
@@ -320,8 +321,8 @@ test("a name that does not resolve is called out as naming, not network", async 
   // Measured on the real fleet: macmini cannot resolve this node's
   // display_name. It looks identical to a network fault in the matrix and has a
   // completely different fix.
-  expect(output).toContain("mtrojer-mac could not be resolved by name from macmini");
-  expect(output).toContain("That is a naming\nproblem rather than a network one");
+  expect(output).toContain("mtrojer-mac is not resolvable by name from macmini");
+  expect(output).toMatch(/a naming\n\s+problem, not a network one/);
 });
 
 test("name-resolution failures are recognised in ssh's several phrasings", () => {
@@ -345,7 +346,7 @@ test("the probe count reported is the number of dials actually attempted", async
   // Six ordered pairs across three nodes, minus linuxpc's two outbound dials.
   expect(topology.edges).toHaveLength(6);
   expect(topology.probes).toBe(4);
-  expect(renderTopology(topology)).toContain("Probed 4 ordered pairs across 3 nodes.");
+  expect(renderTopology(topology)).toContain("4 ordered pairs probed across 3 nodes");
 });
 
 test("pairs the deadline never reached are unknown, never a false negative", async () => {
@@ -394,7 +395,7 @@ test("a single node fleet probes nothing and recommends nothing", async () => {
   expect(log).toEqual([]);
   expect(bestHub(hubCandidates(topology))).toBeNull();
   // One node is not a star, so there is nothing to name.
-  expect(renderTopology(topology)).toContain("No node can serve as a hub");
+  expect(renderTopology(topology)).toMatch(/Hub\s+.*none possible/);
 });
 
 test("the largest star wins when candidates differ in size", async () => {

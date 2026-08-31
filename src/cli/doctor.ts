@@ -8,6 +8,7 @@ import {
   DOCTOR_DEADLINE_MS,
   diagnose,
   type Finding,
+  type FindingKind,
   hubCandidates,
   isNameResolutionFailure,
   type LocalNode,
@@ -20,6 +21,7 @@ import {
 import { openStore } from "../store.js";
 import type { PeerRecord } from "../types.js";
 import { requireIdentity } from "./identity-guard.js";
+import { formatTable } from "./peer.js";
 
 /**
  * Survey every configured peer, concurrently and under one deadline.
@@ -79,186 +81,255 @@ export async function surveyFleet(
  * The whole report, as text. Pure over findings so every line below is testable
  * without an ssh binary, a store or a captured stdout.
  *
- * NO TABLE, deliberately. `peer list` prints its errors below its table rather
- * than in it because a message is a sentence and a column of sentences is not a
- * table; every finding here is that kind of sentence. Peer names ARE padded
- * into a gutter, which is alignment rather than tabulation: one short column of
- * subjects makes the list scannable, and the sentence that follows is prose.
+ * TABLES, not prose. The first version printed one full sentence per finding,
+ * and on a four-peer fleet that was four 106-column lines saying the same thing:
+ * each repeated the subject it was already aligned under, and each repeated an
+ * identical consequence. A report is scanned before it is read, and prose cannot
+ * be scanned.
+ *
+ * So: findings grouped by kind, one table per group with the consequence stated
+ * once in the group's heading, and every suggested command collected under one
+ * ACTIONS block. `peer list` prints its errors below its table rather than in it
+ * for the same reason -- a column of sentences is not a table.
  */
+// Dim, so a group's shared consequence and the caveats read as annotation rather
+// than as another finding. Same escape the picker uses.
+const DIM = "\u001b[2m";
+const RESET = "\u001b[0m";
+
+/** Two spaces on every line, so a table sits under its heading. */
+function indent(block: string): string {
+  return block
+    .split("\n")
+    .map((line) => (line ? `  ${line}` : line))
+    .join("\n");
+}
+
+/**
+ * What a group of findings of one kind is called, and the consequence they share.
+ *
+ * The consequence lives here, once per group, rather than in each row. Four rows
+ * of "so its picker cannot see this node's agents" is the same clause four times;
+ * stated once above the table it is read once and applies to every row.
+ */
+const GROUP: Record<FindingKind, { heading: string; because: string | null }> = {
+  "duplicate-host-id": {
+    heading: "Duplicate peers",
+    because: "One machine configured twice. Every command reaches it twice.",
+  },
+  "snapshot-skew": {
+    heading: "Incompatible versions",
+    because: "State will not sync with these until murmur versions match.",
+  },
+  asymmetry: {
+    heading: "One-way peering",
+    because: "These do not peer this node, so their pickers cannot see its agents.",
+  },
+  island: {
+    heading: "Not visible to the fleet",
+    because: null,
+  },
+  "naming-drift": {
+    heading: "Naming drift",
+    because: "Harmless to murmur, confusing to read: one machine, several names.",
+  },
+  unsurveyable: {
+    heading: "Could not be surveyed",
+    because: "Normal for a sleeping laptop or a box switched off.",
+  },
+};
+
+/** The order groups appear in: problems first, then observations. */
+const GROUP_ORDER: FindingKind[] = [
+  "duplicate-host-id",
+  "snapshot-skew",
+  "island",
+  "asymmetry",
+  "naming-drift",
+  "unsurveyable",
+];
+
 export function render(
   local: LocalNode,
   surveys: readonly SurveyResult[],
   findings: readonly Finding[],
 ): string {
   const answered = surveys.filter((survey) => survey.ok).length;
-  const lines: string[] = [];
+  const out: string[] = [];
 
   // The denominator first, because it bounds every claim that follows: a report
-  // over one answered peer of four is a much weaker statement than one over
-  // four, and the reader cannot discount the findings without knowing which.
-  lines.push(
-    surveys.length === 0
-      ? "No peers configured, so there is nothing to survey.\n"
-      : `Surveyed ${surveys.length} peer${surveys.length === 1 ? "" : "s"}, ${answered} answered.\n`,
+  // over one answered peer of four is a much weaker statement than one over four,
+  // and the reader cannot discount the findings without knowing which.
+  if (surveys.length === 0) return "No peers configured, so there is nothing to survey.\n";
+  out.push(
+    `Surveyed ${surveys.length} peer${surveys.length === 1 ? "" : "s"}, ${answered} answered.\n`,
   );
-
   if (findings.length === 0) {
-    if (surveys.length > 0) {
-      lines.push("\nNo problems found.\n");
-    }
-    return lines.join("");
+    out.push("\nNo problems found.\n");
+    return out.join("");
   }
 
-  // Aligned on the subject, which is the handle the operator types. Widths from
-  // the findings themselves, so the gutter never depends on a peer that is not
-  // being reported about.
-  const width = Math.max(...findings.map((finding) => finding.subject.length));
-  lines.push("\n");
-  for (const finding of findings) {
-    // A problem is marked in the row, not just counted at the end. The mark is
-    // what a reader scanning a long report sees, and without it a duplicate
-    // host_id reads exactly like a sleeping laptop.
-    const mark = finding.severity === "problem" ? "!" : " ";
-    lines.push(`${mark} ${finding.subject.padEnd(width)}  ${finding.message}\n`);
+  const problems = findings.filter((finding) => finding.severity === "problem").length;
+  // A one-line verdict before any detail, so the reader knows whether to act
+  // before deciding how much to read. Problems and observations are counted
+  // separately because the whole exit-code contract rests on the difference.
+  const counts = [
+    problems > 0 ? `${problems} problem${problems === 1 ? "" : "s"}` : "",
+    findings.length - problems > 0
+      ? `${findings.length - problems} observation${findings.length - problems === 1 ? "" : "s"}`
+      : "",
+  ].filter(Boolean);
+  // The verdict, and it is the line the reader acts on. A count of problems is
+  // the whole point of the exit code, so it is stated in words here rather than
+  // left to be inferred by counting `!` marks further down.
+  out.push(
+    problems > 0
+      ? `${counts.join(", ")}. See "Do this" below.\n`
+      : `${counts.join(", ")}, nothing broken.\n`,
+  );
+
+  for (const kind of GROUP_ORDER) {
+    const group = findings.filter((finding) => finding.kind === kind);
+    if (group.length === 0) continue;
+    const { heading, because } = GROUP[kind] ?? { heading: kind, because: null };
+    // The severity mark is a column ONLY when a group actually contains a
+    // problem. Every kind here has a fixed severity today, so a mark column on an
+    // all-observation group is three columns of whitespace on every row -- and an
+    // empty column reads as a missing value rather than as "nothing to flag".
+    const marked = group.some((finding) => finding.severity === "problem");
+    const rows = group.map((finding) =>
+      marked
+        ? [finding.severity === "problem" ? "!" : " ", finding.subject, finding.detail]
+        : [finding.subject, finding.detail],
+    );
+    out.push(`\n${heading}\n`);
+    if (because) out.push(`  ${DIM}${because}${RESET}\n`);
+    out.push(indent(formatTable(rows)));
   }
 
   const remedies = findings.filter(
     (finding): finding is Finding & { remedy: string } => finding.remedy !== null,
   );
   if (remedies.length > 0) {
+    // ONE actions block, at the end, deduplicated. Commands were previously
+    // interleaved with the prose that motivated them, so an operator had to read
+    // the whole report to collect them -- and the same `peer add` could appear
+    // under two findings.
+    out.push("\nDo this\n");
+    const seen = new Set<string>();
+    for (const finding of remedies) {
+      if (seen.has(finding.remedy)) continue;
+      seen.add(finding.remedy);
+      out.push(`  ${finding.remedy}\n`);
+    }
     // Whether the suggestions need the caveat depends on what they are: only a
     // `peer add` naming THIS node depends on this node's display_name resolving
-    // from the far side. A `peer remove` runs here, and an upgrade names no
-    // host at all.
-    const namesThisNode = remedies.some((finding) =>
-      finding.remedy.includes(`murmur peer add ${local.display_name}`),
-    );
-    lines.push("\nTo check:\n\n");
-    for (const finding of remedies) {
-      lines.push(`  ${finding.remedy}\n`);
-    }
-    if (namesThisNode) {
-      // The caveat the output must not hide. `display_name` is what the operator
-      // would type HERE; whether the peer can resolve it depends on that peer's
-      // ssh config and DNS, which murmur cannot see. So these are commands to
-      // check rather than commands that are known to work -- and the reason it
-      // is safe to try is stated too, since "peer add tolerates a target that
-      // does not answer" is what makes running them low-risk.
-      lines.push(
-        `\nThese name this node as "${local.display_name}", which is what it calls itself.\n` +
-          `Whether a peer can reach it under that name depends on that peer's ssh\n` +
-          `config and DNS, which murmur cannot see -- so check each command rather\n` +
-          `than trusting it. \`peer add\` accepts a target that does not answer yet,\n` +
-          `and discovers identity on the first successful collect.\n`,
+    // from the far side. A `peer remove` runs here, and an upgrade names no host.
+    if (remedies.some((f) => f.remedy.includes(`murmur peer add ${local.display_name}`))) {
+      out.push(
+        `\n  ${DIM}These name this node "${local.display_name}". Whether a peer resolves that\n` +
+          `  depends on its own ssh config, which murmur cannot see -- so check, do not\n` +
+          `  trust. \`peer add\` accepts a target that does not answer yet.${RESET}\n`,
       );
     }
   }
-  return lines.join("");
+  return out.join("");
 }
 
 /**
- * The reachability matrix and what it implies, as text.
+ * The reachability matrix and what it implies, as a table plus a verdict.
  *
- * Pure over a Topology, so every sentence below is testable without a dial.
+ * Pure over a Topology, so every line below is testable without a dial.
+ *
+ * A per-node table rather than an N x N grid. A grid of five nodes is twenty-five
+ * cells to read for an answer that is one row each, and it scales worse than the
+ * fleet does. The three outcomes get three columns rather than one prose list,
+ * because "cannot reach" and "unknown" must never merge: the first is a fact to
+ * act on, the second is an absence of information, and an operator who cannot
+ * tell them apart will act on the wrong one.
  */
 export function renderTopology(topology: Topology): string {
   const candidates = hubCandidates(topology);
   const hub = bestHub(candidates);
-  const lines: string[] = [];
+  const out: string[] = [];
+  const all = topology.nodes.length - 1;
 
-  lines.push(
-    `\nProbed ${topology.probes} ordered pair${topology.probes === 1 ? "" : "s"} ` +
-      `across ${topology.nodes.length} nodes.\n\n`,
+  out.push(
+    `\nReachability  ${DIM}${topology.probes} ordered pair` +
+      `${topology.probes === 1 ? "" : "s"} probed across ${topology.nodes.length} nodes${RESET}\n`,
   );
 
-  // Per-node summary rather than an N x N grid. A grid of four nodes is already
-  // sixteen cells to read for an answer that is one sentence per row, and it
-  // scales worse than the fleet does.
-  const width = Math.max(...candidates.map((candidate) => candidate.node.length));
+  // UNKNOWN earns its width only when something is actually unknown. On a fleet
+  // where every probe answered it was a column of dashes on every row, and an
+  // all-placeholder column reads as missing data rather than as "none". Same rule
+  // `peer list` applies to its PEER and VERSION columns.
+  const anyUnknown = candidates.some((candidate) => candidate.unknown.length > 0);
+  const rows: string[][] = [["", "REACHES", "CANNOT REACH", ...(anyUnknown ? ["UNKNOWN"] : [])]];
   for (const candidate of candidates) {
-    const parts: string[] = [];
-    if (candidate.reaches.length === topology.nodes.length - 1) {
-      parts.push(`reaches all ${candidate.reaches.length}`);
-    } else if (candidate.reaches.length > 0) {
-      parts.push(`reaches ${candidate.reaches.join(", ")}`);
-    } else {
-      parts.push("reaches nothing");
-    }
-    // Negatives and non-answers are never merged. "cannot reach" is a fact to
-    // act on; "unknown" is an absence of information, and an operator who
-    // cannot tell them apart will act on the wrong one.
-    if (candidate.cannotReach.length > 0) {
-      parts.push(`cannot reach ${candidate.cannotReach.join(", ")}`);
-    }
-    if (candidate.unknown.length > 0) {
-      parts.push(`unknown for ${candidate.unknown.join(", ")}`);
-    }
-    lines.push(`  ${candidate.node.padEnd(width)}  ${parts.join("; ")}\n`);
+    rows.push([
+      candidate.node,
+      candidate.reaches.length === all && all > 0
+        ? `all ${all}`
+        : candidate.reaches.length > 0
+          ? candidate.reaches.join(" ")
+          : "-",
+      candidate.cannotReach.length > 0 ? candidate.cannotReach.join(" ") : "-",
+      ...(anyUnknown ? [candidate.unknown.length > 0 ? candidate.unknown.join(" ") : "-"] : []),
+    ]);
   }
+  out.push(indent(formatTable(rows)));
 
   // A name that does not resolve from the far side is called out separately,
-  // because it looks identical to a network problem in the matrix and has a
-  // completely different fix. Measured on the author's own fleet: macmini cannot
-  // resolve `mtrojer-mac`, which is this node's display_name.
+  // because it is indistinguishable from a network problem in the matrix and has
+  // a completely different fix. Measured on the author's own fleet: macmini
+  // cannot resolve `mtrojer-mac`, which is this node's display_name.
   const unresolved = topology.edges.filter((edge) => isNameResolutionFailure(edge.detail));
   if (unresolved.length > 0) {
     const targets = [...new Set(unresolved.map((edge) => edge.to))];
-    lines.push(
-      `\n${targets.join(", ")} could not be resolved by name from ` +
-        `${[...new Set(unresolved.map((edge) => edge.from))].join(", ")}. ` +
-        `That is a naming\nproblem rather than a network one: the host may well be ` +
-        `reachable under an\naddress those nodes can resolve.\n`,
+    const from = [...new Set(unresolved.map((edge) => edge.from))];
+    out.push(
+      `\n  ${DIM}${targets.join(", ")} is not resolvable by name from ${from.join(", ")} -- ` +
+        `a naming\n  problem, not a network one. It may be reachable under another address.${RESET}\n`,
     );
   }
 
   if (hub === null) {
-    // RECOMMEND NOTHING. Not a hedge -- there is genuinely no star to name, and
+    // RECOMMEND NOTHING. Not a hedge: there is genuinely no star to name, and
     // inventing one that cannot work is the exact failure this phase exists to
-    // prevent. The partition is reported instead, because that is the true and
-    // useful half.
-    lines.push(
-      "\nNo node can serve as a hub for this fleet, and none is recommended.\n" +
-        "A hub must be reachable from every spoke and reach every spoke in turn;\n" +
-        "no node here does both for any other.\n",
+    // prevent. The partition above is the true and useful half.
+    out.push(
+      `\nHub  ${DIM}none possible${RESET}\n` +
+        `  A hub must reach every spoke and be reachable from each in turn.\n` +
+        `  No node here does both, so none is recommended.\n`,
     );
-    return lines.join("");
+    return out.join("");
   }
 
-  const whole = hub.star.length === topology.nodes.length;
   const spokes = hub.star.filter((name) => name !== hub.node);
-  if (whole) {
-    lines.push(`\nA star hubbed at ${hub.node} is possible, and would serve the whole fleet.\n`);
-  } else {
-    // The largest workable subset, and explicitly what it leaves out. Naming the
-    // reachable subset is the useful half; pretending it is the whole fleet is
-    // not.
-    const excluded = topology.nodes
-      .map((node) => node.name)
-      .filter((name) => !hub.star.includes(name));
-    lines.push(
-      `\nNo single node can hub this whole fleet. The largest star available is\n` +
-        `${hub.node} serving {${hub.star.join(", ")}}, which leaves out ` +
-        `${excluded.join(", ")}.\n`,
-    );
-  }
-
-  lines.push(`\nTo build it:\n\n`);
-  for (const spoke of spokes) {
-    lines.push(`  ssh ${spoke} murmur peer add ${hub.node}\n`);
-  }
-
-  // THE COST OF A STAR, always stated when one is named. Spokes see the hub and
-  // the hub sees everyone, but spokes DO NOT see each other: `export` publishes
-  // local panes only, so a hub cannot re-serve what it learned. This is the one
-  // thing an operator adopting a star is most likely to assume wrongly, so it is
-  // printed with the recommendation rather than left to be discovered.
-  lines.push(
-    `\nWhat that star costs: spokes would see ${hub.node}'s agents and ${hub.node}\n` +
-      `would see every spoke's, but SPOKES WOULD NOT SEE EACH OTHER. \`murmur export\`\n` +
-      `publishes a node's own panes only, so a hub cannot re-serve what it learned\n` +
-      `from another node. A star is not a mesh, and choosing one is choosing that.\n`,
+  const excluded = topology.nodes
+    .map((node) => node.name)
+    .filter((name) => !hub.star.includes(name));
+  out.push(
+    excluded.length === 0
+      ? `\nHub  ${hub.node}  ${DIM}serves the whole fleet${RESET}\n`
+      : `\nHub  ${hub.node}  ${DIM}serves {${hub.star.join(", ")}}` +
+          `, leaves out ${excluded.join(", ")}${RESET}\n`,
   );
-  return lines.join("");
+
+  out.push(`\nTo build that star\n`);
+  for (const spoke of spokes) out.push(`  ssh ${spoke} murmur peer add ${hub.node}\n`);
+
+  // THE COST OF A STAR, always printed with the recommendation. Spokes see the
+  // hub and the hub sees everyone, but spokes DO NOT see each other: `export`
+  // publishes local panes only, so a hub cannot re-serve what it learned. This is
+  // the one thing an operator adopting a star is most likely to assume wrongly,
+  // so it is not left to be discovered.
+  out.push(
+    `\n  ${DIM}Cost: spokes would see ${hub.node}'s agents and it would see theirs, but\n` +
+      `  SPOKES WOULD NOT SEE EACH OTHER. \`murmur export\` publishes a node's own\n` +
+      `  panes only, so a hub cannot re-serve what it learned. A star is not a mesh.${RESET}\n`,
+  );
+  return out.join("");
 }
 
 /**

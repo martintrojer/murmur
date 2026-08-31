@@ -236,6 +236,22 @@ export type Finding = {
   subject: string;
   /** One sentence, complete on its own, so a renderer never has to compose. */
   message: string;
+  /**
+   * The same fact with the subject and the consequence stripped, for a cell in a
+   * table whose row already names the subject and whose column already names the
+   * kind.
+   *
+   * Both exist because the two readers want opposite things. `message` stands
+   * alone -- it is what `--json` carries and what a consumer logs with no
+   * surrounding row to lean on. `detail` assumes the row: printing `message` in a
+   * table gave `gardenpc  gardenpc does not peer this node (mtrojer-mac), so its
+   * picker cannot see this node's agents` at 106 columns, repeating the subject
+   * it was aligned under and repeating the identical consequence on every row.
+   *
+   * Derived here rather than by the renderer chopping strings: only the code that
+   * knows what a finding MEANS can say which half is redundant.
+   */
+  detail: string;
   /** A command to run, or null when there is nothing safe to suggest. */
   remedy: string | null;
 };
@@ -373,6 +389,7 @@ export function diagnose(local: LocalNode, surveys: SurveyResult[]): Finding[] {
       message:
         `${first.localName} and ${host.localName} are the same machine (${label}), ` +
         `so every command reaches it twice`,
+      detail: `same machine as ${first.localName} (${label}); every command reaches it twice`,
       remedy: `murmur peer remove ${host.localName}`,
     });
   }
@@ -390,6 +407,7 @@ export function diagnose(local: LocalNode, surveys: SurveyResult[]): Finding[] {
       message:
         `${peer.name} speaks an incompatible snapshot version (${cell.text}); ` +
         `state will not sync until murmur versions match`,
+      detail: `incompatible snapshot version (${cell.text}); state will not sync`,
       remedy: `ssh ${peer.target} npm i -g @martintrojer/murmur`,
     });
   }
@@ -408,6 +426,9 @@ export function diagnose(local: LocalNode, surveys: SurveyResult[]): Finding[] {
       severity: "observation",
       subject: name,
       message: `${name} does not peer this node (${local.display_name}), so its picker cannot see this node's agents`,
+      // The consequence is identical on every asymmetric row, so it belongs in
+      // the column header once rather than in each cell N times.
+      detail: `does not peer ${local.display_name}`,
       // display_name is what the operator would type, but it is not guaranteed
       // to resolve from THAT host's ssh config, which murmur cannot see. So it
       // is a command to check, and `peer add` tolerates a target that does not
@@ -432,6 +453,10 @@ export function diagnose(local: LocalNode, surveys: SurveyResult[]): Finding[] {
       message:
         `no peer that this node surveyed peers this host (${local.display_name}); ` +
         `${answered.length} of ${answered.length} surveyed peers cannot see this node's agents`,
+      // "surveyed" is load-bearing and survives the shortening: this is a
+      // one-hop claim, and dropping the word would turn it into a statement
+      // about machines never contacted.
+      detail: `none of the ${answered.length} surveyed peers can see this node`,
       remedy: null,
     });
   }
@@ -466,6 +491,7 @@ export function diagnose(local: LocalNode, surveys: SurveyResult[]): Finding[] {
       severity: "observation",
       subject: host.localName ?? local.display_name,
       message: `one machine (${label}) is configured under different names: ${spelled}`,
+      detail: `one machine (${label}) under different names: ${spelled}`,
       remedy: null,
     });
   }
@@ -487,6 +513,8 @@ export function diagnose(local: LocalNode, surveys: SurveyResult[]): Finding[] {
         survey.reason === "roster-unsupported"
           ? `${name} runs a murmur too old to report its roster, so it could not be checked -- upgrade that host`
           : `${name} could not be surveyed -- ${detail}`,
+      detail:
+        survey.reason === "roster-unsupported" ? "murmur too old to report its roster" : detail,
       remedy:
         survey.reason === "roster-unsupported"
           ? `ssh ${survey.target} npm i -g @martintrojer/murmur`

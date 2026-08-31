@@ -32,12 +32,25 @@ function localNode(over: Partial<LocalNode> = {}): LocalNode {
   return { host_id: "SELF", display_name: "mtrojer-mac", peers: [], ...over };
 }
 
+/** A peer that answered, with an empty roster: the shape most render tests want. */
+function survey(target: string, hostId: string): SurveyResult {
+  return {
+    ok: true,
+    target,
+    host_id: hostId,
+    display_name: target,
+    murmur_version: "0.2.1",
+    roster: [],
+  };
+}
+
 function finding(over: Partial<Finding> = {}): Finding {
   return {
     kind: "asymmetry",
     severity: "observation",
     subject: "bubba",
     message: "bubba does not peer this node (mtrojer-mac)",
+    detail: "does not peer mtrojer-mac",
     remedy: null,
     ...over,
   };
@@ -214,43 +227,67 @@ test("a problem is marked in its own row, not merely counted somewhere else", ()
         subject: "garden",
         message:
           "gardenpc and garden are the same machine (gardenpc), so every command reaches it twice",
+        detail: "same machine as gardenpc",
         remedy: "murmur peer remove garden",
       }),
     ],
   );
   // The problem row carries the mark and the observation row does not, so a
   // reader scanning a long report can tell them apart without counting.
-  expect(output).toContain(
-    "! garden  gardenpc and garden are the same machine (gardenpc), so every command reaches it twice\n",
-  );
-  expect(output).toContain("  bubba   bubba does not peer this node (mtrojer-mac)\n");
+  expect(output).toMatch(/! {2}garden\s+same machine as gardenpc/);
+  // The two kinds are in separate groups now, so the mark cannot be confused
+  // for alignment: only the group containing a problem has the column at all.
+  expect(output).toMatch(/^ {2}bubba\s+does not peer mtrojer-mac/m);
 });
 
-test("findings are sentences in a padded gutter, never a table with a header", () => {
+test("findings of one kind are grouped, with the shared consequence stated once", () => {
+  // The report was one full sentence per finding, and on a four-peer fleet that
+  // was four 106-column lines that each repeated the subject they were aligned
+  // under AND repeated an identical consequence. A report is scanned before it is
+  // read. So: group by kind, state the consequence once in the heading, and let
+  // each row carry only what differs.
   const output = render(
     localNode(),
+    [survey("bubba", "B")],
     [
-      {
-        ok: true,
-        target: "bubba",
-        host_id: "B",
-        display_name: "bubba",
-        murmur_version: "0.2.1",
-        roster: [],
-      },
-    ],
-    [
-      finding({ subject: "bubba" }),
-      finding({ subject: "macmini", message: "macmini could not be surveyed -- unreachable" }),
+      finding({ subject: "bubba", detail: "does not peer mtrojer-mac" }),
+      finding({ subject: "macmini", detail: "does not peer mtrojer-mac" }),
     ],
   );
-  // No column headers, because there are no columns: the second field is prose.
-  expect(output).not.toContain("SUBJECT");
-  expect(output).not.toContain("SEVERITY");
-  expect(output).not.toContain("FINDING");
-  // Subjects aligned to the widest, which is "macmini" at 7.
-  expect(output).toContain("  bubba    bubba does not peer this node (mtrojer-mac)\n");
-  expect(output).toContain("  macmini  macmini could not be surveyed -- unreachable\n");
+  // The heading names the kind; the consequence appears ONCE, not per row.
+  expect(output).toContain("One-way peering");
+  expect(output.match(/pickers cannot see/g)).toHaveLength(1);
+  // Rows carry the subject and the short detail, aligned. "macnini" is widest.
+  expect(output).toMatch(/bubba\s+does not peer mtrojer-mac/);
+  expect(output).toMatch(/macmini\s+does not peer mtrojer-mac/);
+  // And the long standalone sentence is NOT what a row prints.
+  expect(output).not.toContain("so its picker cannot see this node's agents");
+});
+
+test("a group with no problem in it spends no width on a severity column", () => {
+  // Every kind has a fixed severity today, so a mark column on an
+  // all-observation group is three columns of whitespace on every row -- and an
+  // empty column reads as a missing value rather than as "nothing to flag".
+  const observations = render(
+    localNode(),
+    [survey("bubba", "B")],
+    [finding({ subject: "bubba", detail: "does not peer mtrojer-mac" })],
+  );
+  expect(observations).toMatch(/^ {2}bubba/m);
+
+  const problem = render(
+    localNode(),
+    [survey("bubba", "B")],
+    [
+      finding({
+        kind: "duplicate-host-id",
+        severity: "problem",
+        subject: "garden",
+        detail: "same machine as gardenpc",
+      }),
+    ],
+  );
+  expect(problem).toMatch(/^ {2}! {2}garden/m);
 });
 
 test("suggested commands are printed, and the caveat about this node's name comes with them", () => {
@@ -268,13 +305,13 @@ test("suggested commands are printed, and the caveat about this node's name come
     ],
     [finding({ remedy: "ssh bubba murmur peer add mtrojer-mac" })],
   );
-  expect(output).toContain("\nTo check:\n\n  ssh bubba murmur peer add mtrojer-mac\n");
+  expect(output).toContain("\nDo this\n  ssh bubba murmur peer add mtrojer-mac\n");
   // The caveat the output must not hide, in full: what the name is, why it may
   // not resolve, and that murmur cannot know.
-  expect(output).toContain('These name this node as "mtrojer-mac", which is what it calls itself.');
-  expect(output).toContain("depends on that peer's ssh");
-  expect(output).toContain("config and DNS, which murmur cannot see");
-  expect(output).toContain("check each command rather");
+  expect(output).toContain('These name this node "mtrojer-mac".');
+  expect(output).toContain("depends on its own ssh config");
+  expect(output).toContain("which murmur cannot see");
+  expect(output).toContain("so check, do not");
   // Presented as a check, never as a guarantee.
   expect(output).not.toContain("will work");
   expect(output).not.toContain("Run these");
@@ -328,6 +365,7 @@ test("a finding with no remedy prints no suggestion block", () => {
         kind: "island",
         subject: "mtrojer-mac",
         message: "no peer that this node surveyed peers this host (mtrojer-mac)",
+        detail: "none of the 3 surveyed peers can see this node",
         remedy: null,
       }),
     ],
@@ -379,7 +417,10 @@ test("end to end: the author's own fleet shape, from channel to rendered report"
   // Nothing here is an operator task: three asymmetries are design, and a host
   // that is switched off is the normal state of a fleet.
   expect(exitCodeFor(findings)).toBe(0);
-  expect(output).toContain("no peer that this node surveyed peers this host (mtrojer-mac)");
+  // "surveyed" survives the shortening: a one-hop claim, and dropping the word
+  // would turn it into a statement about machines never contacted.
+  expect(output).toContain("Not visible to the fleet");
+  expect(output).toContain("none of the 3 surveyed peers can see this node");
   expect(output).toContain("  ssh bubba murmur peer add mtrojer-mac\n");
   expect(output).toContain("  ssh macmini murmur peer add mtrojer-mac\n");
   // The down host gets no suggestion: there is nothing to run against it.
@@ -488,6 +529,7 @@ test("--json exposes severity as a machine-readable field on every finding", () 
     severity: "observation",
     subject: "bubba",
     message: "bubba does not peer this node (mtrojer-mac)",
+    detail: "does not peer mtrojer-mac",
     remedy: null,
   });
 });
