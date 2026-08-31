@@ -3,12 +3,19 @@ import type { Channel } from "../channel.js";
 import { ssh } from "../channel.js";
 import { MAX_CONCURRENT_PEERS, mapSettled } from "../collector.js";
 import {
+  bestHub,
+  buildTopology,
   DOCTOR_DEADLINE_MS,
   diagnose,
   type Finding,
+  hubCandidates,
+  isNameResolutionFailure,
   type LocalNode,
+  reachableFromHere,
   type SurveyResult,
   surveyPeer,
+  type Topology,
+  type TopologyNode,
 } from "../doctor.js";
 import { openStore } from "../store.js";
 import type { PeerRecord } from "../types.js";
@@ -150,6 +157,111 @@ export function render(
 }
 
 /**
+ * The reachability matrix and what it implies, as text.
+ *
+ * Pure over a Topology, so every sentence below is testable without a dial.
+ */
+export function renderTopology(topology: Topology): string {
+  const candidates = hubCandidates(topology);
+  const hub = bestHub(candidates);
+  const lines: string[] = [];
+
+  lines.push(
+    `\nProbed ${topology.probes} ordered pair${topology.probes === 1 ? "" : "s"} ` +
+      `across ${topology.nodes.length} nodes.\n\n`,
+  );
+
+  // Per-node summary rather than an N x N grid. A grid of four nodes is already
+  // sixteen cells to read for an answer that is one sentence per row, and it
+  // scales worse than the fleet does.
+  const width = Math.max(...candidates.map((candidate) => candidate.node.length));
+  for (const candidate of candidates) {
+    const parts: string[] = [];
+    if (candidate.reaches.length === topology.nodes.length - 1) {
+      parts.push(`reaches all ${candidate.reaches.length}`);
+    } else if (candidate.reaches.length > 0) {
+      parts.push(`reaches ${candidate.reaches.join(", ")}`);
+    } else {
+      parts.push("reaches nothing");
+    }
+    // Negatives and non-answers are never merged. "cannot reach" is a fact to
+    // act on; "unknown" is an absence of information, and an operator who
+    // cannot tell them apart will act on the wrong one.
+    if (candidate.cannotReach.length > 0) {
+      parts.push(`cannot reach ${candidate.cannotReach.join(", ")}`);
+    }
+    if (candidate.unknown.length > 0) {
+      parts.push(`unknown for ${candidate.unknown.join(", ")}`);
+    }
+    lines.push(`  ${candidate.node.padEnd(width)}  ${parts.join("; ")}\n`);
+  }
+
+  // A name that does not resolve from the far side is called out separately,
+  // because it looks identical to a network problem in the matrix and has a
+  // completely different fix. Measured on the author's own fleet: macmini cannot
+  // resolve `mtrojer-mac`, which is this node's display_name.
+  const unresolved = topology.edges.filter((edge) => isNameResolutionFailure(edge.detail));
+  if (unresolved.length > 0) {
+    const targets = [...new Set(unresolved.map((edge) => edge.to))];
+    lines.push(
+      `\n${targets.join(", ")} could not be resolved by name from ` +
+        `${[...new Set(unresolved.map((edge) => edge.from))].join(", ")}. ` +
+        `That is a naming\nproblem rather than a network one: the host may well be ` +
+        `reachable under an\naddress those nodes can resolve.\n`,
+    );
+  }
+
+  if (hub === null) {
+    // RECOMMEND NOTHING. Not a hedge -- there is genuinely no star to name, and
+    // inventing one that cannot work is the exact failure this phase exists to
+    // prevent. The partition is reported instead, because that is the true and
+    // useful half.
+    lines.push(
+      "\nNo node can serve as a hub for this fleet, and none is recommended.\n" +
+        "A hub must be reachable from every spoke and reach every spoke in turn;\n" +
+        "no node here does both for any other.\n",
+    );
+    return lines.join("");
+  }
+
+  const whole = hub.star.length === topology.nodes.length;
+  const spokes = hub.star.filter((name) => name !== hub.node);
+  if (whole) {
+    lines.push(`\nA star hubbed at ${hub.node} is possible, and would serve the whole fleet.\n`);
+  } else {
+    // The largest workable subset, and explicitly what it leaves out. Naming the
+    // reachable subset is the useful half; pretending it is the whole fleet is
+    // not.
+    const excluded = topology.nodes
+      .map((node) => node.name)
+      .filter((name) => !hub.star.includes(name));
+    lines.push(
+      `\nNo single node can hub this whole fleet. The largest star available is\n` +
+        `${hub.node} serving {${hub.star.join(", ")}}, which leaves out ` +
+        `${excluded.join(", ")}.\n`,
+    );
+  }
+
+  lines.push(`\nTo build it:\n\n`);
+  for (const spoke of spokes) {
+    lines.push(`  ssh ${spoke} murmur peer add ${hub.node}\n`);
+  }
+
+  // THE COST OF A STAR, always stated when one is named. Spokes see the hub and
+  // the hub sees everyone, but spokes DO NOT see each other: `export` publishes
+  // local panes only, so a hub cannot re-serve what it learned. This is the one
+  // thing an operator adopting a star is most likely to assume wrongly, so it is
+  // printed with the recommendation rather than left to be discovered.
+  lines.push(
+    `\nWhat that star costs: spokes would see ${hub.node}'s agents and ${hub.node}\n` +
+      `would see every spoke's, but SPOKES WOULD NOT SEE EACH OTHER. \`murmur export\`\n` +
+      `publishes a node's own panes only, so a hub cannot re-serve what it learned\n` +
+      `from another node. A star is not a mesh, and choosing one is choosing that.\n`,
+  );
+  return lines.join("");
+}
+
+/**
  * The `--json` document.
  *
  * Carries the survey denominator alongside the findings, because findings alone
@@ -187,7 +299,12 @@ export function registerDoctor(program: Command): void {
     // against membership being local. The commands are printed instead.
     .description("Survey peers over ssh and report what only a fleet-wide view can see")
     .option("--json", "print the finding list")
-    .action(async (options: { json?: boolean }) => {
+    // Opt in, because it costs O(N^2) remote dials where the survey costs O(N).
+    // Plain `doctor` answers "is my fleet mutual?"; this answers "what fleet
+    // shapes are even possible here?", which is a question asked at setup time
+    // rather than on every check.
+    .option("--topology", "also probe who can reach whom, and compute hub options")
+    .action(async (options: { json?: boolean; topology?: boolean }) => {
       const identity = requireIdentity();
       if (!identity) return;
       const store = openStore();
@@ -205,13 +322,38 @@ export function registerDoctor(program: Command): void {
         };
         const findings = diagnose(local, surveys);
 
+        // Second phase, and strictly additive: the findings above are computed
+        // and reported identically whether or not it runs, so --topology cannot
+        // change what plain `doctor` concludes. Only the exit code's inputs
+        // matter for that, and topology contributes none.
+        let topology: Topology | null = null;
+        if (options.topology) {
+          const nodes: TopologyNode[] = [
+            { name: identity.display_name, target: identity.display_name, self: true },
+            ...peers.map((peer) => ({ name: peer.name, target: peer.target, self: false })),
+          ];
+          // The survey's own answers are what make `unreachable` distinguishable
+          // from `unknown`, so the matrix is built from them rather than from a
+          // second round of liveness dials.
+          topology = await buildTopology(ssh, nodes, reachableFromHere(surveys));
+        }
+
         if (options.json) {
           // The findings, and the survey denominator with them. A consumer that
           // got findings alone could not tell "nothing wrong" from "nothing
           // answered", which are opposite conclusions.
-          process.stdout.write(`${JSON.stringify(jsonReport(surveys, findings))}\n`);
+          process.stdout.write(
+            `${JSON.stringify({
+              ...jsonReport(surveys, findings),
+              // Omitted entirely rather than null when the phase did not run: a
+              // consumer must not have to tell "no topology" apart from "a
+              // topology with nothing in it".
+              ...(topology ? { topology, hubs: hubCandidates(topology) } : {}),
+            })}\n`,
+          );
         } else {
           process.stdout.write(render(local, surveys, findings));
+          if (topology) process.stdout.write(renderTopology(topology));
         }
         process.exitCode = exitCodeFor(findings);
       } finally {

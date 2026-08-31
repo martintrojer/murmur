@@ -1,6 +1,6 @@
 import type { Channel } from "./channel.js";
 import { versionCell } from "./cli/peer.js";
-import { describeFailure } from "./collector.js";
+import { describeFailure, MAX_CONCURRENT_PEERS, mapSettled } from "./collector.js";
 import { parseSnapshot } from "./snapshot.js";
 import type { PeerRecord } from "./types.js";
 
@@ -500,4 +500,323 @@ export function diagnose(local: LocalNode, surveys: SurveyResult[]): Finding[] {
   // already makes, and one that no longer failed if the checks were reordered.
   // The order is pinned by a test instead.
   return findings;
+}
+
+/**
+ * Bound for the reachability phase, and deliberately larger than
+ * `DOCTOR_DEADLINE_MS`.
+ *
+ * The survey is one call per peer; this is one dial per ORDERED PAIR, so the
+ * work is O(N^2) where the survey is O(N). Reusing the survey's fifteen seconds
+ * would mean the phase that costs the most is bounded by a budget sized for the
+ * phase that costs the least -- and a deadline that a correct run routinely hits
+ * reports a healthy fleet as unknown, which is the one answer this command must
+ * not invent.
+ *
+ * Thirty seconds, measured on the real fleet: a probe to a live target is ~165ms
+ * warm and a probe to a target that is switched off is ~480ms. Each dial is
+ * additionally capped by the channel's own exec timeout, so sixteen dials at
+ * eight-way concurrency is two waves and a worst case near six seconds. The
+ * budget is therefore several times the worst case rather than close to it,
+ * because the cost of being wrong is a false "unknown".
+ *
+ * A constant, not a flag, per the zero-configuration rule.
+ */
+export const TOPOLOGY_DEADLINE_MS = 30_000;
+
+/**
+ * Whether one node can open an ssh session to another.
+ *
+ * Three values and not two, which is the whole discipline of this phase. A
+ * probe measures "could not connect, just now", and that has two very different
+ * causes: the target refused or was unroutable (a firewall, a missing key, a
+ * name that does not resolve there) or the target was simply switched off. Only
+ * the first is a fact about the PAIR; the second is a fact about the target, and
+ * calling it a fact about the pair is how hub advice flips between runs as
+ * machines sleep.
+ *
+ * - `reaches`: proven. The dial succeeded.
+ * - `unreachable`: a real negative. The dial failed AND this node can itself
+ *   reach the target, so the target is demonstrably up and the failure is about
+ *   this pair.
+ * - `unknown`: the dial failed or was never attempted, and the target (or the
+ *   source) was not demonstrably up. Not evidence of anything.
+ */
+export type Reach = "reaches" | "unreachable" | "unknown";
+
+/** One node in the reachability matrix. */
+export type TopologyNode = {
+  /** The handle the operator types. This node's display_name, or a peer's name. */
+  name: string;
+  /**
+   * The ssh target used when probing TO this node from elsewhere.
+   *
+   * For a peer this is this node's configured target, and for this node it is
+   * its `display_name` -- which is what the operator would type, and which is
+   * NOT guaranteed to resolve from another machine. Measured on the author's
+   * fleet: `macmini` cannot resolve `mtrojer-mac` at all. That is a real
+   * negative about the NAME rather than the network, so the detail is kept.
+   */
+  target: string;
+  /** True for the node running the command. Its outbound row is dialled locally. */
+  self: boolean;
+};
+
+/** One ordered pair, and what was learned about it. */
+export type ReachEdge = {
+  from: string;
+  to: string;
+  reach: Reach;
+  /**
+   * The failure, when there was one. Kept because negatives are not
+   * interchangeable: "no route to host" is a network problem and "could not
+   * resolve hostname" is a naming one, and they have different fixes.
+   */
+  detail: string | null;
+};
+
+export type Topology = {
+  nodes: readonly TopologyNode[];
+  edges: readonly ReachEdge[];
+  /**
+   * Dials that actually came back, so the output can state what it cost without
+   * overstating it. Lower than the pair count whenever a source was skipped as
+   * down, or the deadline cut the run short.
+   */
+  probes: number;
+};
+
+/** ssh's own words for a name that does not resolve, in either ssh's phrasing. */
+const UNRESOLVED = /could not resolve hostname|name or service not known|nodename nor servname/i;
+
+/** Whether a negative is about the name used rather than the network. */
+export function isNameResolutionFailure(detail: string | null): boolean {
+  return detail !== null && UNRESOLVED.test(detail);
+}
+
+/**
+ * Ask `from` whether it can open an ssh session to `to`.
+ *
+ * A bare `true` on the far side, deliberately. It measures exactly one thing --
+ * can A open an ssh session to B -- with no dependency on murmur existing on B.
+ * Asking A to run `murmur export` against B would conflate transport with
+ * installation, and those have different fixes: "unreachable" is a network or
+ * key problem, "reachable but murmur missing" is an install. Inferring from A's
+ * `~/.ssh/config` would be worse still, since that lists hosts which may not
+ * resolve.
+ *
+ * The inner ssh carries `BatchMode=yes` and its own `ConnectTimeout`, and
+ * deliberately NOT this node's ControlMaster options: a control path is a local
+ * socket, so passing ours would name a file that does not exist on A. BatchMode
+ * is not optional -- without it the inner ssh can block on a password prompt on
+ * a machine with no terminal attached, and the dial would hang rather than fail.
+ *
+ * Returns the raw outcome. Turning a failure into `unreachable` or `unknown`
+ * needs to know whether the target is up, which is not knowable from one dial --
+ * see `buildTopology`.
+ */
+export async function probeReach(
+  channel: Channel,
+  from: TopologyNode,
+  to: TopologyNode,
+): Promise<{ ok: boolean; detail: string | null }> {
+  const inner = ["ssh", "-o", "BatchMode=yes", `-o`, "ConnectTimeout=1", to.target, "true"];
+  try {
+    // A local dial for this node's own row: probing ourselves through an ssh to
+    // ourselves would measure a loopback that no other node uses. `true` is
+    // still the payload, so every row of the matrix means the same thing.
+    await channel.exec(from.self ? to.target : from.target, from.self ? ["true"] : inner);
+    return { ok: true, detail: null };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { ok: false, detail: describeFailure(to.name, message) };
+  }
+}
+
+/**
+ * Which nodes this node could itself reach, from the survey already taken.
+ *
+ * This is what makes `unreachable` distinguishable from `unknown`, and it costs
+ * nothing extra: a peer that answered `murmur export` is demonstrably up as of
+ * seconds ago. Using the survey rather than a second round of dials also keeps
+ * the two phases consistent -- a host cannot be "up" for the matrix and "asleep"
+ * for the findings in one run.
+ */
+export function reachableFromHere(surveys: readonly SurveyResult[]): Set<string> {
+  return new Set(surveys.filter((survey) => survey.ok).map((survey) => survey.target));
+}
+
+/**
+ * Probe every ordered pair and classify each outcome. O(N^2) remote dials.
+ *
+ * THE DISCIPLINE OF THIS FUNCTION IS THAT A FAILED DIAL IS NOT A NEGATIVE. It
+ * becomes `unreachable` only when the target is demonstrably up -- it answered
+ * this node's survey moments ago -- so the failure can only be about that pair.
+ * When the target never answered, the dial failing tells us nothing we did not
+ * already know, and it is `unknown`. `linuxpc` in the spec's sample was simply
+ * switched off; reporting that as a firewall would make hub advice flip from run
+ * to run as machines sleep, and an operator cannot act on advice that changes
+ * when nothing changed.
+ *
+ * A pair whose SOURCE did not answer is `unknown` for the same reason and is
+ * never dialled: asking a host that is off about its reachability costs a full
+ * ssh timeout to learn nothing. That is also what keeps the real cost well under
+ * the N^2 worst case on a fleet with anything asleep.
+ */
+export async function buildTopology(
+  channel: Channel,
+  nodes: readonly TopologyNode[],
+  upFromHere: ReadonlySet<string>,
+  deadline?: Promise<void>,
+): Promise<Topology> {
+  const isUp = (node: TopologyNode) => node.self || upFromHere.has(node.target);
+  const pairs: { from: TopologyNode; to: TopologyNode }[] = [];
+  for (const from of nodes) {
+    for (const to of nodes) {
+      if (from.name !== to.name) pairs.push({ from, to });
+    }
+  }
+  // Only pairs whose source is known up are worth a dial. The rest are recorded
+  // as unknown without spending an ssh timeout on them.
+  const dialled = pairs.filter((pair) => isUp(pair.from));
+
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    const bounded =
+      deadline ??
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, TOPOLOGY_DEADLINE_MS);
+        timer.unref?.();
+      });
+    // The same pool the survey and the collector use. One answer to "how many
+    // ssh processes may murmur have in flight" across every surface.
+    const settled = await mapSettled(
+      dialled,
+      MAX_CONCURRENT_PEERS,
+      async (pair) => probeReach(channel, pair.from, pair.to),
+      bounded,
+    );
+
+    const outcomes = new Map<string, { ok: boolean; detail: string | null } | undefined>();
+    // Counted from what came back, NOT from what was planned. The two differ
+    // whenever the deadline cuts the run short, and a report that said "probed
+    // 110 pairs" after attempting eight would overstate its own evidence -- in a
+    // phase whose entire discipline is not claiming more than it measured.
+    let probes = 0;
+    for (const [index, pair] of dialled.entries()) {
+      const result = settled[index];
+      if (result !== undefined) probes += 1;
+      outcomes.set(
+        `${pair.from.name}\u0000${pair.to.name}`,
+        result?.status === "fulfilled" ? result.value : undefined,
+      );
+    }
+
+    const edges: ReachEdge[] = pairs.map(({ from, to }) => {
+      const outcome = outcomes.get(`${from.name}\u0000${to.name}`);
+      // Never dialled, or the deadline passed before this pair was claimed.
+      if (outcome === undefined) {
+        return {
+          from: from.name,
+          to: to.name,
+          reach: "unknown",
+          detail: isUp(from) ? "not probed within the deadline" : `${from.name} did not answer`,
+        };
+      }
+      if (outcome.ok) return { from: from.name, to: to.name, reach: "reaches", detail: null };
+      // The dial failed. Whether that is a fact about this pair depends entirely
+      // on whether the target was up to be reached.
+      return {
+        from: from.name,
+        to: to.name,
+        reach: isUp(to) ? "unreachable" : "unknown",
+        detail: outcome.detail,
+      };
+    });
+    return { nodes, edges, probes };
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/** What a star hubbed at one node would actually deliver. */
+export type HubCandidate = {
+  node: string;
+  /** Nodes this one is proven to reach. */
+  reaches: string[];
+  /** Demonstrable negatives: the target was up and this node still could not. */
+  cannotReach: string[];
+  /** Pairs nothing was learned about. Never counted as a negative. */
+  unknown: string[];
+  /**
+   * The nodes a star hubbed here could actually serve, including the hub.
+   *
+   * BOTH directions must be proven for a spoke to count. The spec's own account
+   * of what a star delivers is "spokes see the hub's agents and the hub sees
+   * everyone's", and those are different edges: the spoke collects from the hub,
+   * so spoke->hub must work, and the hub collects from the spoke, so hub->spoke
+   * must work too. Requiring only one direction would name a hub that half the
+   * fleet could not use, which is the failure this whole phase exists to
+   * prevent.
+   */
+  star: string[];
+};
+
+/**
+ * For each node, what it reaches and what a star hubbed there would serve. Pure.
+ *
+ * This is arithmetic on the matrix, not a preference, which is exactly why it is
+ * computed rather than suggested: which node CAN be a hub follows from
+ * reachability, and only whether to adopt one is a judgement about how the
+ * operator works.
+ */
+export function hubCandidates(topology: Topology): HubCandidate[] {
+  const { nodes, edges } = topology;
+  const lookup = new Map(edges.map((edge) => [`${edge.from}\u0000${edge.to}`, edge.reach]));
+  const reachOf = (from: string, to: string): Reach =>
+    from === to ? "reaches" : (lookup.get(`${from}\u0000${to}`) ?? "unknown");
+
+  return nodes.map((hub) => {
+    const others = nodes.filter((node) => node.name !== hub.name);
+    const reaches = others.filter((node) => reachOf(hub.name, node.name) === "reaches");
+    return {
+      node: hub.name,
+      reaches: reaches.map((node) => node.name),
+      cannotReach: others
+        .filter((node) => reachOf(hub.name, node.name) === "unreachable")
+        .map((node) => node.name),
+      unknown: others
+        .filter((node) => reachOf(hub.name, node.name) === "unknown")
+        .map((node) => node.name),
+      // Proven in both directions, and `unknown` never counts as proven: a star
+      // built on a guess is the thing that cannot be allowed to look computed.
+      star: [
+        hub.name,
+        ...reaches
+          .filter((node) => reachOf(node.name, hub.name) === "reaches")
+          .map((node) => node.name),
+      ],
+    };
+  });
+}
+
+/**
+ * The best star available, or null when none is better than no star at all.
+ *
+ * A single node is never a star: `star` always contains the hub itself, so a
+ * candidate of size one means "this node can serve nobody", and reporting that
+ * as a topology would be inventing a recommendation out of an empty
+ * intersection.
+ */
+export function bestHub(candidates: readonly HubCandidate[]): HubCandidate | null {
+  let best: HubCandidate | null = null;
+  for (const candidate of candidates) {
+    if (candidate.star.length < 2) continue;
+    // Ties broken by the order nodes were listed, which is this node first and
+    // then the operator's own peer order. A stable answer matters more than a
+    // clever one: hub advice that reordered between runs would read as the
+    // matrix having changed.
+    if (best === null || candidate.star.length > best.star.length) best = candidate;
+  }
+  return best;
 }
