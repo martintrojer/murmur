@@ -289,7 +289,14 @@ export function pickerRow(
   // Richest name first: mu names its agents, pi names its sessions, tmux names
   // windows. All three travel in the snapshot, recorded by the node that owns
   // the pane, so this reads the same for a local and a remote agent.
-  const name = agent.agent_name ?? agent.pi_session ?? agentLabel(agent);
+  //
+  // ONE chain, in `agentLabel`, not a copy of its first two links. This line
+  // used to restate them -- `agent_name ?? pi_session ?? agentLabel(agent)` --
+  // which was harmless only for as long as the two agreed: `agentLabel` now
+  // shortens a session name to its last segment, and a row that reached the
+  // session name through the local copy would have kept printing the full path
+  // while the preview beside it printed the leaf.
+  const name = agentLabel(agent);
   // Local and remote must be tellable apart at a glance. Two hostnames in one
   // dim column means you have to know your own machine's name to read the list
   // — and the difference is not cosmetic: a local row is a keystroke away, a
@@ -350,7 +357,9 @@ export function pickerRow(
   const label = [
     `${marker} ${colour}${glyph}${RESET}`,
     `${colour}${pad(state, COLUMNS.state)}${RESET}`,
-    pad(`${BOLD}${terminalText(name)}${RESET}`, COLUMNS.name),
+    // No `terminalText` here: `agentLabel` already sanitised it, and wrapping it
+    // again implied this value was raw.
+    pad(`${BOLD}${name}${RESET}`, COLUMNS.name),
     pad(workstream, showHost ? COLUMNS.stream : COLUMNS.streamWide),
     showHost ? pad(host, COLUMNS.host) : "",
     flags ? `${DIM}${flags}${RESET}` : "",
@@ -367,7 +376,12 @@ function previewText(store: Store, agent: PaneView): string {
   const state = renderState(agent);
   const colour = COLOUR[state] ?? "";
   const head = [
-    `${colour}${GLYPH[state] ?? "?"} ${state}${RESET}  ${BOLD}${agent.agent_name ? terminalText(agent.agent_name) : agentLabel(agent)}${RESET}`,
+    // Same one chain the row uses. This was
+    // `agent.agent_name ? terminalText(agent.agent_name) : agentLabel(agent)`,
+    // whose true branch is exactly what `agentLabel` does first anyway, down to
+    // the `terminalText` -- a no-op fork that existed only to fall out of step
+    // with the row above it.
+    `${colour}${GLYPH[state] ?? "?"} ${state}${RESET}  ${BOLD}${agentLabel(agent)}${RESET}`,
     // Says where, and whether "where" is this machine. The glance below is a
     // local capture-pane or an ssh depending on this one fact, so it belongs in
     // the header rather than being inferred from a hostname.

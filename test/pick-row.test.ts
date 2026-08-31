@@ -1,4 +1,5 @@
 import { expect, test } from "vitest";
+import { agentLabel } from "../src/agents.js";
 import {
   FILTER_ALIASES,
   FILTER_KEYS,
@@ -306,4 +307,73 @@ test("a stream that adds a fact is still shown", () => {
   );
   expect(row).toContain("worker-1");
   expect(row).toContain("murmur");
+});
+
+test("a session name reads as a name, not a path", () => {
+  // The row reached here far more often than it looked. `agent_name` is set only
+  // by mu, `window_name` is null whenever tmux is auto-renaming (its default),
+  // and `pi_session` is null for the whole life of an unnamed session -- pi's
+  // auto-namer runs at CLOSE, so a LIVE agent, which is the one you are looking
+  // at, has no session name yet. The common row for a hand-started pi therefore
+  // printed `hacking/murmur`: a path, where a name belongs.
+  const unnamed = {
+    ...base,
+    agent_name: null,
+    pi_session: null,
+    window_name: null,
+    workstream: null,
+    session_name: "hacking/murmur",
+  };
+  const row = label(pickerRow(unnamed, false, false));
+  expect(row).toContain("murmur");
+  // And the row is strictly richer than before: the stream column is blanked
+  // only when it would REPEAT the name, so shortening the name is what lets the
+  // full path back in. Same width, more information.
+  expect(row).toContain("hacking/murmur");
+});
+
+test("a name someone chose is never shortened", () => {
+  // Only the session name is a path by convention. A window name that survives
+  // to the label is one a human set -- `chosenWindowName` drops tmux's own --
+  // and mu's agent names and pi's session names are deliberate too. Shortening
+  // any of those would be presumptuous.
+  const windowNamed = { ...base, agent_name: null, pi_session: null, window_name: "feat/api" };
+  expect(label(pickerRow(windowNamed, false, false))).toContain("feat/api");
+
+  const piNamed = { ...base, agent_name: null, pi_session: "fix/the picker" };
+  expect(label(pickerRow(piNamed, false, false))).toContain("fix/the picker");
+
+  const muNamed = { ...base, agent_name: "murmur/worker-1" };
+  expect(label(pickerRow(muNamed, false, false))).toContain("murmur/worker-1");
+});
+
+test("the row and the preview name a pane identically", () => {
+  // Three call sites used to spell out the same precedence chain: this row, the
+  // preview header, and `agentLabel` itself. Harmless only while all three
+  // agreed -- and they did not survive one change to the chain, since shortening
+  // the session name in `agentLabel` left the row printing the full path.
+  //
+  // Asserted against `agentLabel` directly, so a future copy of the chain fails
+  // here rather than being noticed in a screenshot.
+  const cases: Partial<PaneView>[] = [
+    { agent_name: null, pi_session: null, window_name: null, session_name: "hacking/murmur" },
+    { agent_name: null, pi_session: null, window_name: "nvim" },
+    { agent_name: null, pi_session: "Fix the picker" },
+    { agent_name: "worker-1" },
+  ];
+  for (const over of cases) {
+    const agent = { ...base, ...over };
+    // The NAME CELL, not the whole row, and compared exactly. `toContain` cannot
+    // do this job: "hacking/murmur" contains "murmur", so a row that printed the
+    // unshortened path would satisfy it -- which is precisely the regression this
+    // test exists to catch. Verified by mutation: with toContain, restoring the
+    // duplicated chain kept the suite green.
+    const header = headerRow(false);
+    const start = header.indexOf("agent");
+    const width = header.indexOf("stream") - start;
+    const cell = label(pickerRow(agent, false, false))
+      .slice(start, start + width)
+      .trimEnd();
+    expect(cell, JSON.stringify(over)).toBe(agentLabel(agent));
+  }
 });

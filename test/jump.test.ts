@@ -561,3 +561,35 @@ test("a local jump proceeds when tmux cannot answer at all", () => {
 
   expect(result).toEqual({ ok: true });
 });
+
+test("agentLabel shortens a session path to the segment that identifies it", () => {
+  // Session names are conventionally paths, because `tms` and friends name a
+  // session after the directory it was opened in. The last segment is the part
+  // that says which work it is.
+  expect(agentLabel(view({ session_name: "hacking/murmur" }))).toBe("murmur");
+  expect(agentLabel(view({ session_name: "a/b/c/deep" }))).toBe("deep");
+  // Already a leaf, so unchanged.
+  expect(agentLabel(view({ session_name: "dotfiles" }))).toBe("dotfiles");
+});
+
+test("agentLabel keeps a degenerate session name rather than emptying the column", () => {
+  // A name that is all separators has no last segment. Returning "" would blank
+  // the picker's name column, which is worse than printing something odd.
+  expect(agentLabel(view({ session_name: "/" }))).toBe("/");
+  expect(agentLabel(view({ session_name: "trailing/" }))).toBe("trailing");
+});
+
+test("agentLabel prefers every more specific name over the session", () => {
+  // The precedence itself, asserted here rather than only through the picker:
+  // mu's name, then pi's session, then a window name a human chose.
+  const session = { session_name: "hacking/murmur" };
+  expect(agentLabel(view({ ...session, window_name: "nvim" }))).toBe("nvim");
+  expect(agentLabel(view({ ...session, window_name: "nvim", pi_session: "Fix pick" }))).toBe(
+    "Fix pick",
+  );
+  expect(
+    agentLabel(
+      view({ ...session, window_name: "nvim", pi_session: "Fix pick", agent_name: "w-1" }),
+    ),
+  ).toBe("w-1");
+});

@@ -6,6 +6,31 @@ import type { Store } from "./store.js";
 import type { PaneView } from "./view.js";
 
 /**
+ * The last segment of a slash-separated tmux session name.
+ *
+ * Session names are conventionally paths -- `tms` and friends name a session
+ * after the directory it was opened in -- so the last segment is the part that
+ * identifies the work: `hacking/murmur` is about `murmur`.
+ *
+ * Only ever applied to a SESSION name. A window name that survives to the label
+ * is one a human chose (see `chosenWindowName`), and shortening a deliberate
+ * name would be presumptuous; a session name is the fallback of last resort and
+ * is almost never chosen by hand.
+ *
+ * Not `path.basename`: a session name is not a filesystem path, it merely looks
+ * like one. Splitting on `/` says what is meant, and cannot start resolving `..`
+ * or behaving differently per platform.
+ *
+ * Degenerate inputs keep the original rather than returning "": a session called
+ * `/` or ending in a slash has no last segment, and an empty name column is
+ * worse than an odd one.
+ */
+export function sessionLeaf(session: string): string {
+  const leaf = session.split("/").filter(Boolean).at(-1);
+  return leaf ?? session;
+}
+
+/**
  * The most specific human-readable name a pane's agent has, never a tmux id.
  *
  * Four sources, most to least specific: mu's agent name, pi's session name, the
@@ -13,11 +38,30 @@ import type { PaneView } from "./view.js";
  * owns the pane, so this reads the same for a local and a remote pane -- a
  * reader cannot resolve a remote window id against its own tmux.
  *
+ * The session name is shortened to its last segment, and that is load-bearing
+ * rather than cosmetic. It is reached far more often than it looks: `agent_name`
+ * is set only by mu, `window_name` is null whenever tmux is auto-renaming (its
+ * default), and `pi_session` is null for the whole life of an unnamed session --
+ * pi's own auto-namer runs at CLOSE, so a live agent, which is exactly the one
+ * you are looking at, has no session name yet. So the common row for a
+ * hand-started pi fell through to here and printed `hacking/murmur`: a path,
+ * where a name belongs.
+ *
+ * The full session name is not lost. The picker's stream column shows it, and
+ * shows it precisely BECAUSE of this shortening: that column is blanked when it
+ * would repeat the name, so `hacking/murmur` in both cells collapsed to one
+ * path and a blank. Shortened, the row reads `murmur` + `hacking/murmur` -- the
+ * same width, carrying strictly more.
+ *
  * Falls back to the window id only when a node recorded no names at all, which
  * means a non-tmux harness.
  */
 export function agentLabel(agent: PaneView): string {
-  const name = agent.agent_name ?? agent.pi_session ?? agent.window_name ?? agent.session_name;
+  const name =
+    agent.agent_name ??
+    agent.pi_session ??
+    agent.window_name ??
+    (agent.session_name === null ? null : sessionLeaf(agent.session_name));
   return terminalText(name ?? agent.window);
 }
 
