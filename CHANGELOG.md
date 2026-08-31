@@ -3,7 +3,7 @@
 Notable changes per release. Written for someone deciding whether to upgrade,
 so it says what changed for a user rather than listing every commit.
 
-## Unreleased
+## 0.2.2
 
 **The picker's name column shows `murmur`, not `hacking/murmur`.** 0.2.1 fixed
 *which* source a name comes from; this fixes how the session name is rendered
@@ -44,13 +44,16 @@ all.
 ```
 $ murmur doctor
 Surveyed 4 peers, 4 answered.
+5 observations, nothing broken.
 
-  bubba        bubba does not peer this node (mtrojer-mac), so its picker cannot see this node's agents
-  ...
+One-way peering
+  These do not peer this node, so their pickers cannot see its agents.
+  bubba     does not peer mtrojer-mac
+  gardenpc  does not peer mtrojer-mac
 
-To check:
-
+Do this
   ssh bubba murmur peer add mtrojer-mac
+  ssh gardenpc murmur peer add mtrojer-mac
 ```
 
 It is read-only — nothing is written to the store and there is no `--fix`, since
@@ -72,15 +75,14 @@ possible.** Opt-in, because it costs one ssh dial per ordered pair (4 peers is
 
 ```
 $ murmur doctor --topology
-Probed 20 ordered pairs across 5 nodes.
+Reachability  20 ordered pairs probed across 5 nodes
+               REACHES                 CANNOT REACH
+  mtrojer-mac  all 4                   -
+  bubba        -                       mtrojer-mac gardenpc linuxpc macmini
+  linuxpc      gardenpc macmini        mtrojer-mac bubba
+  macmini      bubba gardenpc linuxpc  mtrojer-mac
 
-  mtrojer-mac  reaches all 4
-  bubba        reaches nothing; cannot reach mtrojer-mac, gardenpc, linuxpc, macmini
-  linuxpc      reaches gardenpc, macmini; cannot reach mtrojer-mac, bubba
-  macmini      reaches bubba, gardenpc, linuxpc; cannot reach mtrojer-mac
-
-No single node can hub this whole fleet. The largest star available is
-linuxpc serving {linuxpc, macmini}, which leaves out mtrojer-mac, bubba, gardenpc.
+Hub  linuxpc  serves {linuxpc, macmini}, leaves out mtrojer-mac, bubba, gardenpc
 ```
 
 When no node can hub the fleet it recommends nothing and reports the partition,
@@ -89,6 +91,11 @@ hub. When one exists it prints the commands to build it, and states what a star
 costs: spokes see the hub and the hub sees everyone, but spokes do not see each
 other. A pair whose target was not demonstrably up is `unknown` rather than
 unreachable, so a sleeping laptop is never reported as a firewall.
+
+**The doctor report is tables, not prose.** Findings are grouped by kind with the
+shared consequence stated once per group instead of once per row, and every
+suggested command is collected under one deduplicated `Do this` block rather than
+scattered through the text. The widest line went 129 columns to 78.
 
 No upgrade coordination needed for any of this: the snapshot format is unchanged,
 and `doctor` works against peers running 0.2.1. A peer too old for `peer list
