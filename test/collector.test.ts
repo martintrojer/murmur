@@ -3,10 +3,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import type { Channel } from "../src/channel.js";
-import { collect, describeFailure, MAX_CONCURRENT_PEERS } from "../src/collector.js";
+import {
+  COLLECT_FLOOR_MS,
+  COLLECT_JITTER_MS,
+  collect,
+  describeFailure,
+  MAX_CONCURRENT_PEERS,
+} from "../src/collector.js";
 import { asPaneId, asSessionId, asWindowId } from "../src/ids.js";
 import { openStore, type Store } from "../src/store.js";
 import type { Snapshot, SnapshotPane } from "../src/types.js";
+import { STALENESS_MS } from "../src/view.js";
 
 const stores: Store[] = [];
 let store: Store;
@@ -369,4 +376,228 @@ test("a peer failure is described in one line a human can act on", () => {
   expect(describeFailure("box", "box: Permission denied (publickey).")).not.toContain(
     "unreachable",
   );
+});
+
+// --- the collect floor ----------------------------------------------------
+//
+// Collection is driven by tmux re-running `murmur status` on a tick, and every
+// run used to fetch every peer. That ties fetch rate to REDRAW rate, and it is
+// quadratic in a mesh: N nodes each fetching N-1 peers is N*(N-1) forked ssh
+// processes per tick, fleet-wide, multiplied again by attached tmux clients.
+
+/**
+ * Jitter pinned to the middle of the window, i.e. no offset at all.
+ *
+ * The floor tests below are about the FLOOR, so they must not also depend on a
+ * draw: `random` is injected for exactly this, the way `now` already is.
+ */
+const centre = () => 0.5;
+
+/** Counts execs so a test can assert an ssh did NOT happen. */
+function counting(body: () => string): { channel: Channel; calls: () => number } {
+  let calls = 0;
+  return {
+    channel: {
+      exec: async () => {
+        calls += 1;
+        return body();
+      },
+    },
+    calls: () => calls,
+  };
+}
+
+test("a peer attempted inside the floor is not fetched again", async () => {
+  store.addPeer("dev", "dev.example");
+  const { channel, calls } = counting(() => snapshot([pane("%1")]));
+
+  await collect(store, channel, 1_000, { floorMs: 30_000, random: centre });
+  expect(calls()).toBe(1);
+
+  // Ten seconds later, which is two status-bar ticks at the author's interval
+  // and would have been two more ssh processes.
+  const results = await collect(store, channel, 11_000, { floorMs: 30_000, random: centre });
+  expect(calls()).toBe(1);
+  // Omitted entirely rather than reported: a skip is not an outcome ABOUT the
+  // peer, and `murmur collect` -- the only surface that prints results -- never
+  // passes a floor, so no reader has to learn a third state.
+  expect(results).toEqual([]);
+  // And the cached document is untouched, so the reader still sees the peer.
+  expect(store.peers()[0]?.snapshot?.panes).toHaveLength(1);
+});
+
+test("a peer past the floor is fetched", async () => {
+  store.addPeer("dev", "dev.example");
+  const { channel, calls } = counting(() => snapshot([pane("%1")]));
+
+  await collect(store, channel, 1_000, { floorMs: 30_000, random: centre });
+  await collect(store, channel, 31_000, { floorMs: 30_000, random: centre });
+  expect(calls()).toBe(2);
+});
+
+test("the floor is keyed on the attempt, so an unreachable peer is throttled too", async () => {
+  // The expensive case, and the reason this keys on `last_attempt_at` rather
+  // than `fetched_at`: a sleeping laptop costs a forked ssh that sits until
+  // ConnectTimeout. Keying on the successful fetch would exempt exactly the
+  // peers the floor exists to stop hammering, since they never fetch.
+  store.addPeer("asleep", "asleep.example");
+  let calls = 0;
+  const dead: Channel = {
+    exec: async () => {
+      calls += 1;
+      throw new Error("ssh: connect to host asleep.example port 22: Operation timed out");
+    },
+  };
+
+  const first = await collect(store, dead, 1_000, { floorMs: 30_000, random: centre });
+  expect(first[0]).toMatchObject({ ok: false, unreachable: true });
+  expect(calls).toBe(1);
+
+  await collect(store, dead, 11_000, { floorMs: 30_000, random: centre });
+  expect(calls).toBe(1);
+});
+
+test("a peer that has never been attempted is always due", async () => {
+  // A freshly added peer must appear without waiting out a floor, so `peer add`
+  // followed by a status tick shows it.
+  store.addPeer("dev", "dev.example");
+  const { channel, calls } = counting(() => snapshot([pane("%1")]));
+
+  await collect(store, channel, 500_000, { floorMs: 30_000, random: centre });
+  expect(calls()).toBe(1);
+});
+
+test("no floor means every peer is fetched, however recently attempted", async () => {
+  // The default, and what `murmur collect` and the picker both get. A person
+  // pressing a key is asking for the state now; only a timer gets throttled.
+  store.addPeer("dev", "dev.example");
+  const { channel, calls } = counting(() => snapshot([pane("%1")]));
+
+  await collect(store, channel, 1_000);
+  await collect(store, channel, 1_001);
+  await collect(store, channel, 1_002);
+  expect(calls()).toBe(3);
+});
+
+test("the floor leaves room for two attempts inside a staleness window", async () => {
+  // The ceiling on COLLECT_FLOOR_MS is not arbitrary. A floor at or above
+  // STALENESS_MS would drive a REACHABLE peer into `stale` on its own and make
+  // the HUD flap; at half, a peer has to miss two consecutive attempts first.
+  expect(COLLECT_FLOOR_MS).toBeLessThan(STALENESS_MS);
+  expect(COLLECT_FLOOR_MS * 2).toBeLessThanOrEqual(STALENESS_MS);
+});
+
+test("an unfloored collect fetches even if a peer's attempt stamp is in the future", async () => {
+  // Why `floorMs <= 0` short-circuits instead of falling through to the
+  // arithmetic. With no floor the comparison would be `now - attempt >= 0`,
+  // which is false when the stored stamp is AHEAD of now -- so a clock stepping
+  // backwards, an NTP correction, or a stamp written by a peer's clock would
+  // make an unfloored collect silently skip. "No floor" has to mean no floor.
+  store.addPeer("dev", "dev.example");
+  const { channel, calls } = counting(() => snapshot([pane("%1")]));
+
+  await collect(store, channel, 9_000);
+  expect(calls()).toBe(1);
+  // Now is EARLIER than the recorded attempt.
+  await collect(store, channel, 5_000);
+  expect(calls()).toBe(2);
+});
+
+/**
+ * One edge of the jitter window: with `random` pinned, a peer must be skipped at
+ * `notDueAt` and fetched at `dueAt`.
+ *
+ * Takes the per-test store rather than opening its own -- MURMUR_STATE_DIR is
+ * set per test, not per call, so a second `openStore()` here reopens the SAME
+ * database and inherits the first peer's attempt stamp.
+ */
+async function assertWindowEdge(
+  random: () => number,
+  notDueAt: number,
+  dueAt: number,
+): Promise<void> {
+  store.addPeer("dev", "dev.example");
+  const { channel, calls } = counting(() => snapshot([pane("%1")]));
+  const options = { floorMs: 30_000, random };
+
+  // Attempt recorded at t=0, so the later timestamps are elapsed time.
+  await collect(store, channel, 0, options);
+  expect(calls()).toBe(1);
+  await collect(store, channel, notDueAt, options);
+  expect(calls(), "must not be due yet").toBe(1);
+  await collect(store, channel, dueAt, options);
+  expect(calls(), "must be due").toBe(2);
+}
+
+// Both edges are asserted because a one-sided window is the easy mistake: it
+// buys the same spread by quietly stretching every peer's mean period, which
+// makes all data older to solve a problem about simultaneity.
+
+test("the earliest jitter draw brings a peer due before the floor", async () => {
+  // random() = 0 => -span/2 => floor - 10s.
+  await assertWindowEdge(() => 0, 19_999, 20_000);
+});
+
+test("the latest jitter draw holds a peer past the floor", async () => {
+  // random() approaching 1 => +span/2 => floor + 10s.
+  await assertWindowEdge(() => 1, 39_999, 40_000);
+});
+
+test("the jitter is drawn per peer, not once per collect", async () => {
+  // The property that actually breaks a herd. One draw shared across peers would
+  // move them all by the same offset, which keeps them synchronised with each
+  // other -- exactly the state the jitter exists to leave.
+  store.addPeer("a", "a.example");
+  store.addPeer("b", "b.example");
+  store.addPeer("c", "c.example");
+  const draws: number[] = [];
+  const { channel } = counting(() => snapshot([pane("%1")]));
+
+  await collect(store, channel, 0, {
+    floorMs: 30_000,
+    random: () => {
+      draws.push(draws.length);
+      return 0.5;
+    },
+  });
+  // First run: nothing has been attempted, so every peer is due without a draw.
+  expect(draws).toHaveLength(0);
+
+  await collect(store, channel, 25_000, {
+    floorMs: 30_000,
+    random: () => {
+      draws.push(draws.length);
+      return 0.5;
+    },
+  });
+  // One draw per peer with a recorded attempt.
+  expect(draws).toHaveLength(3);
+});
+
+test("jitter never applies without a floor", async () => {
+  // An unfloored collect is a person asking for the state now -- `murmur
+  // collect`, the picker, and its `^r` reload. A random skip there would be a
+  // keypress that sometimes silently does nothing.
+  store.addPeer("dev", "dev.example");
+  const { channel, calls } = counting(() => snapshot([pane("%1")]));
+  let draws = 0;
+  const random = () => {
+    draws += 1;
+    return 0; // the earliest edge, which would shorten any floor
+  };
+
+  await collect(store, channel, 0, { random });
+  await collect(store, channel, 1, { random });
+  await collect(store, channel, 2, { random });
+  expect(calls()).toBe(3);
+  expect(draws).toBe(0);
+});
+
+test("an unlucky draw still cannot push a peer into staleness", async () => {
+  // The load-bearing constraint on the span. If the latest possible fetch fell
+  // at or after STALENESS_MS, a REACHABLE peer would cross the staleness line on
+  // its own and the HUD would flap between fresh and stale.
+  expect(COLLECT_FLOOR_MS + COLLECT_JITTER_MS / 2).toBeLessThan(STALENESS_MS);
+  // And the earliest edge stays positive, so jitter can never mean "always due".
+  expect(COLLECT_JITTER_MS / 2).toBeLessThan(COLLECT_FLOOR_MS);
 });

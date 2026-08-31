@@ -1,7 +1,6 @@
 import { type Channel, ssh } from "./channel.js";
-import { collect } from "./collector.js";
+import { type CollectOptions, collect } from "./collector.js";
 import type { NodeIdentity } from "./identity.js";
-import { type Mux, tmux } from "./mux.js";
 import type { Store } from "./store.js";
 import {
   freshness,
@@ -107,16 +106,23 @@ export function status(store: Store, identity: NodeIdentity, now = Date.now()): 
  * display-popup, so one sleeping laptop would otherwise write ssh diagnostics
  * to stderr several times a minute, forever. `murmur collect`, which a human
  * runs deliberately, is the only place that prints.
+ *
+ * `floorMs` is how a caller says whether it is a TIMER or a PERSON. The status
+ * bar repaints on `status-interval` and passes COLLECT_FLOOR_MS, so fetch rate
+ * stops being tied to redraw rate. The picker passes nothing: pressing the key
+ * is a person asking now, and its `^r` reload comes back through here too --
+ * a refresh key that skipped the fetch would be a key that silently does
+ * nothing.
  */
 export async function statusWithCollect(
   store: Store,
   identity: NodeIdentity,
   now = Date.now(),
   channel: Channel = ssh,
-  mux: Mux = tmux,
+  options: CollectOptions = {},
 ): Promise<Status> {
   try {
-    await collect(store, channel, now, undefined, mux);
+    await collect(store, channel, now, options);
   } catch {
     // Total by construction: a read of whatever the cache already holds is
     // always better than no output, and this path has no one to tell.

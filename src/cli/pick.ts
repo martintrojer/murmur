@@ -452,7 +452,10 @@ export async function runPick(
   const jumpTo = deps.jump ?? jumpToAgent;
   const identity = requireIdentity();
   if (!identity) return;
-  const view = await statusWithCollect(store, identity, Date.now(), ssh, deps.mux ?? tmux);
+  // No floor: pressing the key is a person asking for the state NOW.
+  const view = await statusWithCollect(store, identity, Date.now(), ssh, {
+    mux: deps.mux ?? tmux,
+  });
   const agents = view.panes.filter((agent) => options.all || isVisible(agent));
   const hidden = view.panes.length - agents.length;
 
@@ -637,6 +640,9 @@ export async function runPick(
 async function runRows(store: Store, options: PickOptions = {}): Promise<void> {
   const identity = requireIdentity();
   if (!identity) return;
+  // Also unfloored, and deliberately so: this is what `^r refresh` runs. A
+  // refresh key that skipped the fetch would be a key that silently does
+  // nothing, which is the failure `alt-a` and `ctrl-b` were already fixed for.
   const view = await statusWithCollect(store, identity);
   const agents = view.panes.filter((agent) => options.all || isVisible(agent));
   const showHost = agents.some((agent) => !agent.local);

@@ -104,12 +104,9 @@ test("the collect deadline leaves an unanswered peer's cache and fetched_at alon
       return JSON.stringify(document([pane("%2")]));
     },
   };
-  const results = await collect(
-    s,
-    hang,
-    9_000,
-    new Promise<void>((resolve) => setTimeout(resolve, 20)),
-  );
+  const results = await collect(s, hang, 9_000, {
+    deadline: new Promise<void>((resolve) => setTimeout(resolve, 20)),
+  });
 
   const cut = results.find((result) => result.peer === last);
   expect(cut).toMatchObject({ ok: false, panes: 0 });

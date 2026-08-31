@@ -2,6 +2,7 @@ import type { Channel } from "./channel.js";
 import { type Mux, tmux } from "./mux.js";
 import { parseSnapshot, SnapshotInvalidError } from "./snapshot.js";
 import type { Store } from "./store.js";
+import type { PeerRecord } from "./types.js";
 import { STALENESS_MS } from "./view.js";
 
 export { STALENESS_MS };
@@ -28,6 +29,71 @@ export const MAX_CONCURRENT_PEERS = 8;
 // Four seconds: under a 5s tick, and above one full wave (a 3s exec ceiling
 // plus overhead) so a single wave is never cut short by the deadline itself.
 const COLLECT_DEADLINE_MS = 4_000;
+
+/**
+ * How recently a peer may have been attempted before an ambient collect skips
+ * it.
+ *
+ * Collection is driven by the tmux status bar re-running `murmur status`, and
+ * every run fetched every peer. That ties fetch rate to REDRAW rate, which is a
+ * category error: the status bar's job is to repaint, not to decide how often to
+ * reach a machine. It is also quadratic in a mesh -- N nodes each fetching N-1
+ * peers is N*(N-1) ssh processes per tick, fleet-wide -- and it multiplies by
+ * attached tmux clients, since `status-interval` fires per client. The payload
+ * was never the problem (measured: ~400 bytes per pane); the forked ssh process
+ * per peer per tick is.
+ *
+ * Thirty seconds, and the ceiling is not arbitrary: it must stay safely under
+ * STALENESS_MS, or the floor itself would drive a REACHABLE peer into `stale`
+ * and the HUD would flap. At half the staleness window a peer has to miss two
+ * consecutive attempts before it reads stale, which is the same belt-and-braces
+ * relationship CONNECT_TIMEOUT_S has with EXEC_TIMEOUT_MS.
+ *
+ * A constant rather than a knob, per the zero-configuration rule: a wrong value
+ * here costs a release, not a silently broken user setup.
+ */
+export const COLLECT_FLOOR_MS = 30_000;
+
+/**
+ * Width of the window the floor is drawn from, centred on COLLECT_FLOOR_MS.
+ * Twenty seconds, so a peer is due somewhere in [20s, 40s].
+ *
+ * A bare floor is a SYNCHRONISER, which is worse than no floor at a hub. Every
+ * node fetches, waits exactly the same interval, and fetches again, so a fleet
+ * converges on hitting one machine in the same instant forever -- and the
+ * convergence is sticky, because the collect that answers them all is also what
+ * resets all their clocks together.
+ *
+ * Simulated, 20 spokes against one hub, peak simultaneous fetches per tick:
+ *
+ *   no jitter                 20 / 20
+ *   fixed per-peer offset      14-18 / 20
+ *   this (uniform +/-10s)       8-10 / 20
+ *
+ * A FIXED offset per peer -- hashed from a host id, say -- barely helps, and the
+ * reason is the tick grid. A peer is only tested when the status bar runs, every
+ * `status-interval`, so its effective period is (floor + offset) rounded up to a
+ * multiple of the tick. A fixed offset collapses into a handful of distinct
+ * periods (measured: 3 periods for 20 spokes at +/-15s), and peers sharing a
+ * period then collide on every cycle forever. Fixed jitter does not break a
+ * herd, it re-partitions it into smaller permanent herds. Fresh randomness
+ * re-draws the period every cycle, so a group that collides once scatters next
+ * time.
+ *
+ * Symmetric rather than added on top, so the MEAN stays at the floor -- a
+ * one-sided [floor, floor+span] window would quietly stretch the average period
+ * to 45s and make every peer's data older to buy the same spread.
+ *
+ * Uniform rather than normal: a bell curve concentrates mass near the mean,
+ * which is precisely the opposite of spreading, and its unbounded tails would
+ * need clamping -- which piles probability exactly on the bound.
+ *
+ * The span is capped by staleness, and this is the load-bearing constraint:
+ * COLLECT_FLOOR_MS + COLLECT_JITTER_MS / 2 must stay under STALENESS_MS, or an
+ * unlucky draw pushes a REACHABLE peer over the staleness line and the HUD
+ * flaps between fresh and stale. 30s + 10s = 40s leaves 20s of headroom.
+ */
+export const COLLECT_JITTER_MS = 20_000;
 
 /**
  * Runs `task` over `items` with at most `limit` in flight, preserving input
@@ -66,6 +132,69 @@ async function mapSettled<T, R>(
   const pool = Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
   await (stop ? Promise.race([pool, stop]) : pool);
   return results;
+}
+
+/**
+ * The optional half of a collect, as a bag rather than four positional
+ * arguments.
+ *
+ * `collect(store, ssh, now, undefined, mux)` was already the call site before
+ * the floor was added, and a fifth positional -- a bare number, next to another
+ * bare number -- is how `now` and `floorMs` get silently swapped.
+ */
+export type CollectOptions = {
+  /** Bounds the whole run. Injectable so tests need not wait out real time. */
+  deadline?: Promise<void>;
+  /** The mux reconciliation asks which panes are alive. */
+  mux?: Mux;
+  /**
+   * Skip peers attempted within this many ms. Zero -- the default -- fetches
+   * every peer, which is what a deliberate `murmur collect` and the picker both
+   * want. Only the status bar, which repaints on a timer, passes a floor.
+   *
+   * Opt IN rather than opt out: a surface that forgets this argument keeps the
+   * old always-fetch behaviour, which is merely wasteful. The opposite default
+   * would mean a new surface silently serves stale data.
+   */
+  floorMs?: number;
+  /**
+   * Source of the floor's jitter, in [0, 1). Injected for the same reason `now`
+   * and `isAlive` are: a test pins both edges of the window by returning 0 and
+   * a value approaching 1, rather than sampling and hoping.
+   */
+  random?: () => number;
+};
+
+/**
+ * The peers an ambient collect should actually reach this run.
+ *
+ * Keyed on `last_attempt_at`, not `fetched_at`: the point is to bound how often
+ * we ATTEMPT a machine, and an unreachable peer is the expensive case -- it
+ * costs a forked ssh that sits until ConnectTimeout. Keying on the successful
+ * fetch would exempt exactly the sleeping laptops the floor exists to stop
+ * hammering.
+ *
+ * A peer never attempted (`null`) is always due, so a freshly added peer appears
+ * without waiting out a floor.
+ *
+ * The jitter is drawn PER PEER PER CALL, which is what breaks a herd rather than
+ * merely reshaping it -- see COLLECT_JITTER_MS. It applies only when a floor is
+ * set: an unfloored collect is a person asking for the state now, and a random
+ * skip there would be a keypress that sometimes silently does nothing.
+ */
+function duePeers(
+  peers: readonly PeerRecord[],
+  now: number,
+  floorMs: number,
+  random: () => number,
+): PeerRecord[] {
+  if (floorMs <= 0) return [...peers];
+  return peers.filter((peer) => {
+    if (peer.last_attempt_at === null) return true;
+    // Centred on the floor: [-span/2, +span/2).
+    const jitter = (random() - 0.5) * COLLECT_JITTER_MS;
+    return now - peer.last_attempt_at >= floorMs + jitter;
+  });
 }
 
 export type CollectResult = {
@@ -178,13 +307,15 @@ export async function collect(
   store: Store,
   channel: Channel,
   now = Date.now(),
-  deadline?: Promise<void>,
-  mux: Mux = tmux,
+  options: CollectOptions = {},
 ): Promise<CollectResult[]> {
+  const { deadline, mux = tmux, floorMs = 0, random = Math.random } = options;
   const results: CollectResult[] = [];
   let timer: NodeJS.Timeout | undefined;
   try {
-    const peers = store.peers();
+    // Only the peers due a fetch are passed to the pool, so a skipped peer costs
+    // no ssh, no slot and no result row.
+    const peers = duePeers(store.peers(), now, floorMs, random);
     // Default deadline, injectable so tests do not have to wait out real time.
     // Unref'd: a pending timer must not hold the process open after a CLI
     // command has printed its output and finished.
