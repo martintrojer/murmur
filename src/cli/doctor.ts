@@ -26,16 +26,13 @@ import { formatTable } from "./peer.js";
 /**
  * Survey every configured peer, concurrently and under one deadline.
  *
- * Reuses the collector's pool rather than growing a second one: both surfaces
- * ssh to the same hosts, so one answer to "how many at once" is the only way
- * they cannot disagree. What is NOT reused is the deadline --
- * `DOCTOR_DEADLINE_MS` is fifteen seconds against the collector's four, because
- * the collector's budget is sized to the tmux tick and doctor overlaps nothing.
+ * Reuses the collector's pool rather than growing a second one: both surfaces ssh
+ * to the same hosts, so one answer to "how many at once" is the only way they
+ * cannot disagree. The DEADLINE is not reused -- see DOCTOR_DEADLINE_MS.
  *
- * A peer the deadline never reached is reported as a peer that did not answer,
- * not omitted: an omission would silently shrink the denominator in "surveyed N
- * peers", which is the one number telling the operator how much of the fleet
- * this report actually covers.
+ * A peer the deadline never reached is reported as one that did not answer,
+ * never omitted: omission would shrink the denominator in "surveyed N peers",
+ * the one number saying how much of the fleet this report covers.
  */
 export async function surveyFleet(
   channel: Channel,
@@ -81,16 +78,14 @@ export async function surveyFleet(
  * The whole report, as text. Pure over findings so every line below is testable
  * without an ssh binary, a store or a captured stdout.
  *
- * TABLES, not prose. The first version printed one full sentence per finding,
- * and on a four-peer fleet that was four 106-column lines saying the same thing:
- * each repeated the subject it was already aligned under, and each repeated an
- * identical consequence. A report is scanned before it is read, and prose cannot
- * be scanned.
+ * TABLES, not prose. The first version printed a sentence per finding, which on
+ * a four-peer fleet was four 106-column lines each repeating the subject they
+ * were aligned under and an identical consequence. A report is scanned before it
+ * is read, and prose cannot be scanned.
  *
- * So: findings grouped by kind, one table per group with the consequence stated
- * once in the group's heading, and every suggested command collected under one
- * ACTIONS block. `peer list` prints its errors below its table rather than in it
- * for the same reason -- a column of sentences is not a table.
+ * So: grouped by kind, one table per group with the consequence stated once in
+ * the heading, every command collected under one actions block. `peer list`
+ * prints errors below its table for the same reason.
  */
 // Dim, so a group's shared consequence and the caveats read as annotation rather
 // than as another finding. Same escape the picker uses.
@@ -211,10 +206,9 @@ export function render(
     (finding): finding is Finding & { remedy: string } => finding.remedy !== null,
   );
   if (remedies.length > 0) {
-    // ONE actions block, at the end, deduplicated. Commands were previously
-    // interleaved with the prose that motivated them, so an operator had to read
-    // the whole report to collect them -- and the same `peer add` could appear
-    // under two findings.
+    // ONE deduplicated block at the end. Commands used to be interleaved with the
+    // prose motivating them, so an operator had to read the whole report to
+    // collect them, and the same `peer add` could appear under two findings.
     out.push("\nDo this\n");
     const seen = new Set<string>();
     for (const finding of remedies) {
@@ -222,9 +216,8 @@ export function render(
       seen.add(finding.remedy);
       out.push(`  ${finding.remedy}\n`);
     }
-    // Whether the suggestions need the caveat depends on what they are: only a
-    // `peer add` naming THIS node depends on this node's display_name resolving
-    // from the far side. A `peer remove` runs here, and an upgrade names no host.
+    // Only a `peer add` naming THIS node depends on our display_name resolving
+    // from the far side: a `peer remove` runs here, and an upgrade names no host.
     if (remedies.some((f) => f.remedy.includes(`murmur peer add ${local.display_name}`))) {
       out.push(
         `\n  ${DIM}These name this node "${local.display_name}". Whether a peer resolves that\n` +
@@ -241,12 +234,11 @@ export function render(
  *
  * Pure over a Topology, so every line below is testable without a dial.
  *
- * A per-node table rather than an N x N grid. A grid of five nodes is twenty-five
- * cells to read for an answer that is one row each, and it scales worse than the
- * fleet does. The three outcomes get three columns rather than one prose list,
- * because "cannot reach" and "unknown" must never merge: the first is a fact to
- * act on, the second is an absence of information, and an operator who cannot
- * tell them apart will act on the wrong one.
+ * A per-node table, not an N x N grid: five nodes is twenty-five cells to read
+ * for an answer that is one row each, and it scales worse than the fleet does.
+ * Three outcomes get three columns because "cannot reach" and "unknown" must
+ * never merge -- the first is a fact to act on, the second an absence of
+ * information, and an operator who cannot tell them apart acts on the wrong one.
  */
 export function renderTopology(topology: Topology): string {
   const candidates = hubCandidates(topology);
@@ -259,10 +251,9 @@ export function renderTopology(topology: Topology): string {
       `${topology.probes === 1 ? "" : "s"} probed across ${topology.nodes.length} nodes${RESET}\n`,
   );
 
-  // UNKNOWN earns its width only when something is actually unknown. On a fleet
-  // where every probe answered it was a column of dashes on every row, and an
-  // all-placeholder column reads as missing data rather than as "none". Same rule
-  // `peer list` applies to its PEER and VERSION columns.
+  // UNKNOWN earns its width only when something is unknown: where every probe
+  // answered it was a column of dashes, and an all-placeholder column reads as
+  // missing data rather than "none". Same rule as `peer list`'s columns.
   const anyUnknown = candidates.some((candidate) => candidate.unknown.length > 0);
   const rows: string[][] = [["", "REACHES", "CANNOT REACH", ...(anyUnknown ? ["UNKNOWN"] : [])]];
   for (const candidate of candidates) {

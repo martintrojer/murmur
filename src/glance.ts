@@ -7,12 +7,11 @@ import type { PaneView } from "./view.js";
 /**
  * Glance: the last few lines a pane printed.
  *
- * This is the cheap half of the two things "render any pane from the master"
- * hides. It is a stateless `capture-pane`, not a frame stream — no resize
- * negotiation, no input routing, no reconnect. That deferral is what keeps
- * murmur a state layer instead of a multiplexer (DESIGN-NOTES, "Deferring
- * interactive remote rendering"), and it is why this file is thirty lines
- * rather than most of herdr.
+ * The cheap half of what "render any pane from the master" hides: a stateless
+ * `capture-pane`, not a frame stream -- no resize negotiation, no input routing,
+ * no reconnect. That deferral is what keeps murmur a state layer rather than a
+ * multiplexer (see ARCHITECTURE.md's non-goals), and why this file is thirty
+ * lines instead of most of herdr.
  */
 
 const GLANCE_LINES = 40;

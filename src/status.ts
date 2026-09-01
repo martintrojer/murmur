@@ -36,11 +36,10 @@ function emptyCounts(): Counts {
 }
 
 export function tmuxStatus(view: Status): string {
-  // Orchestrated agents are counted for the states only a human can answer, and
-  // hidden for the rest: a supervisor consumes a `done` worker's result, so
-  // nobody needs to acknowledge it, and `running` asks for nothing. The list is
-  // `NEEDS_HUMAN` in view.ts, shared with the picker's visibility rule so the
-  // status bar and the list cannot disagree about which crew rows matter.
+  // Orchestrated agents count only for the states a human can answer: a
+  // supervisor consumes a `done` worker's result and `running` asks for nothing.
+  // The list is `NEEDS_HUMAN`, shared with the picker's visibility rule so the
+  // two surfaces cannot disagree about which crew rows matter.
   const needsHuman = new Set<string>(NEEDS_HUMAN);
   const total = (state: RenderState): number =>
     view.counts[state] + (needsHuman.has(state) ? view.orchestrated_counts[state] : 0);
@@ -95,24 +94,21 @@ export function status(store: Store, identity: NodeIdentity, now = Date.now()): 
  * Collect from peers, then read. This is what every user-facing surface wants:
  * the view reflects the sync that just ran, rather than the one before it.
  *
- * Awaiting matters for two reasons. A fire-and-forget collect makes every
- * invocation show data one run stale. And the callers close the store in a
- * `finally`, so a collect still in flight lands on a closed handle and reports
- * "The database connection is not open", which looks like corruption rather
- * than a race.
+ * Awaiting matters twice over. A fire-and-forget collect shows data one run
+ * stale, and callers close the store in a `finally`, so a collect still in
+ * flight lands on a closed handle and reports "The database connection is not
+ * open" -- which looks like corruption rather than a race.
  *
- * Sync must never fail a command, and on this path it must never print either:
- * `status` runs on every status-bar tick and `pick` runs inside a
- * display-popup, so one sleeping laptop would otherwise write ssh diagnostics
- * to stderr several times a minute, forever. `murmur collect`, which a human
- * runs deliberately, is the only place that prints.
+ * Sync must never fail a command and on this path must never print either:
+ * `status` runs on every tick and the picker's reload runs behind a popup, so
+ * one sleeping laptop would write ssh diagnostics to stderr several times a
+ * minute forever. `murmur collect`, run deliberately, is the only place that
+ * prints.
  *
  * `floorMs` is how a caller says whether it is a TIMER or a PERSON. The status
- * bar repaints on `status-interval` and passes COLLECT_FLOOR_MS, so fetch rate
- * stops being tied to redraw rate. The picker passes nothing: pressing the key
- * is a person asking now, and its `^r` reload comes back through here too --
- * a refresh key that skipped the fetch would be a key that silently does
- * nothing.
+ * bar passes COLLECT_FLOOR_MS so fetch rate stops tracking redraw rate. The
+ * picker's rows path passes nothing: `^r` is a person asking now, and a refresh
+ * key that skipped the fetch would be a key that silently does nothing.
  */
 export async function statusWithCollect(
   store: Store,

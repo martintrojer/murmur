@@ -87,11 +87,11 @@ const SCHEMA = `
  * The store, and the only place in murmur that holds a database handle or
  * writes SQL.
  *
- * This interface is CLOSED. There is no `append`, no `ingest`, no log read, no
- * partial-row update, and no local read other than `localPanes` — each of those
- * shapes let a writer say something it had no standing to say, and each cost a
- * shipped bug. Attention methods take no agent identity at all, which is what
- * makes "a notifier cannot corrupt an agent row" structural.
+ * This interface is CLOSED: no `append`, no `ingest`, no log read, no partial-row
+ * update, and no local read other than `localPanes`. Each of those shapes lets a
+ * writer say something it has no standing to say, and each cost a shipped bug.
+ * Attention methods take no agent identity, which is what makes "a notifier
+ * cannot corrupt an agent row" structural.
  */
 export interface Store {
   // --- agent lifecycle: owner-only, pid-gated -----------------------------
@@ -312,11 +312,10 @@ export function openStore(): Store {
   /**
    * `.immediate`, not deferred, and this is load-bearing.
    *
-   * The transaction reads the incumbent row and then writes, so a deferred one
-   * starts as a READER and must upgrade. Two doing that at once fails the loser
-   * with SQLITE_BUSY_SNAPSHOT, which no busy_timeout can fix: waiting longer
-   * cannot make a stale snapshot fresh. Measured previously at 5 of 8
-   * concurrent writers failing.
+   * This reads the incumbent row and then writes, so a deferred transaction
+   * starts as a READER and must upgrade. Two at once fail the loser with
+   * SQLITE_BUSY_SNAPSHOT, which no busy_timeout can fix -- waiting cannot make a
+   * stale snapshot fresh. Measured at 5 of 8 concurrent writers failing.
    */
   const claimAgent = database.transaction((claim: AgentClaim): ClaimResult => {
     const now = claim.now ?? Date.now();
@@ -426,20 +425,17 @@ export function openStore(): Store {
         deleteAgentByPane.run(row.pane);
         summary.removed.push(pane);
       }
-      // A pane we already recorded a crash for keeps its agent row, and that is
-      // the one place this deviates from a literal reading of the contract's
-      // table -- which says a live pane with a dead STOPPED owner loses its row.
-      // Taken literally, the second reconcile after a crash deletes the row the
-      // first one had just marked `stopped`, so the crashed pane loses its
-      // agent_name, workstream, role and cli one tick after the crash is
-      // reported. That contradicts the contract's own idempotence requirement
-      // ("running it again changes nothing") and it strips exactly the fields a
-      // human needs to know WHICH agent died.
+      // A pane already recorded as crashed keeps its agent row, the one place
+      // this departs from a literal reading of the contract's table (which says
+      // a live pane with a dead STOPPED owner loses its row). Taken literally,
+      // the second reconcile deletes the row the first just marked `stopped`, so
+      // the crashed pane loses agent_name, workstream, role and cli one tick
+      // after the crash -- contradicting the contract's own idempotence rule and
+      // stripping exactly the fields that say WHICH agent died.
       //
-      // The distinction the table is drawing is between an owner that finished
-      // normally -- whose row is noise -- and one that died mid-run. The
-      // `crashed` row we wrote is the record of which case this was, so it is
-      // also the right thing to key on.
+      // The table's real distinction is between an owner that finished normally,
+      // whose row is noise, and one that died mid-run. The `crashed` row is the
+      // record of which case this was, so it is the right thing to key on.
     }
 
     // Reaps attention for a pane that never had an agent row — an

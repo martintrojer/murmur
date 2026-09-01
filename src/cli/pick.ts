@@ -149,32 +149,23 @@ export function headerRow(showHost: boolean): string {
  * a filter shows blocked panes rather than searching for the word "blocked",
  * which would also match a pane merely *named* that.
  *
+ * Alt chords, not ctrl. `ctrl-b` was the filter for `blocked` and could never
+ * fire: `C-b` is tmux's DEFAULT prefix and tmux consumes it before any pane
+ * sees it, including the picker's popup -- so the most-reached-for filter was
+ * dead on the setup the README tells people to build. murmur cannot know a
+ * user's prefix, so any ctrl-letter is a gamble, while alt chords are never
+ * prefix candidates. Verified against fzf in a real terminal.
  *
- * Alt chords, not ctrl. `ctrl-b` was the filter for `blocked` and it could
- * never work: `C-b` is tmux's DEFAULT prefix, and tmux consumes the prefix
- * before delivering to any pane -- including the display-popup the picker runs
- * in. So the one filter a user reaches for most was dead on a stock tmux, which
- * is the configuration the README tells people to set up.
+ * Ctrl aliases stay for the three that do not collide, so muscle memory works.
+ * `ctrl-b` is deliberately absent: a key that silently does nothing is worse
+ * than no key.
  *
- * The general problem is that murmur cannot know a user's prefix, so any single
- * ctrl-letter is a gamble. Alt chords are never prefix candidates: tmux's
- * `prefix` option takes a ctrl key by convention and nobody binds M-x at the
- * root table for this purpose. Verified against fzf in a real terminal.
+ * No "clear the filter" key. fzf's ctrl-u already does it, and binding a second
+ * spelling cost the word "all", which alt-a below needs.
  *
- * Ctrl aliases are kept for the three that do not collide with the default
- * prefix, so existing muscle memory still works. `ctrl-b` is deliberately not
- * among them: binding a key that silently does nothing is worse than not
- * binding it.
- *
- * There is no "clear the filter" key here. fzf already clears the query with
- * ctrl-u, a standard readline binding that needs no --bind, so one existed --
- * and binding a second spelling of it cost the word "all", which this picker
- * needs for something else. See the alt-a toggle below.
- *
- * Every query is a `RenderState`, because that is the word the row prints. The
- * `working` filter outlived the state it searched for: activity and attention
- * are separate facts now and a busy pane paints `running`, so `alt-w working`
- * narrowed the list to nothing and read exactly like "nothing is busy".
+ * Every query is a `RenderState`, the word the row prints. The old `working`
+ * filter outlived its state -- a busy pane paints `running` -- so `alt-w
+ * working` matched nothing and read as "nothing is busy".
  */
 export const FILTER_KEYS: [key: string, query: RenderState][] = [
   ["alt-x", "crashed"],
@@ -199,25 +190,18 @@ function timestamp(ts: number): string {
 }
 
 /**
- * Human age. Blank under a minute: a row that just changed does not need a
- * column saying so, and "0s" on every live agent is noise that hides the one
- * row reading "3h".
- */
-/**
  * Fit a cell to exactly `width` visible columns, padding or truncating.
  *
- * Both halves are needed. Padding counts VISIBLE length, because a value
- * wrapped in bold plus reset carries nine escape bytes and `padEnd` counts
- * them, which pads nine short and shears every column to its right.
+ * Padding counts VISIBLE length: a value wrapped in bold plus reset carries
+ * nine escape bytes, and `padEnd` counts them, padding nine short and shearing
+ * every column to its right.
  *
- * Truncating is what was missing: `pad` only ever grew a string, so one long
- * agent name ("Gchatui 2026 Rebaseline Finalization", 36 chars in a 30-wide
- * column) pushed the host and flags columns right and broke the grid for that
- * row only. Long pi session names are the normal case, not an edge one.
- *
- * The truncation walks the string and copies escape sequences through without
- * counting them, so a cut never lands inside one. Cutting mid-sequence would
- * leak the colour into the rest of the line and drop the reset that ends it.
+ * Truncating bounds the other end. `pad` only ever grew a string, so one long
+ * agent name (36 chars in a 30-wide column) pushed host and flags right and
+ * broke the grid for that row -- and long pi session names are the normal case.
+ * The walk copies escape sequences through without counting them, so a cut
+ * never lands inside one, which would leak the colour into the rest of the line
+ * and drop the reset that ends it.
  */
 function pad(value: string, width: number): string {
   const visible = [...value.replace(ANSI_ESCAPE, "")].length;
@@ -247,20 +231,21 @@ function pad(value: string, width: number): string {
 /**
  * Are we running inside a `display-popup` rather than a pane?
  *
- * tmux exports $TMUX to a popup but not $TMUX_PANE, because a popup is not a
- * pane. Outside tmux neither is set, so the three cases stay distinguishable
- * with no tmux call.
+ * tmux exports $TMUX to a popup but not $TMUX_PANE, since a popup is not a
+ * pane. Outside tmux neither is set, so all three cases are distinguishable
+ * without a tmux call.
  */
 export function isPopup(env: NodeJS.ProcessEnv): boolean {
   return Boolean(env.TMUX) && !env.TMUX_PANE;
 }
 
 /**
- * One fzf row: a hidden key column, a hidden filter column, then the label.
+ * One fzf row: two hidden key columns -- host and pane -- then the label.
  *
- * The key is `agent_id`, not a tmux target: a target only means something on
- * the agent's own host, so resolving it is `jumpToAgent`'s job once a selection
- * comes back.
+ * Keyed on host and pane rather than a tmux target, because a target only means
+ * something on the agent's own host; resolving it is `jumpToAgent`'s job once a
+ * selection comes back. See the return statement for why the pane, not an
+ * agent id.
  */
 export function pickerRow(
   agent: PaneView,
@@ -273,62 +258,41 @@ export function pickerRow(
   const colour = COLOUR[state] ?? "";
   const glyph = GLYPH[state] ?? "?";
   const marker = current ? `${BOLD}\u25c6${RESET}` : " "; // ◆ you are here
-  // Richest name first: mu names its agents, pi names its sessions, tmux names
-  // windows. All three travel in the snapshot, recorded by the node that owns
-  // the pane, so this reads the same for a local and a remote agent.
-  //
-  // ONE chain, in `agentLabel`, not a copy of its first two links. This line
-  // used to restate them -- `agent_name ?? pi_session ?? agentLabel(agent)` --
-  // which was harmless only for as long as the two agreed: `agentLabel` now
-  // shortens a session name to its last segment, and a row that reached the
-  // session name through the local copy would have kept printing the full path
-  // while the preview beside it printed the leaf.
+  // Richest name first, through the ONE chain in `agentLabel` rather than a copy
+  // of its first links: mu names agents, pi names sessions, tmux names windows,
+  // and all three travel in the snapshot so a local and a remote row read the
+  // same. `agentLabel` shortens a session name to its leaf, so a local copy of
+  // the chain would print the full path beside a preview printing the leaf.
   const name = agentLabel(agent);
-  // Local and remote must be tellable apart at a glance. Two hostnames in one
-  // dim column means you have to know your own machine's name to read the list
-  // — and the difference is not cosmetic: a local row is a keystroke away, a
-  // remote one costs an ssh and a nested tmux.
-  //
-  // "here" rather than the local hostname, because the reader already knows
-  // which machine they are on; what they need is which rows are not it. Remote
-  // hosts keep their name and get an arrow, so the column scans as "here /
-  // elsewhere" before you read any words.
-  // Both forms start in the same column: a leading space where the arrow would
-  // be, so "here" and "→ bubba" line up and the arrows form a single vertical
-  // run you can scan without reading a word.
+  // "here" rather than this machine's hostname: the reader knows which machine
+  // they are on and needs to see which rows are not it, and the difference is
+  // not cosmetic -- a local row is a keystroke away, a remote one costs an ssh
+  // and a nested tmux. Both forms start in the same column, so the arrows form a
+  // vertical run you can scan without reading a word.
   const host = showHost
     ? local
       ? `${DIM}  here${RESET}`
       : `${REMOTE}\u2192 ${terminalText(agent.host)}${RESET}`
     : "";
-  // Workstream if mu set one, otherwise the tmux session name. Both answer
-  // "which piece of work is this", and only mu-spawned agents have a
-  // workstream, so the column was empty for most human agents.
-  //
-  // The session name is also what the tms picker shows and what you have
-  // trained yourself to search on: a session called `hacking/murmur` holding a
-  // pi whose window is named `Python` was unfindable by typing `murmur`. A
-  // session without an agent still has no place in this list.
+  // Workstream if mu set one, otherwise the tmux session name: both answer
+  // "which piece of work is this", and only mu-spawned agents have a workstream.
+  // The session name is also what tms shows and what fingers search on -- a
+  // session `hacking/murmur` holding a pi whose window is named `Python` was
+  // unfindable by typing `murmur`.
   const group = agent.workstream ?? agent.session_name;
-  // Never the same string twice in one row. Both columns fall back to the tmux
-  // session name, so an unnamed pi -- no mu agent name, no `/name`, a window
-  // name tmux is auto-renaming -- printed `hacking/murmur  hacking/murmur` and
-  // spent thirteen columns saying nothing. A blank cell is the honest answer:
-  // the name column already carries the only fact there is.
+  // Never the same string twice in one row. Both columns fall back to the
+  // session name, so an unnamed pi printed `hacking/murmur  hacking/murmur` and
+  // spent thirteen columns saying nothing. Blank is honest: the name column
+  // already carries the only fact there is.
   const workstream = group && group !== name ? `${DIM}${terminalText(group)}${RESET}` : "";
-  // Two ages, and the one worth showing is how old the AGENT'S news is, not
-  // how recently we reached its host. A peer we polled a second ago can be
-  // serving a snapshot from three hours back — which read as fresh until this
-  // column existed. `unreachable` is the other axis: the cache itself is old.
-  // Both attention and activity, simultaneously. A running agent with `blocked`
-  // attention is a real and expected state, and the row has room to say so
-  // rather than picking one word and hiding the other.
+  // Attention and activity simultaneously. A running agent with `blocked`
+  // attention is expected, and the row has room to say so rather than picking
+  // one word and hiding the other.
   const extra = agent.attention.filter((kind) => kind !== state);
   const flags = [
     agent.driver === "orchestrated" ? "crew" : "",
-    // Freshness is a property of the NODE, and it is stated explicitly rather
-    // than inferred from an age: a stale node keeps its last-known fields, and
-    // the reader has to be told those fields are old.
+    // Freshness belongs to the NODE, stated rather than inferred from an age: a
+    // stale node keeps its last-known fields, and the reader must be told so.
     agent.freshness === "stale" ? "stale host" : "",
     ...extra,
     agent.activity === "running" && state !== "running" ? "running" : "",
@@ -336,11 +300,10 @@ export function pickerRow(
   ]
     .filter(Boolean)
     .join(" ");
-  // The state word is IN the label, not a hidden column. fzf's --with-nth
-  // re-indexes fields, so any --nth that excluded the label broke plain
-  // name matching (typing "glance" returned 0/4). Keeping state visible costs
-  // eight columns and makes both the ctrl-key filters and text search work on
-  // one field set — and the word is worth reading anyway.
+  // The state word is IN the label, not a hidden column: fzf's --with-nth
+  // re-indexes fields, so any --nth excluding the label broke plain name
+  // matching (typing "glance" returned 0/4). Eight columns to make the filters
+  // and text search share one field set, and the word is worth reading anyway.
   const label = [
     `${marker} ${colour}${glyph}${RESET}`,
     `${colour}${pad(state, COLUMNS.state)}${RESET}`,
@@ -353,9 +316,9 @@ export function pickerRow(
   ]
     .filter(Boolean)
     .join(" ");
-  // Keyed on the PANE, not on an agent id. The pane is the address, it is what
-  // jumps, and an attention-only pane has no agent id at all -- so keying on one
-  // would make exactly the rows that need a human unselectable.
+  // Keyed on the PANE, not an agent id: the pane is the address and what jumps,
+  // and an attention-only pane has no agent id -- so keying on one would make
+  // exactly the rows that need a human unselectable.
   return `${agent.host_id}\t${agent.pane}\t${label}`;
 }
 
@@ -363,23 +326,18 @@ function previewText(store: Store, agent: PaneView): string {
   const state = renderState(agent);
   const colour = COLOUR[state] ?? "";
   const head = [
-    // Same one chain the row uses. This was
-    // `agent.agent_name ? terminalText(agent.agent_name) : agentLabel(agent)`,
-    // whose true branch is exactly what `agentLabel` does first anyway, down to
-    // the `terminalText` -- a no-op fork that existed only to fall out of step
-    // with the row above it.
+    // Same one chain the row uses, not a fork whose true branch was what
+    // `agentLabel` does first anyway.
     `${colour}${GLYPH[state] ?? "?"} ${state}${RESET}  ${BOLD}${agentLabel(agent)}${RESET}`,
-    // Says where, and whether "where" is this machine. The glance below is a
-    // local capture-pane or an ssh depending on this one fact, so it belongs in
-    // the header rather than being inferred from a hostname.
+    // Whether "where" is this machine decides if the glance below is a local
+    // capture-pane or an ssh, so it is stated rather than inferred.
     agent.local
       ? `${DIM}here  ${agentLocation(agent)}${RESET}`
       : `${REMOTE}\u2192 ${terminalText(agent.host)}${RESET}  ${DIM}${agentLocation(agent)}${RESET}`,
   ];
-  // The three facts, each named, because they are independent and a reader has
-  // to be able to see all three at once. `activity` is what the pane's own
-  // process said; `attention` is who is wanted; `freshness` is how recently we
-  // reached the node that said either.
+  // Three independent facts, each named, visible at once: `activity` is what the
+  // pane's process said, `attention` is who is wanted, `freshness` is how
+  // recently we reached the node that said either.
   const facts = [
     `activity ${agent.activity ?? "none (attention only)"}`,
     agent.attention.length ? `wants    ${agent.attention.join(", ")}` : "",
@@ -397,10 +355,9 @@ function previewText(store: Store, agent: PaneView): string {
     agent.freshness === "stale" ? `${DIM}host is stale: fields below are last-known${RESET}` : "",
   ].filter(Boolean);
 
-  // The glance is the point of the preview: what is the agent actually doing.
-  // There is no history section any more, because there is no history -- the
-  // store holds current state only, which is the accepted limitation this
-  // rewrite takes in exchange for a model where one writer owns each fact.
+  // The glance is the point of the preview: what the agent is actually doing.
+  // No history section, because there is no history -- the store holds current
+  // state only, the accepted price of one writer owning each fact.
   const pane = glance(store, agent);
   const live = pane?.trimEnd()
     ? [
@@ -417,27 +374,25 @@ function previewText(store: Store, agent: PaneView): string {
 
 /**
  * Emit the preview body for one pane. `murmur pick` re-invokes itself here so
- * fzf's `--preview` has a per-row command, rather than the picker precomputing
- * every preview up front — which would mean an ssh round-trip per remote pane
- * before the list even paints.
+ * fzf's `--preview` has a per-row command, rather than precomputing every
+ * preview up front -- an ssh round-trip per remote pane before the list paints.
  */
 export function runPreview(store: Store, paneId: string, hostId?: string): void {
   const identity = requireIdentity();
   if (!identity) return;
-  // Runs as a child of a picker that has just collected, so it reads the store
-  // directly rather than syncing again.
+  // Reads the cache, never collects: this runs per keypress as the cursor moves,
+  // and the picker's background reload is what keeps the store current.
   //
-  // Keyed on HOST AND PANE, which is the whole address. A pane id is unique per
-  // node and nothing more, so two machines routinely hold a `%1`; fzf hands both
-  // columns back for exactly this reason. Matching on the pane alone previewed
-  // whichever row the sort happened to put first, and for a local hit that meant
-  // a local `capture-pane` standing in for a remote agent.
+  // Keyed on HOST AND PANE, the whole address. A pane id is unique per node and
+  // nothing more, so two machines routinely hold a `%1` -- which is why fzf
+  // hands both columns back. Matching on the pane alone previewed whichever row
+  // the sort put first, so a local `capture-pane` stood in for a remote agent.
   const agent = status(store, identity).panes.find(
     (candidate) =>
       candidate.pane === paneId && (hostId === undefined || candidate.host_id === hostId),
   );
-  // A miss is worth saying. This process's entire output is the preview, so
-  // printing nothing is indistinguishable from a broken preview command -- and
+  // A miss is worth saying: this process's whole output is the preview, so
+  // printing nothing is indistinguishable from a broken preview command, and
   // the row can genuinely vanish between the collect and the keypress.
   process.stdout.write(
     agent ? `${previewText(store, agent)}\n` : `${DIM}${paneId} is no longer here.${RESET}\n`,
@@ -453,14 +408,10 @@ export async function runPick(
   const jumpTo = deps.jump ?? jumpToAgent;
   const identity = requireIdentity();
   if (!identity) return;
-  // Cache only, and deliberately: a collect costs the full ssh timeout for every
-  // peer that is asleep (measured: 1-3s against one dead host, capped at
-  // COLLECT_DEADLINE_MS), and every millisecond of it was spent with the screen
-  // blank because fzf cannot paint before its input arrives. The cached read is
-  // ~70ms, so the list appears immediately and the fetch happens BEHIND it: the
-  // `start:reload` binding below runs `--rows`, which collects and replaces the
-  // rows in place. Same data, one frame later, instead of one second earlier of
-  // nothing.
+  // Cache only. A collect costs the full ssh timeout per sleeping peer
+  // (measured: 1-3s against one dead host), and fzf cannot paint before its
+  // input arrives, so all of it was spent on a blank screen. The cached read is
+  // ~50ms; the `start:reload` binding below collects BEHIND the painted list.
   const view = status(store, identity);
   const agents = view.panes.filter((agent) => options.all || isVisible(agent));
   const hidden = view.panes.length - agents.length;
@@ -500,8 +451,7 @@ export async function runPick(
   // Keyed on the pane, which is the address, and on the host so the preview can
   // tell a local pane from a remote one with the same pane id.
   const preview = `${process.execPath} ${self} pick --preview {2} --host {1}`;
-  // Narrow on the hidden state column with an exact-prefix query, then restore
-  // the real query. ctrl-a clears it.
+  // Narrow by putting the state word in the query. fzf's own ctrl-u clears it.
   const filterBinds = [
     ...FILTER_KEYS.map(([key, query]) => [key, query] as const),
     ...FILTER_ALIASES,
@@ -517,12 +467,10 @@ export async function runPick(
       "--with-nth",
       "3..",
       "--ansi",
-      // Literal substring matching, and matching only the visible columns.
-      // Default fuzzy scatters query characters across the row: `re` matched
-      // "Fix Murmur Pick Fzf Filter" as well as "recovered". A query here is a
-      // word or two of an agent or workstream name, so substring is what the
-      // fingers expect. Prefix a token with ' to opt back into fuzzy.
-      // Same choice as the tms session picker, for consistency across the two.
+      // Literal substring, because default fuzzy scatters query characters
+      // across the row: `re` matched "Fix Murmur Pick Fzf Filter" as well as
+      // "recovered". A query here is a word or two of a name. Prefix a token
+      // with ' to opt back into fuzzy. Same choice as the tms session picker.
       "--exact",
       // `begin` ranks earlier match positions higher, so `scratch` puts the
       // scratch workstream above a row that merely mentions it. `index` is the
@@ -533,12 +481,9 @@ export async function runPick(
       "--layout",
       "reverse",
       // `display-popup` draws its own border, so fzf's is a second one a
-      // character inside the first. A popup is the normal way to run this, via
-      // the prefix+a binding, so the doubled frame was what you saw most.
-      //
-      // Detected by $TMUX set with $TMUX_PANE unset: tmux exports TMUX to a
-      // popup but not TMUX_PANE, since a popup is not a pane. Outside tmux
-      // neither is set, so the three cases stay distinguishable.
+      // character inside the first -- and the popup, via the prefix+a binding,
+      // is the normal way to run this, so the doubled frame was what you saw
+      // most. See `isPopup` for the detection.
       "--border",
       inPopup ? "none" : "rounded",
       "--info",
@@ -547,15 +492,13 @@ export async function runPick(
       `${options.all ? CREW_MARK : ""}${basePrompt}`,
       "--header",
       [
-        // No `del forget`. There is no replica to evict: a reader holds one
-        // snapshot per peer, and the next fetch replaces it whole -- so a delete
-        // key could only remove a row the next collect would put straight back,
-        // while looking like it had done something.
+        // No delete key: a reader holds one snapshot per peer and the next fetch
+        // replaces it whole, so it could only remove a row the next collect puts
+        // straight back, while looking like it had done something.
         `enter jump   ^r refresh   ^p preview   ^u clear`,
-        // "toggle crew", not "show crew": the header is built once and the
-        // binding flips per keypress, so a directional label would be wrong
-        // half the time. The prompt's `crew` marker says which way it is
-        // currently set.
+        // "toggle crew", not "show crew": the header is built once and the bind
+        // flips per keypress, so a directional label would be wrong half the
+        // time. The prompt's `crew` marker says which way it is set.
         `filter: ${FILTER_KEYS.map(([key, query]) => `${key.replace("alt-", "M-")} ${query}`).join(
           " ",
         )}   M-a toggle crew`,
@@ -565,10 +508,9 @@ export async function runPick(
         .join("\n"),
       "--preview",
       preview,
-      // Narrow terminals cannot show both the columns and a 58% preview, and
-      // the columns are the point of the list. ctrl-p cycles right / bottom /
-      // hidden, so every column is reachable on a small viewport without
-      // giving up the glance entirely.
+      // Narrow terminals cannot show both the columns and a 58% preview, and the
+      // columns are the point. ctrl-p cycles right / bottom / hidden, so every
+      // column is reachable without giving up the glance entirely.
       "--preview-window",
       previewLayout,
       "--bind",
@@ -581,24 +523,17 @@ export async function runPick(
       "--bind",
       `start:reload(${process.execPath} ${self} pick --rows${allFlag})`,
       // M-a toggles the POPULATION, which is what "all" means everywhere else in
-      // murmur: the --all flag, and the "crew hidden (--all)" notice.
+      // murmur. It used to be the "clear the query" key, also labelled "all",
+      // and that collision is what made it look broken: it emptied the query
+      // instead of revealing the crew rows named two lines below. Clearing is
+      // fzf's own ctrl-u and needed no binding.
       //
-      // It used to be the "clear the filter" key, labelled "all", which is the
-      // collision that made it look broken: pressing it emptied the query
-      // instead of revealing the hidden crew rows named two lines below, and
-      // nothing said why. One word, two meanings, and the wrong one bound to
-      // the key people reach for. Clearing is fzf's own ctrl-u, which needed no
-      // binding at all.
-      //
-      // `transform` rather than a fixed reload, because a bind string is built
-      // once at launch and cannot know it has already fired: binding
-      // `--rows --all` meant the second press re-ran the same thing and the
-      // toggle only worked one way. transform runs a shell snippet per
-      // keypress, so it can branch on the current state.
-      //
-      // The state lives in the prompt, which is the only mutable string fzf
-      // exposes to a binding. CREW_MARK is carried at the front of it: visible
-      // as a label, and readable back through $FZF_PROMPT.
+      // `transform`, not a fixed reload: a bind string is built once at launch
+      // and cannot know it has already fired, so `--rows --all` made the second
+      // press re-run the first and the toggle only worked one way. transform
+      // runs per keypress and can branch on the current state -- which lives in
+      // the prompt, the only mutable string fzf exposes to a binding. CREW_MARK
+      // rides at the front of it: visible as a label, readable via $FZF_PROMPT.
       "--bind",
       `alt-a:transform:[[ $FZF_PROMPT == "${CREW_MARK}"* ]] && echo "reload(${process.execPath} ${self} pick --rows)+change-prompt(${basePrompt})" || echo "reload(${process.execPath} ${self} pick --rows --all)+change-prompt(${CREW_MARK}${basePrompt})"`,
       ...filterBinds,
@@ -615,31 +550,23 @@ export async function runPick(
 
   const [selectedHost, selected] = stdout.trim().split("\t");
   if (!selected) return;
-  // Resolved against the UNFILTERED list, not `agents`. `agents` is what this
-  // process printed at launch; alt-a reloads the rows from a SUBPROCESS, so a
-  // crew row revealed that way was never in the parent's array. fzf returned
-  // its key, find() returned undefined, and enter did nothing — the reveal
-  // shipped able to show rows it could not select. Filtering is a presentation
-  // concern and must not gate the action; the key fzf hands back is
-  // authoritative.
-  // The WHOLE address, host and pane. A pane id is unique per node and nothing
-  // more, so two machines routinely hold a `%1`; matching on the pane alone
-  // jumped to whichever one the sort happened to put first, which turns an ssh
-  // into a local window switch.
-  // Re-read, rather than searching `view`. `view` is the CACHED snapshot this
-  // process printed at launch; the rows fzf actually offered came from the
-  // `start:reload` subprocess, which collected and wrote to the same store. So a
-  // pane that only the background collect discovered is in the store but not in
-  // `view`, and resolving against `view` would make the freshest rows -- exactly
-  // the ones the reload exists to reveal -- unselectable. Same failure alt-a
-  // already had.
+  // A fresh read of the FULL list, not `view` and not `agents`. The rows fzf
+  // offered came from the `start:reload` and alt-a subprocesses, which collected
+  // into the same store, so a pane only they discovered is absent from this
+  // process's launch snapshot -- and filtering is a presentation concern that
+  // must not gate the action. Resolving against either made the freshest rows,
+  // exactly the ones the reload exists to reveal, display but not select: fzf
+  // returned a key, find() returned undefined, and enter silently did nothing.
+  //
+  // Matched on the WHOLE address. A pane id is unique per node and nothing more,
+  // so two machines routinely hold a `%1`, and matching the pane alone jumped to
+  // whichever the sort put first -- turning an ssh into a local window switch.
   const agent = status(store, identity).panes.find(
     (candidate) => candidate.pane === selected && candidate.host_id === selectedHost,
   );
-  // So a miss here means the pane is genuinely gone between the collect and
-  // the keypress, and that is worth saying. Same argument as the jump.ok
-  // branch below: in a popup, a silent return is indistinguishable from a dead
-  // key.
+  // So a miss means the pane genuinely went away between the collect and the
+  // keypress. Worth saying, for the same reason as the `jump.ok` branch below:
+  // in a popup a silent return is indistinguishable from a dead key.
   if (!agent) {
     process.stderr.write(`${selected} is no longer here.\n`);
     process.exitCode = 1;
@@ -658,9 +585,9 @@ export async function runPick(
 async function runRows(store: Store, options: PickOptions = {}): Promise<void> {
   const identity = requireIdentity();
   if (!identity) return;
-  // Also unfloored, and deliberately so: this is what `^r refresh` runs. A
-  // refresh key that skipped the fetch would be a key that silently does
-  // nothing, which is the failure `alt-a` and `ctrl-b` were already fixed for.
+  // Unfloored: this backs `^r refresh` and the launch `start:reload`, and a
+  // refresh that skipped the fetch would be a key that silently does nothing --
+  // the failure `alt-a` and `ctrl-b` were already fixed for.
   const view = await statusWithCollect(store, identity);
   const agents = view.panes.filter((agent) => options.all || isVisible(agent));
   const showHost = agents.some((agent) => !agent.local);

@@ -36,17 +36,12 @@ function sshHosts(): string[] {
 }
 
 /**
- * Column-aligned plain text. Rows are all-ASCII here (peer names, ssh targets
- * and hostnames), so `length` is a fine width; trailing cells are not padded so
- * the output stays clean for `cut` and friends.
- */
-/**
  * How long since a peer last answered.
  *
  * `never` is deliberately distinct from an age: a peer that has never answered
  * is a setup problem (wrong target, murmur not installed there), while an old
- * age is an ordinary sleeping node. Uses the same fetched_at and threshold the
- * picker does, so the two cannot disagree about one peer.
+ * age is an ordinary sleeping node. Uses the same fetched_at and threshold as
+ * the picker, so the two cannot disagree about one peer.
  */
 export function lastSeen(fetchedAt: number | null, now: number): string {
   if (fetchedAt === null) return "never";
@@ -57,20 +52,17 @@ export function lastSeen(fetchedAt: number | null, now: number): string {
 /**
  * What to show in the VERSION column, and whether the pairing is a problem.
  *
- * The distinction is drawn from what the code actually enforces rather than from
- * taste:
+ * Drawn from what the code enforces rather than from taste:
  *
- *   - a differing SNAPSHOT VERSION is a hard incompatibility. `parseSnapshot`
- *     rejects any `murmur_snapshot` other than 1, so state genuinely does not
- *     flow. That is a fact about behaviour, and it is the only thing marked.
- *   - a differing murmur version is worth SHOWING and nothing more. Two nodes on
- *     snapshot 1 running 0.1.3 and 0.2.0 interoperate fine; marking that would
- *     cry wolf on every patch release and train the operator to ignore the
- *     column that is supposed to mean something.
+ *   - a differing SNAPSHOT VERSION is a hard incompatibility, because
+ *     `parseSnapshot` rejects anything but 1 and state genuinely does not flow.
+ *     A fact about behaviour, and the only thing marked.
+ *   - a differing murmur version is worth SHOWING and no more. Two nodes on
+ *     snapshot 1 running 0.1.3 and 0.2.0 interoperate fine, and marking that
+ *     would cry wolf on every patch release.
  *
- * A peer we have never heard from is `unknown` and is NOT a mismatch: absence of
- * information is not evidence of incompatibility, and a sleeping peer is the
- * common case here.
+ * A peer never heard from is `unknown`, not a mismatch: absence of information
+ * is not evidence of incompatibility, and a sleeping peer is the common case.
  */
 export function versionCell(
   peer: Pick<PeerRecord, "murmur_version" | "snapshot_version">,
@@ -79,18 +71,23 @@ export function versionCell(
   if (peer.murmur_version === null && peer.snapshot_version === null) {
     return { text: "unknown", incompatible: false };
   }
-  // Answered, but from a build too old to say what it is. Distinct from never
-  // having answered: this one is reachable and talking.
+  // Answered from a build too old to say what it is -- distinct from never
+  // having answered, since this one is reachable and talking.
   const version = peer.murmur_version ?? "unreported";
   const incompatible = peer.snapshot_version !== null && peer.snapshot_version !== ours;
-  // The number appears ONLY when it is the problem. In the normal case it is
-  // noise on every row; in the abnormal case it is the whole explanation.
+  // The number appears ONLY when it is the problem: noise on every row
+  // otherwise, and the whole explanation when it matters.
   return {
     text: incompatible ? `${version} (snapshot ${peer.snapshot_version} \u2260 ${ours})` : version,
     incompatible,
   };
 }
 
+/**
+ * Column-aligned plain text. Rows are all-ASCII (peer names, ssh targets,
+ * hostnames), so `length` is a fine width. Trailing cells are unpadded, so the
+ * output stays clean for `cut`.
+ */
 export function formatTable(rows: string[][]): string {
   const widths: number[] = [];
   for (const row of rows) {
@@ -112,10 +109,10 @@ export function formatTable(rows: string[][]): string {
 /**
  * Whether `peer add` must refuse, and what to say. Returns null to proceed.
  *
- * Split out of the commander action because that action opens a store, shells
- * out over ssh and sets process.exitCode, so the rules below were unreachable
- * from a test: the suite ended up asserting a reimplementation of this lookup
- * instead, and disabling the real branch left it green.
+ * Split out of the commander action, which opens a store, shells out over ssh
+ * and sets process.exitCode -- so these rules were untestable and the suite
+ * asserted a reimplementation instead, staying green with the real branch
+ * disabled.
  */
 export function peerAddDecision(input: {
   name: string;

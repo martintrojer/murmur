@@ -7,23 +7,17 @@ import type { PeerRecord } from "./types.js";
 /**
  * Bound for a whole doctor run, and deliberately NOT COLLECT_DEADLINE_MS.
  *
- * That 4s is sized against the tmux tick -- `murmur status` collects on every
- * repaint, and a collect that outlives its tick is a collect overlapping
- * itself, which tmux gives no way to cancel. Nothing in that reasoning applies
- * here: `murmur doctor` is typed by a person who is sitting there waiting, runs
- * once, and overlaps nothing. Inheriting the tick's budget would abandon
- * peers that were about to answer in order to protect a tick that does not
- * exist.
+ * That 4s is sized against the tmux tick, and none of its reasoning applies
+ * here: doctor is typed by a person sitting there waiting, runs once, and
+ * overlaps nothing. Inheriting the tick's budget would abandon peers about to
+ * answer to protect a tick that does not exist.
  *
  * Fifteen seconds, measured on the real fleet: ~300ms per warm peer for both
- * calls, and 1040ms for the unreachable one -- the connect timeout plus fork
- * overhead. So the budget is over an order of magnitude above a healthy fleet,
- * and still covers several serialised waves of dead hosts. It is high enough
- * that hitting it is itself information: the fan-out is what it bounds, not the
- * peer.
+ * calls, 1040ms for the unreachable one. An order of magnitude above a healthy
+ * fleet and still several serialised waves of dead hosts, so hitting it is
+ * itself information -- it bounds the fan-out, not the peer.
  *
- * A constant rather than a flag, per the zero-configuration rule: a wrong value
- * costs a release, not a silently broken user setup.
+ * A constant, not a flag: a wrong value costs a release, not a broken setup.
  */
 export const DOCTOR_DEADLINE_MS = 15_000;
 
@@ -36,9 +30,9 @@ export type RosterEntry = {
   /**
    * What the host called itself, when that peer has ever heard from it.
    *
-   * Carried but never compared: a peer added as `linuxpc` can report a
-   * container id, so this is display material only. `host_id` is the only
-   * comparable identity, and `peer list` does not carry one.
+   * Carried but never compared -- a peer added as `linuxpc` can report a
+   * container id, so this is display only. `host_id` is the sole comparable
+   * identity, and `peer list` does not carry one.
    */
   hostname: string | null;
 };
@@ -58,19 +52,18 @@ export type PeerSurvey = {
 /**
  * Why a peer could not be surveyed.
  *
- * Named per FAILED CALL rather than per underlying cause, because that is what
- * decides what the reader can still conclude: a peer with an identity but no
- * roster can still be checked for presence in everyone else's roster, while one
- * that never named itself cannot be reasoned about at all.
+ * Named per FAILED CALL rather than per cause, because that decides what the
+ * reader can still conclude: a peer with an identity but no roster can be
+ * checked for presence in everyone else's roster, while one that never named
+ * itself cannot be reasoned about at all.
  *
- * - `identity-unavailable`: `murmur export` did not produce a snapshot. Asleep,
- *   off the VPN, no murmur installed, or a corrupt document -- all one
- *   observation here, since none of them yields a host_id.
- * - `roster-unavailable`: identity is known, `peer list --json` failed.
- * - `roster-unsupported`: the peer's murmur is too old to have `peer list
- *   --json`. Version skew, which is an upgrade, not a fault -- and must not be
- *   reported as a broken node.
- * - `roster-invalid`: the peer answered with something that is not a roster.
+ * - `identity-unavailable`: `murmur export` produced no snapshot. Asleep, off
+ *   the VPN, no murmur, or corrupt -- one observation, since none yields a
+ *   host_id.
+ * - `roster-unavailable`: identity known, `peer list --json` failed.
+ * - `roster-unsupported`: that murmur predates `peer list --json`. Version
+ *   skew is an upgrade, not a fault, and must not read as a broken node.
+ * - `roster-invalid`: the answer was not a roster.
  */
 export type SurveyFailureReason =
   | "identity-unavailable"
@@ -94,49 +87,44 @@ export type SurveyResult = ({ ok: true } & PeerSurvey) | SurveyFailure;
 /**
  * Commander's answer to a flag or subcommand it does not have.
  *
- * This is the "too old" signal, and it is a real case rather than a defensive
- * one: `peer list --json` is newer than `export`, so a fleet mid-upgrade has
- * nodes that answer the first call perfectly and refuse the second. Told apart
- * from a corrupt roster on purpose -- the action is `npm i -g` on that host,
- * and calling it invalid output would send the operator looking for a bug.
+ * The "too old" signal, and a real case rather than a defensive one: `peer list
+ * --json` is newer than `export`, so a fleet mid-upgrade has nodes that answer
+ * the first call and refuse the second. Kept distinct from a corrupt roster
+ * because the action is `npm i -g` on that host; calling it invalid output
+ * would send the operator hunting a bug.
  */
 const OUTDATED = /\berror: unknown (?:option|command)\b/i;
 
 function failure(target: string, reason: SurveyFailureReason, error: unknown): SurveyFailure {
   const message = error instanceof Error ? error.message : String(error);
-  // Reuses the collector's normaliser rather than restating it. It is the one
-  // place that knows how to turn an ssh rejection into a line about the host --
-  // strip the invocation, recognise an unreachable host, bound the length --
-  // and a second copy is how doctor and `peer list` end up disagreeing about
-  // the same peer.
+  // The collector's normaliser, not a copy: it is the one place that turns an
+  // ssh rejection into a line about the host, and a second copy is how doctor
+  // and `peer list` end up disagreeing about the same peer.
   return { ok: false, target, reason, detail: describeFailure(target, message) };
 }
 
 /**
  * Read a `murmur peer list --json` document.
  *
- * LENIENT where `parseSnapshot` is strict, and the asymmetry is deliberate.
- * This document crosses a version boundary in the direction murmur cannot
- * control: it is printed by whatever murmur that peer happens to run. Rejecting
- * unknown keys the way snapshot validation does would mean any future column
- * added to `peer list` breaks doctor against every not-yet-upgraded node --
- * turning an additive change into a fleet-wide outage of the tool you reach for
- * when the fleet looks wrong.
+ * LENIENT where `parseSnapshot` is strict, deliberately: this document is
+ * printed by whatever murmur that peer happens to run, so rejecting unknown
+ * keys would mean any future `peer list` column breaks doctor against every
+ * not-yet-upgraded node -- an additive change becoming an outage of the tool you
+ * reach for when the fleet looks wrong.
  *
- * So: the two fields doctor actually needs are required and typed, and
- * everything else is ignored. A row missing them is a malformed document rather
- * than a row to skip, because a roster with a hole in it silently reads as
- * "that peer does not know about the host" -- which is exactly the conclusion
- * doctor exists to draw, and it would be drawing it from a parse bug.
+ * So the two fields doctor needs are required and typed and the rest ignored. A
+ * row missing them is a malformed DOCUMENT, not a row to skip: a roster with a
+ * hole reads as "that peer does not know about the host", which is exactly the
+ * conclusion doctor exists to draw, drawn from a parse bug.
  */
 function parseRoster(input: string): RosterEntry[] {
   let parsed: unknown;
   try {
     parsed = JSON.parse(input);
   } catch {
-    // The common shape of this is not corrupt JSON, it is not JSON at all: a
-    // shell error, a login banner, or an older murmur's ASCII table. Quoting a
-    // JSON.parse offset would bury that, so it says what was expected instead.
+    // Usually not corrupt JSON but not JSON at all: a shell error, a login
+    // banner, an older murmur's ASCII table. A JSON.parse offset would bury
+    // that, so this says what was expected instead.
     throw new Error("peer list did not answer with JSON");
   }
   if (!Array.isArray(parsed)) throw new Error("peer list: expected an array of peers");
@@ -160,18 +148,17 @@ function parseRoster(input: string): RosterEntry[] {
  * Ask one peer who it is and who it can see.
  *
  * Two calls, because neither alone is enough. `export` carries the host_id --
- * the only identity comparable across the fleet -- and structurally cannot
- * carry a roster: a snapshot is that node's own panes, which is precisely what
- * makes "absent from a snapshot means absent" true. `peer list --json` carries
- * the roster and no host_id.
+ * the only fleet-comparable identity -- and structurally cannot carry a roster,
+ * since a snapshot is that node's own panes, which is what makes "absent from a
+ * snapshot means absent" true. `peer list --json` carries the roster, no
+ * host_id.
  *
- * Sequential rather than concurrent, and not for politeness: a peer that cannot
- * name itself is unsurveyable whatever its roster says, so the second ssh would
- * be a forked process spent on an answer that gets discarded. The fan-out
- * across peers is where the concurrency belongs.
+ * Sequential, not for politeness: a peer that cannot name itself is
+ * unsurveyable whatever its roster says, so the second ssh would be spent on a
+ * discarded answer. The fan-out across peers is where concurrency belongs.
  *
- * Takes the Channel rather than reaching for ssh itself, exactly like the
- * collector, so this whole seam is testable without a second machine.
+ * Takes the Channel like the collector does, so the seam is testable without a
+ * second machine.
  */
 export async function surveyPeer(channel: Channel, target: string): Promise<SurveyResult> {
   let host_id: string;
@@ -298,18 +285,17 @@ function withoutTargetPrefix(target: string, detail: string): string {
 /**
  * Whether one row of a peer's roster is about `host`.
  *
- * The hard part of the whole diagnosis, because `peer list --json` carries no
- * host_id: a roster row is a local handle, an ssh target and -- only if that
- * peer has ever actually heard from the host -- the name the host published for
- * itself. So the match is made on that self-report, `display_name`, which both
- * sides got from the same `export` document. That is not the same thing as
- * trusting `hostname` as an identity: it is never used to tell two hosts apart,
- * only to recognise a host that already named itself the same way to two nodes.
+ * The hard part of the diagnosis, because `peer list --json` carries no
+ * host_id: a row is a local handle, an ssh target, and -- only if that peer has
+ * ever heard from the host -- the name the host published for itself. So the
+ * match is on that self-report, which both sides got from the same `export`.
+ * Not the same as trusting `hostname` as an identity: it never tells two hosts
+ * apart, only recognises one that named itself the same way to two nodes.
  *
- * When the row has no self-report at all, that peer has never reached the host,
- * and the local handle is the only thing left. It is a weak match and it is used
- * only in that case, since a name is local: comparing rosters by name in general
- * reports naming drift as asymmetry and misses genuine duplicates.
+ * With no self-report the peer has never reached the host and the local handle
+ * is all that is left. A weak match, used only there, since a name is local:
+ * comparing rosters by name reports naming drift as asymmetry and misses
+ * genuine duplicates.
  */
 function rowIsAbout(row: RosterEntry, host: KnownHost): boolean {
   if (host.display_name === null) return false;
@@ -320,24 +306,20 @@ function rowIsAbout(row: RosterEntry, host: KnownHost): boolean {
 /**
  * Findings from this node's configuration plus what its peers said. Pure.
  *
- * SEVERITY IS NOT A FEELING. Only two things are problems: one machine
- * configured twice on this node, and a peer whose snapshot version this node
- * rejects. Both are cases where murmur's own behaviour is provably wrong --
- * double the ssh work for one host, or state that cannot flow at all.
+ * SEVERITY IS NOT A FEELING. Two things are problems: one machine configured
+ * twice on this node, and a peer whose snapshot version this node rejects. Both
+ * are murmur provably misbehaving -- double the ssh work for one host, or state
+ * that cannot flow at all.
  *
- * Everything else is an observation, and asymmetry most of all. ARCHITECTURE.md
- * makes reachability deliberately one-directional -- "a laptop reaches a server,
- * and the server does not reach a laptop behind NAT" -- so a doctor that called
- * every asymmetry a fault would cry wolf on the normal case and teach the
- * operator to ignore the command. It is still reported, because the consequence
- * (that peer's picker cannot see this node's agents) is invisible on every other
- * surface.
+ * Everything else is an observation, asymmetry most of all. ARCHITECTURE.md
+ * makes reachability deliberately one-directional, so calling every asymmetry a
+ * fault would cry wolf on the normal case and teach the operator to ignore the
+ * command. Still reported, because the consequence -- that peer's picker cannot
+ * see this node's agents -- is invisible everywhere else.
  *
- * Version skew is delegated to `versionCell`, never recomputed. `peer list`
- * already decides what an incompatible pairing is and already prints it; a
- * second definition is how this repository got NEEDS_HUMAN as two literals in
- * two files, and a doctor that disagreed with `peer list` about one peer would
- * be worse than no doctor.
+ * Version skew is delegated to `versionCell`, never recomputed: `peer list`
+ * already decides what an incompatible pairing is, and a doctor that disagreed
+ * with it about one peer would be worse than no doctor.
  */
 export function diagnose(local: LocalNode, surveys: SurveyResult[]): Finding[] {
   const findings: Finding[] = [];
@@ -534,40 +516,35 @@ export function diagnose(local: LocalNode, surveys: SurveyResult[]): Finding[] {
  * Bound for the reachability phase, and deliberately larger than
  * `DOCTOR_DEADLINE_MS`.
  *
- * The survey is one call per peer; this is one dial per ORDERED PAIR, so the
- * work is O(N^2) where the survey is O(N). Reusing the survey's fifteen seconds
- * would mean the phase that costs the most is bounded by a budget sized for the
- * phase that costs the least -- and a deadline that a correct run routinely hits
- * reports a healthy fleet as unknown, which is the one answer this command must
- * not invent.
+ * The survey is one call per peer; this is one dial per ORDERED PAIR, O(N^2)
+ * against O(N). Reusing the survey's budget would bound the most expensive
+ * phase by a number sized for the cheapest, and a deadline a correct run
+ * routinely hits reports a healthy fleet as unknown -- the one answer this
+ * command must not invent.
  *
- * Thirty seconds, measured on the real fleet: a probe to a live target is ~165ms
- * warm and a probe to a target that is switched off is ~480ms. Each dial is
- * additionally capped by the channel's own exec timeout, so sixteen dials at
- * eight-way concurrency is two waves and a worst case near six seconds. The
- * budget is therefore several times the worst case rather than close to it,
- * because the cost of being wrong is a false "unknown".
+ * Thirty seconds, measured on the real fleet: ~165ms to a live target warm,
+ * ~480ms to one switched off, each dial additionally capped by the channel's
+ * exec timeout. Sixteen dials at eight-way concurrency is two waves, worst case
+ * near six seconds, so the budget is several times that rather than close to
+ * it -- the cost of being wrong is a false "unknown".
  *
- * A constant, not a flag, per the zero-configuration rule.
+ * A constant, not a flag.
  */
 export const TOPOLOGY_DEADLINE_MS = 30_000;
 
 /**
  * Whether one node can open an ssh session to another.
  *
- * Three values and not two, which is the whole discipline of this phase. A
- * probe measures "could not connect, just now", and that has two very different
- * causes: the target refused or was unroutable (a firewall, a missing key, a
- * name that does not resolve there) or the target was simply switched off. Only
- * the first is a fact about the PAIR; the second is a fact about the target, and
- * calling it a fact about the pair is how hub advice flips between runs as
- * machines sleep.
+ * Three values, not two, which is the discipline of this phase. "Could not
+ * connect just now" has two causes: the target refused or was unroutable (a
+ * firewall, a missing key, a name that does not resolve there), or it was
+ * switched off. Only the first is a fact about the PAIR, and treating the second
+ * as one is how hub advice flips between runs as machines sleep.
  *
- * - `reaches`: proven. The dial succeeded.
- * - `unreachable`: a real negative. The dial failed AND this node can itself
- *   reach the target, so the target is demonstrably up and the failure is about
- *   this pair.
- * - `unknown`: the dial failed or was never attempted, and the target (or the
+ * - `reaches`: the dial succeeded.
+ * - `unreachable`: a real negative -- the dial failed AND this node can reach
+ *   the target, so it is demonstrably up and the failure is about this pair.
+ * - `unknown`: the dial failed or was never attempted and the target (or the
  *   source) was not demonstrably up. Not evidence of anything.
  */
 export type Reach = "reaches" | "unreachable" | "unknown";
@@ -579,10 +556,9 @@ export type TopologyNode = {
   /**
    * The ssh target used when probing TO this node from elsewhere.
    *
-   * For a peer this is this node's configured target, and for this node it is
-   * its `display_name` -- which is what the operator would type, and which is
-   * NOT guaranteed to resolve from another machine. Measured on the author's
-   * fleet: `macmini` cannot resolve `mtrojer-mac` at all. That is a real
+   * A peer's configured target, or for this node its `display_name` -- what the
+   * operator would type, which is NOT guaranteed to resolve elsewhere. Measured
+   * on the author's fleet: `macmini` cannot resolve `mtrojer-mac`. A real
    * negative about the NAME rather than the network, so the detail is kept.
    */
   target: string;
@@ -625,23 +601,20 @@ export function isNameResolutionFailure(detail: string | null): boolean {
 /**
  * Ask `from` whether it can open an ssh session to `to`.
  *
- * A bare `true` on the far side, deliberately. It measures exactly one thing --
- * can A open an ssh session to B -- with no dependency on murmur existing on B.
- * Asking A to run `murmur export` against B would conflate transport with
- * installation, and those have different fixes: "unreachable" is a network or
- * key problem, "reachable but murmur missing" is an install. Inferring from A's
- * `~/.ssh/config` would be worse still, since that lists hosts which may not
+ * A bare `true` on the far side, so this measures one thing -- can A open an ssh
+ * session to B -- with no dependency on murmur existing on B. `murmur export`
+ * would conflate transport with installation, which have different fixes.
+ * Reading A's `~/.ssh/config` would be worse, since it lists hosts that may not
  * resolve.
  *
- * The inner ssh carries `BatchMode=yes` and its own `ConnectTimeout`, and
- * deliberately NOT this node's ControlMaster options: a control path is a local
- * socket, so passing ours would name a file that does not exist on A. BatchMode
- * is not optional -- without it the inner ssh can block on a password prompt on
- * a machine with no terminal attached, and the dial would hang rather than fail.
+ * The inner ssh carries `BatchMode=yes` and its own `ConnectTimeout` but NOT
+ * this node's ControlMaster options: a control path is a local socket, so ours
+ * names a file that does not exist on A. BatchMode is not optional -- without
+ * it the inner ssh can block on a password prompt with no terminal attached,
+ * and the dial hangs rather than fails.
  *
- * Returns the raw outcome. Turning a failure into `unreachable` or `unknown`
- * needs to know whether the target is up, which is not knowable from one dial --
- * see `buildTopology`.
+ * Returns the raw outcome; classifying it needs to know whether the target is
+ * up, which one dial cannot say. See `buildTopology`.
  */
 export async function probeReach(
   channel: Channel,
@@ -664,11 +637,10 @@ export async function probeReach(
 /**
  * Which nodes this node could itself reach, from the survey already taken.
  *
- * This is what makes `unreachable` distinguishable from `unknown`, and it costs
- * nothing extra: a peer that answered `murmur export` is demonstrably up as of
- * seconds ago. Using the survey rather than a second round of dials also keeps
- * the two phases consistent -- a host cannot be "up" for the matrix and "asleep"
- * for the findings in one run.
+ * What makes `unreachable` distinguishable from `unknown`, at no extra cost: a
+ * peer that answered `murmur export` is demonstrably up as of seconds ago.
+ * Reusing the survey also keeps the phases consistent -- a host cannot be "up"
+ * for the matrix and "asleep" for the findings in one run.
  */
 export function reachableFromHere(surveys: readonly SurveyResult[]): Set<string> {
   return new Set(surveys.filter((survey) => survey.ok).map((survey) => survey.target));
@@ -677,19 +649,16 @@ export function reachableFromHere(surveys: readonly SurveyResult[]): Set<string>
 /**
  * Probe every ordered pair and classify each outcome. O(N^2) remote dials.
  *
- * THE DISCIPLINE OF THIS FUNCTION IS THAT A FAILED DIAL IS NOT A NEGATIVE. It
- * becomes `unreachable` only when the target is demonstrably up -- it answered
- * this node's survey moments ago -- so the failure can only be about that pair.
- * When the target never answered, the dial failing tells us nothing we did not
- * already know, and it is `unknown`. `linuxpc` in the spec's sample was simply
- * switched off; reporting that as a firewall would make hub advice flip from run
- * to run as machines sleep, and an operator cannot act on advice that changes
- * when nothing changed.
+ * A FAILED DIAL IS NOT A NEGATIVE. It becomes `unreachable` only when the target
+ * answered this node's survey moments ago, so the failure can only be about that
+ * pair. Otherwise the dial failing says nothing new and is `unknown`: reporting
+ * a switched-off host as a firewall would make hub advice flip run to run as
+ * machines sleep, and an operator cannot act on advice that changes when nothing
+ * did.
  *
  * A pair whose SOURCE did not answer is `unknown` for the same reason and is
- * never dialled: asking a host that is off about its reachability costs a full
- * ssh timeout to learn nothing. That is also what keeps the real cost well under
- * the N^2 worst case on a fleet with anything asleep.
+ * never dialled -- asking a host that is off costs a full ssh timeout to learn
+ * nothing. That is also what keeps the real cost under the N^2 worst case.
  */
 export async function buildTopology(
   channel: Channel,

@@ -1,22 +1,19 @@
 /**
  * tmux's three id kinds, kept apart by the type system.
  *
- * tmux itself is unambiguous about this and prints a sigil on every id --
- * `session=$25  window=@75  pane=%89` -- but they are all strings, so murmur
- * could and did pass one where another was meant. Twice, in shipped code: a
- * sweep keyed on window liveness deleted ten live agents, and a window cached
- * at extension startup badged the window a moved pane had left.
+ * tmux prints a sigil on every id -- `session=$25  window=@75  pane=%89` -- but
+ * they are all strings, so murmur could and did pass one where another was
+ * meant. Twice, in shipped code: a sweep keyed on window liveness deleted ten
+ * live agents, and a window cached at extension startup badged the window a
+ * moved pane had left.
  *
- * An agent is addressed by its PANE, which keeps its id across `move-pane`,
- * `break-pane`, and a window closed and reopened. A session and a window are
- * only where that pane currently lives, and both may differ between two reports
- * from one agent. So the rule the brands enforce is:
+ * An agent is addressed by its PANE, which survives `move-pane`, `break-pane`
+ * and a window closed and reopened. A session and a window are only where that
+ * pane currently lives and may differ between two reports from one agent. Hence
+ * the rule the brands enforce: only a pane may decide whether an agent exists.
  *
- *   only a pane may decide whether an agent exists.
- *
- * Branding is a compile-time fiction: at runtime these are the same strings
- * tmux printed, which is what keeps the snapshot document and every stored row
- * byte-identical.
+ * Compile-time fiction -- at runtime these are the strings tmux printed, which
+ * keeps the snapshot document and every stored row byte-identical.
  */
 
 declare const brand: unique symbol;
@@ -32,14 +29,12 @@ export type PaneId = string & { readonly [brand]: "pane" };
 
 /*
  * The boundary. Every raw string that becomes an id passes through one of these
- * three, so the unsafe step is in one file and countable rather than scattered
- * as `as` at each call site.
+ * three, so the unsafe step is countable rather than an `as` at each call site.
  *
- * Deliberately not validating the sigil. These are called on tmux stdout, on
- * JSON off the wire, on sqlite rows and on argv, and a node that recorded an id
- * murmur does not recognise -- a future tmux, a different harness -- must still
- * round-trip it. Rejecting here would turn a naming change into a behaviour
- * change.
+ * Deliberately not validating the sigil: these run on tmux stdout, JSON off the
+ * wire, sqlite rows and argv, and an id murmur does not recognise -- a future
+ * tmux, a different harness -- must still round-trip. Rejecting here would turn
+ * a naming change into a behaviour change.
  */
 
 export function asSessionId(raw: string): SessionId {

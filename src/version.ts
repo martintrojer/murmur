@@ -3,21 +3,18 @@ import { createRequire } from "node:module";
 /**
  * This node's murmur version, read from the manifest.
  *
- * Read rather than restated, for the reason index.ts already gives: two copies
- * of one fact drift, and npm bumps the manifest. It lives in its own module
- * because THREE bundles need it and they sit at different depths --
- * `dist/index.js`, `dist/cli.js` and `dist/extension/store.js` -- so a single
- * hardcoded `"../package.json"` resolves in two of them and throws in the third.
+ * Read rather than restated, because two copies of one fact drift and npm bumps
+ * the manifest. Its own module because THREE bundles need it at different depths
+ * -- `dist/index.js`, `dist/cli.js`, `dist/extension/store.js` -- so one
+ * hardcoded `"../package.json"` resolves in two and throws in the third.
  *
- * That is not hypothetical. `openStore` moved into the extension bundle during
- * the current-state rewrite, and its `../package.json` became
- * `dist/package.json`, which does not exist. The extension catches every store
- * failure and degrades to silence, so the symptom was an agent that reported
- * nothing at all, with no error anywhere -- exactly the failure mode the
- * three-state store handle exists to make survivable, hiding a hard one.
+ * Not hypothetical: `openStore` moved into the extension bundle during the
+ * current-state rewrite and its `../package.json` became `dist/package.json`,
+ * which does not exist. The extension degrades every store failure to silence,
+ * so the symptom was an agent reporting nothing with no error anywhere.
  *
- * Hence both candidates, tried in order, and a throw if neither works: a version
- * this node cannot state belongs in a snapshot even less than a wrong one does.
+ * Hence both candidates in order, and a throw if neither works: a version this
+ * node cannot state belongs in a snapshot even less than a wrong one.
  */
 function readVersion(): string {
   const require = createRequire(import.meta.url);

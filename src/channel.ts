@@ -4,55 +4,44 @@ import { promisify } from "node:util";
 const execFileAsync = promisify(execFile);
 const CONTROL_PATH = "~/.ssh/control/%r@%h:%p";
 
-// Both timeouts are sized against the tmux status bar, because that is what
-// actually drives collection: `murmur status` collects, and tmux re-runs it
-// every `status-interval` — 5s on the author's setup, 15s by default. A collect
-// that outlives its tick is a collect overlapping itself, and tmux offers no
-// way to cancel the last one.
-//
-// So the budget for the whole exchange is under 5s, and these are deliberately
-// aggressive: a really slow node is rejected rather than allowed to hold up the
-// HUD. That is cheap because the cost of losing the race is one tick of
-// staleness, and the next tick is five seconds away.
+// Both timeouts are sized against the tmux status bar, which is what drives
+// collection: tmux re-runs `murmur status` every `status-interval` (5s here,
+// 15s by default), and a collect that outlives its tick overlaps itself with no
+// way to cancel the last one. So the whole exchange budgets under 5s, and these
+// are deliberately aggressive -- a slow node is rejected rather than allowed to
+// hold up the HUD, which costs one tick of staleness.
 
-// OpenSSH's default TCP connect timeout is the kernel's, 75s on macOS, which
-// made `murmur pick` unusable against a sleeping laptop. One second is still
-// ~6x a real cold handshake on a LAN or VPN (measured: 168ms cold, 42ms on a
-// warm control socket), and a peer that misses it simply shows stale — the
-// designed outcome for a host you cannot reach.
+// OpenSSH's default is the kernel's TCP timeout, 75s on macOS. One second is
+// still ~6x a real cold handshake on a LAN or VPN (measured: 168ms cold, 42ms
+// warm), and a peer that misses it shows stale -- the designed outcome for a
+// host you cannot reach.
 const CONNECT_TIMEOUT_S = 1;
 
 // Belt and braces for a host that completes the TCP connect and then stops
-// responding — ConnectTimeout does not cover that, and it is how a sleeping
-// laptop behaves. Bounds the whole exchange rather than just the dial, so it
-// has to leave room for the dial plus an export: three seconds is the tick
-// budget minus headroom for the rest of `status`.
+// responding, which ConnectTimeout does not cover and is how a sleeping laptop
+// behaves. Bounds the whole exchange, so it must leave room for the dial plus
+// an export: the tick budget minus headroom for the rest of `status`.
 const EXEC_TIMEOUT_MS = 3_000;
 
 // Warm if possible, cold if not, never interactive.
 //
-// ControlMaster=no attaches to a master socket left behind by an ordinary
-// `ssh <host>` (given ControlMaster auto + ControlPersist in ssh_config), so a
-// peer you have touched recently costs a new channel on an authenticated
-// connection rather than a handshake.
+// ControlMaster=no ATTACHES to a master socket left by an ordinary `ssh <host>`
+// (given ControlMaster auto + ControlPersist in ssh_config), so a peer touched
+// recently costs a channel on an authenticated connection, not a handshake.
+// With no socket listening OpenSSH connects normally, which is wanted: a cold
+// peer collects fine on key auth, just slower (~170ms against ~10ms on a LAN),
+// and fleet visibility should not depend on having ssh'd somewhere today.
 //
-// When no socket is listening OpenSSH falls back to connecting normally, and we
-// want that: with plain key auth a cold peer collects fine, just slower
-// (~170ms against ~10ms measured on a LAN). Fleet visibility should not depend
-// on having ssh'd somewhere today.
-//
-// BatchMode=yes bounds what that fallback may do. It disables every
-// interactive prompt — password, passphrase, host key confirmation — so a
-// cold peer that cannot authenticate silently fails immediately instead of
-// blocking a background collect on a human. Note this is "never prompt", not
+// BatchMode=yes bounds that fallback by disabling every prompt -- password,
+// passphrase, host key -- so a cold peer that cannot authenticate fails at once
+// rather than blocking a background collect on a human. "Never prompt", not
 // "never authenticate": a host demanding a hardware-token touch per connection
-// is the case this does not fully cover, and the reason `hasWarmSocket` exists
-// should that ever need gating.
+// is the case this does not cover, and why `hasWarmSocket` exists should it
+// ever need gating.
 //
-// Exported because every ssh murmur runs wants exactly this posture -- the
-// collector, the picker's preview, the jump probe. Three hand-rolled copies is
-// how one of them ends up without BatchMode and starts prompting for auth on
-// every keypress.
+// Exported because every ssh murmur runs wants this posture -- collector,
+// preview, jump probe. Three hand-rolled copies is how one ends up without
+// BatchMode and prompts for auth on every keypress.
 export const SSH_OPTIONS = [
   "-o",
   "BatchMode=yes",
@@ -69,19 +58,12 @@ export interface Channel {
 }
 
 // Node's execFile defaults to a 1 MiB stdout ceiling and rejects with
-// ERR_CHILD_PROCESS_STDIO_MAXBUFFER past it, killing the child. An export is the
-// peer's whole current state, bounded by live pane count -- a few hundred bytes
-// per pane, on a machine that cannot hold thousands of panes -- so the ceiling
-// is out of reach in practice.
-//
-// It is kept generous anyway, because the failure mode is bad out of proportion
-// to its likelihood: a peer whose document exceeds the buffer fails identically
-// on every collect, so it sits stale forever with an error that names a Node
-// internal rather than a size.
-//
-// 64 MiB is orders of magnitude above any real snapshot, and it is a
-// ceiling rather than an allocation. The timeout is the real bound on a
-// runaway peer.
+// ERR_CHILD_PROCESS_STDIO_MAXBUFFER past it, killing the child. An export is
+// bounded by live pane count at a few hundred bytes each, so the ceiling is out
+// of reach -- but generous anyway, because the failure mode is disproportionate
+// to its likelihood: a peer over the buffer fails identically on every collect
+// and sits stale forever behind an error naming a Node internal, not a size.
+// A ceiling, not an allocation; the timeout is the real bound on a runaway peer.
 const MAX_EXPORT_BYTES = 64 * 1024 * 1024;
 
 export const ssh: Channel = {

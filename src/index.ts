@@ -2,16 +2,14 @@
 // consumer needs to drive murmur without shelling out to the CLI belongs here.
 // The CLI is a thin layer over exactly these units.
 //
-// What is deliberately NOT here: any method from the forbidden-shapes list (no
-// append, no ingest, no log read, no narrow local read, no partial-row update)
-// and no raw database handle by any name. `reconcileLocal` and
-// `buildLocalSnapshot` are reachable only as `Store` methods, which is what
-// keeps src/store.ts the sole owner of SQL.
+// Deliberately NOT here: anything from the forbidden-shapes list (no append, no
+// ingest, no log read, no narrow local read, no partial-row update) and no raw
+// database handle under any name. `reconcileLocal` and `buildLocalSnapshot` are
+// reachable only as `Store` methods, which keeps src/store.ts the sole owner of
+// SQL.
 //
-// The version comes from src/version.ts, which is the one module that knows how
-// to find package.json from any bundle depth. See the comment there: hardcoding
-// the relative path here worked for dist/index.js and broke silently for
-// dist/extension/store.js.
+// The version comes from src/version.ts, the one module that can find
+// package.json from any bundle depth.
 
 export {
   agentLabel,

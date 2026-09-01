@@ -38,13 +38,13 @@ export const RENDER_PRIORITY: readonly RenderState[] = [
  *
  * `blocked` means waiting for an answer an orchestrator cannot give -- mu places
  * work, it cannot choose between two approaches. `crashed` means the process
- * died, which a supervisor may or may not retry. Everything else about an
- * orchestrated agent is its supervisor's business.
+ * died. Everything else about an orchestrated agent is its supervisor's
+ * business.
  *
- * `pick.ts` uses it to decide which crew rows are visible by default and
- * `status.ts` to decide which crew states reach the status bar. They were two
- * literals in two files answering one question, which is how a row that needed a
- * human became one a human could not see.
+ * `pick.ts` uses it for which crew rows are visible by default, `status.ts` for
+ * which crew states reach the status bar. Two literals in two files answering
+ * one question is how a row that needed a human became one a human could not
+ * see.
  */
 export const NEEDS_HUMAN: readonly AttentionKind[] = ["blocked", "crashed"];
 
@@ -92,9 +92,8 @@ export type PaneView = {
 /**
  * How long a peer may go unfetched before its panes render stale.
  *
- * Re-exported from here rather than imported from the collector by view
- * consumers, so freshness has one definition. See collector.ts for why sixty
- * seconds.
+ * Re-exported here rather than imported from the collector by view consumers, so
+ * freshness has one definition. See collector.ts for why sixty seconds.
  */
 export const STALENESS_MS = 60_000;
 
@@ -131,8 +130,8 @@ export function freshness(
  * One word for a pane. Attention wins over activity, because attention is a
  * request and activity is a description.
  *
- * A running agent with `blocked` attention is a valid and expected state, and
- * surfaces that can show both, do — this is only for the ones that must pick.
+ * A running agent with `blocked` attention is valid and expected, and surfaces
+ * that can show both do -- this is only for the ones that must pick one.
  */
 export function renderState(view: Pick<PaneView, "activity" | "attention">): RenderState {
   for (const kind of ["crashed", "blocked", "done"] as const) {
@@ -214,9 +213,9 @@ export function paneViews(store: Store, identity: NodeIdentity, now = Date.now()
     if (!snapshot) continue;
     const source: ViewSource = {
       host_id: snapshot.host_id,
-      // The name the human typed, not the machine's self-reported hostname: a
-      // peer added as `linuxpc` can report a container id, which appears
-      // nowhere else in the tool and cannot be typed at `peer remove`.
+      // The name the human typed, not the self-reported hostname: a peer added
+      // as `linuxpc` can report a container id, which appears nowhere else and
+      // cannot be typed at `peer remove`.
       host: peer.name,
       local: false,
       freshness: freshness(peer.fetched_at, now),
@@ -234,18 +233,15 @@ const ORDER = new Map<RenderState, number>(RENDER_PRIORITY.map((state, index) =>
 /**
  * Attention-first ordering, then the newest news, then address.
  *
- * TOTAL on purpose, and that is the whole reason the last two comparisons
- * exist. Ties on state and age are ordinary rather than exotic -- a pair of
- * crashed panes reconciled in one transaction shares a `requested_at` exactly --
- * and `Array.prototype.sort` is stable only with respect to the order it was
- * GIVEN, which here is whatever SQLite and the peer loop happened to produce. An
- * unbroken tie therefore makes the list depend on that order: a status bar
- * reshuffles between two identical ticks, and a picker row moves under the
- * keypress that was aimed at it.
+ * TOTAL on purpose, which is why the last two comparisons exist. Ties on state
+ * and age are ordinary -- two crashed panes reconciled in one transaction share
+ * a `requested_at` exactly -- and `sort` is stable only with respect to the
+ * order it was GIVEN, here whatever SQLite and the peer loop produced. An
+ * unbroken tie makes the list depend on that: a status bar reshuffles between
+ * two identical ticks, and a picker row moves under the keypress aimed at it.
  *
- * Presentation only. No caller may read meaning into the position of a row --
- * pane order in a snapshot carries none either, so a reader sorts for itself
- * rather than trusting what it was served.
+ * Presentation only. No caller may read meaning into a row's position -- pane
+ * order in a snapshot carries none either, so a reader sorts for itself.
  */
 export function viewSort(views: PaneView[]): PaneView[] {
   return [...views].sort((left, right) => {

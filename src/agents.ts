@@ -9,21 +9,18 @@ import type { PaneView } from "./view.js";
  * The last segment of a slash-separated tmux session name.
  *
  * Session names are conventionally paths -- `tms` and friends name a session
- * after the directory it was opened in -- so the last segment is the part that
- * identifies the work: `hacking/murmur` is about `murmur`.
+ * after the directory it was opened in -- so the last segment identifies the
+ * work: `hacking/murmur` is about `murmur`.
  *
- * Only ever applied to a SESSION name. A window name that survives to the label
- * is one a human chose (see `chosenWindowName`), and shortening a deliberate
- * name would be presumptuous; a session name is the fallback of last resort and
- * is almost never chosen by hand.
+ * SESSION names only. A window name that reaches the label is one a human chose
+ * (see `chosenWindowName`) and shortening it would be presumptuous; a session
+ * name is the last-resort fallback and almost never chosen by hand.
  *
- * Not `path.basename`: a session name is not a filesystem path, it merely looks
- * like one. Splitting on `/` says what is meant, and cannot start resolving `..`
- * or behaving differently per platform.
+ * Not `path.basename`: a session name only looks like a path. Splitting on `/`
+ * cannot start resolving `..` or behaving differently per platform.
  *
  * Degenerate inputs keep the original rather than returning "": a session called
- * `/` or ending in a slash has no last segment, and an empty name column is
- * worse than an odd one.
+ * `/` has no last segment, and an empty name column is worse than an odd one.
  */
 export function sessionLeaf(session: string): string {
   const leaf = session.split("/").filter(Boolean).at(-1);
@@ -34,24 +31,21 @@ export function sessionLeaf(session: string): string {
  * The most specific human-readable name a pane's agent has, never a tmux id.
  *
  * Four sources, most to least specific: mu's agent name, pi's session name, the
- * tmux window name, the tmux session name. All are recorded by the node that
- * owns the pane, so this reads the same for a local and a remote pane -- a
- * reader cannot resolve a remote window id against its own tmux.
+ * tmux window name, the tmux session name. All are recorded by the node owning
+ * the pane, so a local and a remote row read the same -- a reader cannot resolve
+ * a remote window id against its own tmux.
  *
- * The session name is shortened to its last segment, and that is load-bearing
- * rather than cosmetic. It is reached far more often than it looks: `agent_name`
- * is set only by mu, `window_name` is null whenever tmux is auto-renaming (its
- * default), and `pi_session` is null for the whole life of an unnamed session --
- * pi's own auto-namer runs at CLOSE, so a live agent, which is exactly the one
- * you are looking at, has no session name yet. So the common row for a
- * hand-started pi fell through to here and printed `hacking/murmur`: a path,
- * where a name belongs.
+ * The session name is shortened to its last segment, and that last rung is
+ * reached far more often than it looks: `agent_name` is mu-only, `window_name`
+ * is null whenever tmux is auto-renaming (its default), and `pi_session` is
+ * null for the whole life of an unnamed session, because pi's auto-namer runs
+ * at CLOSE. So the common row for a hand-started pi printed `hacking/murmur` --
+ * a path where a name belongs.
  *
- * The full session name is not lost. The picker's stream column shows it, and
- * shows it precisely BECAUSE of this shortening: that column is blanked when it
- * would repeat the name, so `hacking/murmur` in both cells collapsed to one
- * path and a blank. Shortened, the row reads `murmur` + `hacking/murmur` -- the
- * same width, carrying strictly more.
+ * The full name is not lost: the picker's stream column shows it, and shows it
+ * BECAUSE of this shortening, since that column blanks when it would repeat the
+ * name. Shortened, the row reads `murmur` + `hacking/murmur` -- same width,
+ * strictly more information.
  *
  * Falls back to the window id only when a node recorded no names at all, which
  * means a non-tmux harness.
@@ -91,14 +85,14 @@ export function shellQuote(value: string): string {
 /**
  * The local session name that wraps a remote attach.
  *
- * The trailing `~` marks it as murmur's, both for a human reading a session
- * list and for the `#{m:*~,...}` match in the suggested escape-hatch binding.
+ * The trailing `~` marks it as murmur's, for a human reading a session list and
+ * for the `#{m:*~,...}` match in the suggested escape-hatch binding.
  *
- * The leading character is the part that matters. A tmux `-t` target starting
- * with `@`, `$` or `%` is parsed as a window, session or pane id, so a session
- * named `@bubba` -- which is exactly what the old per-host WINDOW was called --
- * cannot be addressed at all: every `-t @bubba` fails with `can't find window`.
- * Window names were never targets, so the old name was safe; session names are.
+ * The LEADING character is what matters. tmux parses a `-t` target starting with
+ * `@`, `$` or `%` as a window, session or pane id, so a session named `@bubba`
+ * -- what the old per-host window was called -- cannot be addressed at all:
+ * every `-t @bubba` fails with `can't find window`. Window names were never
+ * targets, so the old name was safe; session names are.
  */
 export function remoteSessionName(peerName: string): string {
   return `${peerName.replace(/^[@$%=]+/, "")}~`;
@@ -106,10 +100,10 @@ export function remoteSessionName(peerName: string): string {
 
 /**
  * The one process call jump makes that is not a tmux command: the remote probe,
- * and the direct ssh attach when we are not inside tmux. Injectable so the jump
- * decision table can be tested without an ssh binary or a live peer -- without
- * this seam, `jumpToAgent` had no behavioural coverage at all and replacing its
- * body with `return { ok: true }` kept every jump test green.
+ * and the direct ssh attach when outside tmux. Injectable so the jump decision
+ * table is testable without an ssh binary or a live peer -- without this seam,
+ * replacing `jumpToAgent`'s body with `return { ok: true }` kept every jump
+ * test green.
  */
 export type Runner = (
   file: string,
@@ -126,9 +120,8 @@ const spawnRunner: Runner = (file, args, inherit = false) => {
   return {
     status: result.status,
     stdout: result.stdout ?? "",
-    // spawnSync reports a failure to even start the child in `error`, leaving
-    // status null. Collapsing both here keeps the decision table below reading
-    // as one question rather than two.
+    // spawnSync reports a failure to start the child in `error` and leaves
+    // status null. Collapsing both keeps the decision table below one question.
     failed: result.error !== undefined,
   };
 };
@@ -157,10 +150,9 @@ export function jumpToAgent(
   run: Runner = spawnRunner,
 ): JumpResult {
   if (agent.local) {
-    // The PANE decides, and only the pane. This once asked whether the agent's
-    // WINDOW still existed, which a live pane routinely outlives: after
-    // `move-pane -s %0 -t @1`, list-panes still has %0 and list-windows no
-    // longer has @0. Asking the wrong one reported healthy agents as gone.
+    // The PANE decides. This once asked about the WINDOW, which a live pane
+    // routinely outlives: after `move-pane -s %0 -t @1`, list-panes still has
+    // %0 and list-windows no longer has @0, so healthy agents read as gone.
     const panes = mux.livePanes();
     if (panes && !panes.has(agent.pane)) {
       return {
@@ -169,9 +161,8 @@ export function jumpToAgent(
         message: `${agentLabel(agent)} is gone -- its pane no longer exists.`,
       };
     }
-    // Reporting the attach rather than assuming it. A select-window that fails
-    // is the local twin of the remote symptom: the picker closes, nothing
-    // moves, and nothing says why.
+    // Reported, not assumed. A failed select-window is the local twin of the
+    // remote symptom: the picker closes, nothing moves, nothing says why.
     if (!mux.attach(agent.session, agent.window)) {
       return {
         ok: false,
@@ -191,38 +182,35 @@ export function jumpToAgent(
     };
   }
 
-  // Check the pane is still there before opening a window to attach to it.
-  // Panes, not windows: a recorded window id goes stale every time the pane
-  // moves, so it cannot answer whether the agent exists. Without this the attach fails inside a new tmux window that closes
-  // instantly, which is indistinguishable from "enter did nothing" -- the
-  // symptom that sent us looking for a quoting bug that did not exist.
-  // ssh does not take an argv: it joins its arguments and hands the string to a
-  // shell on the far side. An unquoted `#{window_id}` is mangled by that shell
-  // and tmux answers `-F expects an argument`, which looked exactly like an
-  // unreachable host. One quoted string, so the remote shell passes the format
-  // through untouched.
+  // Confirm the pane exists before opening a window to attach to it, and ask
+  // about PANES: a recorded window id goes stale every time the pane moves.
+  // Without this the attach fails inside a new tmux window that closes
+  // instantly, indistinguishable from "enter did nothing" -- the symptom that
+  // sent us hunting a quoting bug that did not exist.
+  //
+  // The format string is quoted because ssh takes no argv: it joins its
+  // arguments and hands the string to a remote shell, which mangles a bare
+  // `#{pane_id}` into tmux answering `-F expects an argument` -- which looked
+  // exactly like an unreachable host.
   //
   // Shares the collector's SSH_OPTIONS rather than passing BatchMode alone.
-  // Without ControlPath the probe could not use the warm master socket the
-  // collector rides, and without ConnectTimeout it inherited the kernel's dial
-  // -- 75s on macOS, bounded only by the timeout below, so a sleeping laptop
-  // froze the picker for ten seconds before admitting it was unreachable.
+  // Without ControlPath the probe misses the warm master socket the collector
+  // rides; without ConnectTimeout it inherits the kernel's 75s dial, so a
+  // sleeping laptop froze the picker for ten seconds before admitting it.
   const probe = run("ssh", [
     ...SSH_OPTIONS,
     target,
     `tmux list-panes -a -F ${shellQuote("#{pane_id}")}`,
   ]);
   if (probe.status !== 0) {
-    // 255 is ssh's own failure code; anything else came from the remote
-    // command. Conflating them was wrong in the common case: with a warm
-    // ControlMaster socket the host answers instantly and it is tmux that is
-    // gone, so "unreachable" sent you looking at the network for a problem that
-    // was not there.
+    // 255 is ssh's own failure code; anything else came from the remote command.
+    // Conflating them was wrong in the common case: on a warm socket the host
+    // answers instantly and it is tmux that is gone, so "unreachable" sent you
+    // looking at the network for a problem that was not there.
     const sshFailed = probe.status === 255 || probe.failed;
     if (sshFailed) {
-      // No mark: we learned nothing about the peer's tmux, only that we could
-      // not ask. Its agents may be perfectly alive behind a cold socket or a
-      // sleeping laptop, and deleting them here would be guessing.
+      // Nothing recorded: we learned only that we could not ask. Its agents may
+      // be alive behind a cold socket, so deleting them would be guessing.
       return {
         ok: false,
         reason: "unreachable",
@@ -230,10 +218,9 @@ export function jumpToAgent(
       };
     }
 
-    // ssh worked, tmux did not. A real fact about the host, and reported as
-    // one: nothing is deleted here. The peer's own next snapshot is what
-    // removes its panes, because only that node may author about them, and a
-    // reader that evicts rows on a probe failure is guessing.
+    // ssh worked, tmux did not: a real fact about the host, still nothing
+    // deleted. The peer's own next snapshot removes its panes, because only
+    // that node may author about them.
     return {
       ok: false,
       reason: "no_tmux",
@@ -252,37 +239,34 @@ export function jumpToAgent(
   const attachTarget = shellQuote(`${agent.session}:${agent.window}`);
 
   // Hand the ssh to tmux as its own detached SESSION rather than running it
-  // here. `murmur pick` is usually a display-popup, and a popup is modal: an
-  // ssh started inside it is killed the moment the picker exits, so the remote
-  // pane flashed and vanished. A session outlives the popup and gives the
-  // remote tmux a real terminal to attach to.
+  // here: `murmur pick` is usually a display-popup, and a popup is modal, so an
+  // ssh started inside it dies the moment the picker exits and the remote pane
+  // flashed and vanished.
   //
-  // A session, not a window, because session options are per-session and that
-  // is what makes the nesting stop being felt:
+  // A session, not a window, because session options are per-session and that is
+  // what makes the nesting stop being felt:
   //
-  //   status off   -- no local status bar, so the remote's own bar is the only
-  //                   one on screen and the jump reads as a full-screen ssh.
-  //   prefix None  -- no local prefix at all, so ^b reaches the remote
-  //                   directly. No ^b b, and no second prefix to learn.
+  //   status off   -- the remote's own bar is the only one on screen.
+  //   prefix None  -- ^b reaches the remote directly. No ^b b to learn.
   //
-  // Both would be global if this were a window, and would break every local
-  // session. The cost is that the local server is unreachable from inside the
-  // wrapper; the README documents a root-table key that detaches out.
+  // Both would be global on a window and would break every local session. The
+  // cost is that the local server is unreachable from inside the wrapper; the
+  // README documents a root-table key that detaches out.
   if (process.env.TMUX) {
-    // Read BEFORE the wrapper exists, or we would record the wrapper itself as
-    // the place to come back to and the return would be a no-op.
+    // Read BEFORE the wrapper exists, or the wrapper itself is recorded as the
+    // place to come back to and the return is a no-op.
     const client = mux.clientName();
     const origin = mux.currentTarget();
 
-    // Named after the peer as configured, matching the picker's host column.
-    // The machine's self-reported display_name can be a container id, which
-    // makes the session unrecognisable in a session list.
+    // Named after the peer as configured, matching the picker's host column: a
+    // self-reported display_name can be a container id, unrecognisable in a
+    // session list.
     const name = remoteSessionName(peer?.name ?? target);
 
-    // Reuse an existing wrapper for this host rather than stacking a new one on
-    // every jump. Jumping to bubba three times used to leave three identical
-    // windows behind. Matched on name, the only handle available: the ssh is
-    // opaque from here and the remote session id is not a local address.
+    // Reuse this host's wrapper rather than stacking one per jump -- three jumps
+    // to bubba left three identical windows. Matched on name, the only handle
+    // available: the ssh is opaque and a remote session id is not a local
+    // address.
     if (mux.sessionNamed(name)) {
       return mux.switchClient(client, name)
         ? { ok: true }
@@ -294,20 +278,18 @@ export function jumpToAgent(
     }
 
     // `tmux new-session <command>` runs the command through a shell, so the
-    // string is expanded LOCALLY before ssh sees it. A tmux session id is
-    // always `$N`, so `$0:@6` arrived as `:@6` and the remote attach failed
-    // with "can't find session". shellQuote alone is not enough: it protects
-    // the remote shell, this protects the local one.
+    // string expands LOCALLY before ssh sees it. A session id is always `$N`, so
+    // `$0:@6` arrived as `:@6` and the remote attach failed with "can't find
+    // session". shellQuote protects the remote shell; this protects the local.
     const attach = `ssh -t ${shellQuote(target)} tmux attach -t ${shellQuote(attachTarget)}`;
 
-    // The return home, as part of the wrapper's own command. When the attach
-    // exits -- inner detach, remote session killed, ssh dropped -- this runs,
-    // then the wrapper has no command left and tmux destroys it.
+    // The return home, inside the wrapper's own command: when the attach exits
+    // -- inner detach, remote session killed, ssh dropped -- this runs, then the
+    // wrapper has no command left and tmux destroys it.
     //
-    // Explicit, rather than relying on detach-on-destroy: `previous` picks
-    // tmux's idea of the previous session, which in testing was a stray
-    // unrelated session rather than the one the jump started from. It is still
-    // set below as a fallback for when this command cannot run (SIGKILL).
+    // Explicit rather than trusting detach-on-destroy, whose `previous` picked a
+    // stray unrelated session in testing rather than the one the jump started
+    // from. Still set below, as the fallback for when this cannot run (SIGKILL).
     const restore = origin
       ? `; tmux switch-client ${client ? `-c ${shellQuote(client)} ` : ""}-t ${shellQuote(`=${origin}`)}`
       : "";
@@ -334,19 +316,17 @@ export function jumpToAgent(
   }
 
   // Outside tmux there is no popup to escape, so run it directly. stdio is
-  // inherited, so this blocks until the user leaves the remote session; a
-  // nonzero exit means the attach itself failed.
+  // inherited, so this blocks until the user leaves the remote session.
   //
-  // None of the wrapper-session machinery above applies here, and it must not:
-  // there is no local client to switch, nothing to return to but the shell that
-  // invoked us, and no local status bar or prefix to suppress. This path is
-  // already full-screen and already prefix-clean -- the whole problem is an
-  // artifact of being inside tmux. Creating a local session here would attach a
-  // client to a server the user never asked for, and leave them inside tmux on
-  // exit rather than back at their prompt.
+  // None of the wrapper machinery above applies, and must not: there is no local
+  // client to switch, nothing to return to but the invoking shell, and no local
+  // status bar or prefix to suppress -- this path is already full-screen and
+  // prefix-clean, since the whole problem is an artifact of being inside tmux.
+  // A local session here would attach a client to a server the user never asked
+  // for and leave them in tmux on exit rather than at their prompt.
   //
-  // The tradeoff is no reuse of an existing attach, since there is no local
-  // server holding one. That is correct rather than missing.
+  // The tradeoff, no reuse of an existing attach, is correct rather than
+  // missing: there is no local server holding one.
   const attach = run("ssh", ["-t", target, "tmux", "attach", "-t", attachTarget], true);
   return attach.status === 0 && !attach.failed
     ? { ok: true }

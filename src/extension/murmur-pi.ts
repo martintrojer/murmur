@@ -5,16 +5,14 @@ import type { Activity, AgentMeta, Location } from "../types.js";
 import { driverFromEnv, settledState } from "./decide.js";
 import type { StoreModule } from "./store-api.js";
 
-// Declared here rather than imported: murmur must not depend on pi to build,
-// and this is the whole surface the extension touches. getSessionName is
-// optional because an older pi does not have it, and a missing method must
-// degrade to "no name" rather than break the extension.
+// Declared, not imported: murmur must not depend on pi to build, and this is the
+// whole surface the extension touches. `getSessionName` is optional because an
+// older pi lacks it, and a missing method must degrade to "no name".
 //
-// The five events murmur needs, and no `reason` on any of them. pi puts a reason
-// on session_shutdown ("quit" | "reload" | "new" | "resume" | "fork"), but the
-// correct response is the same for all five: release the agent, clear the badge,
-// drop the store handle. What differs is only whether anything follows, and
-// session_start answers that by firing.
+// No `reason` on any event. pi puts one on session_shutdown ("quit" | "reload" |
+// "new" | "resume" | "fork"), but the response is the same for all five: release
+// the agent, clear the badge, drop the handle. What differs is whether anything
+// follows, and session_start answers that by firing.
 type ExtensionAPI = {
   on(
     event: "agent_start" | "agent_end" | "agent_settled" | "session_shutdown" | "session_start",
@@ -26,11 +24,10 @@ type ExtensionAPI = {
 // Where to import the store from.
 //
 // The bare specifier only resolves when murmur is a dependency of the importer,
-// which it never is: the extension is loaded from ~/.pi/agent/extensions, and a
-// globally linked or installed murmur is not resolvable from there. Unpinned,
-// the import throws, getStore swallows it, and every write silently no-ops
-// while the tmux badge still paints -- so nothing looks broken while the store
-// stays empty and the node exports nothing.
+// which it never is: the extension loads from ~/.pi/agent/extensions, and a
+// global murmur is not resolvable from there. Unpinned, the import throws,
+// getStore swallows it, and every write no-ops while the badge still paints --
+// so nothing looks broken while the node exports nothing.
 //
 // Two ways it gets pinned, because there are two install shapes:
 //
@@ -80,23 +77,21 @@ export default function murmurPi(pi: ExtensionAPI): void {
   /**
    * Where this agent is NOW, not where it started.
    *
-   * A pane can be moved between windows -- `move-pane`, `break-pane`, or a
-   * keybinding that wraps them -- and tmux keeps the pane id while the window
-   * id changes. Resolving the window once at startup meant an agent that was
-   * moved painted its badge on the window it used to live in and recorded a
-   * stale location on every later write.
+   * `move-pane` and `break-pane` keep the pane id while the window id changes,
+   * so resolving the window once at startup meant a moved agent painted its
+   * badge on the window it used to live in and recorded a stale location on
+   * every later write.
    *
-   * The pane is the address and does not change, so the agent row stays put;
-   * only the location is re-read. Falls back to the startup location if tmux
-   * cannot answer, which keeps a transient failure from rewriting an agent's
-   * address to nothing.
+   * The pane is the address and does not change, so only the location is
+   * re-read. Falls back to the startup location when tmux cannot answer, so a
+   * transient failure does not rewrite an agent's address to nothing.
    */
   let lastWindow = startLocation.window;
   const here = (): Location => {
     const location = tmux.currentWindow() ?? startLocation;
-    // A move leaves the badge behind on the window the agent used to be in,
-    // where nothing else will ever clear it: the badge belongs to the window,
-    // and the only process that knows this agent left is this one.
+    // A move leaves a badge on the old window, which nothing else will ever
+    // clear: the badge belongs to the window, and this is the only process that
+    // knows the agent left.
     if (location.window !== lastWindow) {
       try {
         tmux.setWindowBadge(lastWindow, null);
@@ -123,25 +118,25 @@ export default function murmurPi(pi: ExtensionAPI): void {
    * One variable, three named states, so the combinations that must not exist
    * cannot be written down.
    *
-   * This was a `Store | null | undefined` plus a separate `absent` boolean --
-   * six combinations for three meanings -- and conflating two of them silenced
-   * the extension for the life of the process: `null` meant both "murmur is not
-   * installed, stop trying" and "a write failed, let go of the handle", so one
-   * transient failure latched reporting off while the tmux badge still painted.
+   * This was `Store | null | undefined` plus a separate `absent` boolean -- six
+   * combinations for three meanings -- and conflating two of them silenced the
+   * extension for the life of the process: `null` meant both "murmur is not
+   * installed, stop trying" and "a write failed, drop the handle", so one
+   * transient failure latched reporting off while the badge still painted.
    *
-   * Only `absent` is permanent, and only a failed import, a missing identity or
-   * a REFUSED claim produces it. A dropped handle returns to `untried`, so the
-   * next event reopens.
+   * Only `absent` is permanent, from a failed import, a missing identity or a
+   * REFUSED claim. A dropped handle returns to `untried` and the next event
+   * reopens.
    */
   type StoreState = { kind: "untried" } | { kind: "open"; store: Store } | { kind: "absent" };
   let state: StoreState = { kind: "untried" };
   /**
    * This process is nested, permanently and unrecoverably.
    *
-   * Separate from `absent`, which `session_start` re-arms: a missing murmur and
-   * a missing identity are both fixable from outside a running pi, but a second
-   * live process in one pane never becomes the owner. Re-arming that would let a
-   * nested pi start reporting as the parent agent after the first /reload.
+   * Separate from `absent`, which `session_start` re-arms: a missing murmur or
+   * identity is fixable from outside a running pi, but a second live process in
+   * one pane never becomes the owner. Re-arming it would let a nested pi report
+   * as the parent agent after the first /reload.
    */
   let refused = false;
   /** This process's agent row, for the life of the process. */
@@ -167,27 +162,24 @@ export default function murmurPi(pi: ExtensionAPI): void {
   /**
    * Open the store and claim the pane, in that order, once.
    *
-   * `refused` is the nested-agent case, and it is permanent for this process: a
-   * pi launched inside an agent's pane inherits $TMUX_PANE and would otherwise
-   * report AS the parent agent. Six pids once wrote to one pane that way and the
-   * parent read as idle while it was working. The claim's liveness probe answers
-   * this with the database rather than with an environment marker a process
-   * launched in an unusual way could drop -- and a refused caller registers
-   * nothing, paints nothing, and says nothing.
+   * `refused` is the nested-agent case and is permanent for this process: a pi
+   * launched inside an agent's pane inherits $TMUX_PANE and would report AS the
+   * parent agent. Six pids once wrote to one pane that way, and the parent read
+   * as idle while it was working. The claim's liveness probe answers this from
+   * the database rather than an environment marker an oddly-launched process
+   * could drop.
    */
   const getStore = async (): Promise<Store | null> => {
-    // Permanent: murmur is not installed, this node has no identity, or this
-    // process is nested. None becomes false later in the same process, so
-    // retrying would pay a failed dynamic import per turn forever.
-    // `session_start` re-arms it, because the first two ARE fixable from
+    // Permanent: no murmur, no identity, or nested. None becomes false later in
+    // the same process, so retrying would pay a failed dynamic import per turn
+    // forever. `session_start` re-arms it, since the first two are fixable from
     // outside a running pi.
     if (state.kind === "absent") return null;
     if (refused) return null;
     if (state.kind === "open") return state.store;
     try {
       const { loadIdentity, openStore } = (await import(storeModule)) as StoreModule;
-      // Read, never minted: an extension load must not bring a node into
-      // existence.
+      // Read, never minted: loading an extension must not create a node.
       if (!loadIdentity()) {
         state = { kind: "absent" };
         return null;
@@ -204,8 +196,8 @@ export default function murmurPi(pi: ExtensionAPI): void {
         state = { kind: "absent" };
         return null;
       }
-      // `retained` is what makes /reload a no-op: pi re-runs this factory in the
-      // same process, and the store recognises our own pid.
+      // `retained` makes /reload a no-op: pi re-runs this factory in the same
+      // process, and the store recognises our own pid.
       agentId = claim.agent_id;
       state = { kind: "open", store };
       return store;
@@ -219,14 +211,11 @@ export default function murmurPi(pi: ExtensionAPI): void {
    * Report activity, and answer whether this process is still the owner.
    *
    * `setActivity` returning false is not an error and is not retried: it means
-   * this process is no longer the owner of record, and the correct response is
-   * silence.
+   * this process is no longer the owner of record, and silence is correct.
    *
-   * The boolean is what the badge is gated on. It has to be, because the badge
-   * is the only part of a report a human sees directly: painting it before the
-   * write is how a silently non-reporting extension looks healthy for the life
-   * of a process. A window whose agent row belongs to someone else must not
-   * carry this process's glyph.
+   * The badge is gated on that boolean, because the badge is the only part of a
+   * report a human sees directly -- painting it before the write is how a
+   * silently non-reporting extension looks healthy for a whole process.
    */
   const report = async (activity: Activity, location: Location): Promise<boolean> => {
     try {
@@ -242,22 +231,19 @@ export default function murmurPi(pi: ExtensionAPI): void {
   /**
    * Claim the pane NOW, not on the first event.
    *
-   * A nested process must paint no badge, and the badge is painted by the same
-   * handler that reports -- so ownership has to be settled before any handler
-   * can run.
+   * A nested process must paint no badge, and the same handler that reports also
+   * paints -- so ownership must be settled before any handler runs.
    *
-   * ONE DEVIATION FROM THE CONTRACT, stated because it is visible: §9.1 says a
-   * refused process registers no handlers. It cannot, quite. The store arrives
-   * through a dynamic `import()` of a path pinned at runtime, so the claim is
-   * asynchronous, and pi's extension factory is not -- handlers must be attached
-   * before the first `await` resolves or the extension misses events it does own.
+   * ONE VISIBLE DEVIATION FROM THE CONTRACT: §9.1 says a refused process
+   * registers no handlers, and it cannot, quite. The store arrives through a
+   * dynamic `import()` of a runtime-pinned path, so the claim is asynchronous
+   * while pi's extension factory is not -- handlers must be attached before the
+   * first `await` resolves or the extension misses events it does own.
    *
-   * The observable behaviour is identical, which is what the contract is
-   * actually about: the claim goes on the queue that already serialises every
-   * handler, so each handler runs after it, and a refused process writes
-   * nothing, paints nothing and holds no store handle. `refused` is checked in
-   * both places that could act -- the badge and the store -- rather than being
-   * relied on to be checked once.
+   * Observable behaviour is identical, which is what the contract is about: the
+   * claim rides the queue that already serialises every handler, so each runs
+   * after it, and a refused process writes nothing, paints nothing and holds no
+   * handle. `refused` is checked in both places that could act.
    */
   void enqueue(async () => {
     await getStore();
@@ -272,10 +258,9 @@ export default function murmurPi(pi: ExtensionAPI): void {
   pi.on("agent_start", () => {
     void enqueue(async () => {
       const location = here();
-      // Ownership first, glyph second. A process whose pane was taken over
-      // while its handle was dropped learns that from the claim inside
-      // `report`, and a badge painted before it would announce an agent that
-      // no longer lives in this window.
+      // Ownership first, glyph second. A process whose pane was taken over while
+      // its handle was dropped learns that from the claim inside `report`, and a
+      // badge painted before it would announce an agent that has moved on.
       if (await report("running", location)) badge(location, "running");
     });
   });
@@ -305,8 +290,7 @@ export default function murmurPi(pi: ExtensionAPI): void {
         const store = await getStore();
         if (!store || refused) return;
         // Attention is pane-addressed, and this call structurally cannot name an
-        // agent, a pid or an activity. Completion is `done`; `blocked` is never
-        // authored by an owner.
+        // agent, pid or activity. `blocked` is never authored by an owner.
         store.requestAttention({
           kind: settled,
           location,
@@ -320,15 +304,14 @@ export default function murmurPi(pi: ExtensionAPI): void {
     });
   });
 
-  // `session_shutdown` does not mean "the process is exiting". pi fires it for
-  // `/reload`, and for session switch, resume and fork, then rebinds and keeps
-  // going -- its own docs say to clean up here and reestablish in
-  // `session_start`. Treating it as terminal killed reporting permanently on
-  // the first `/reload`.
+  // `session_shutdown` does not mean the process is exiting: pi fires it for
+  // `/reload`, session switch, resume and fork, then rebinds and keeps going --
+  // its docs say clean up here and reestablish in `session_start`. Treating it
+  // as terminal killed reporting permanently on the first `/reload`.
   //
-  // Releasing the agent deletes the row but deliberately NOT its attention: a
-  // `done` raised at settle must survive the process quitting, or completion
-  // becomes invisible the moment the agent exits.
+  // Releasing deletes the agent row but NOT its attention: a `done` raised at
+  // settle must survive the process quitting, or completion becomes invisible
+  // the moment the agent exits.
   pi.on("session_shutdown", async () => {
     await enqueue(async () => {
       const location = here();
@@ -345,25 +328,21 @@ export default function murmurPi(pi: ExtensionAPI): void {
     });
   });
 
-  // Reestablish, per pi's documented contract. A reload leaves this instance
-  // live but with its store dropped and its cached location possibly wrong --
-  // the pane can have moved while the session was being switched.
+  // Reestablish, per pi's contract. A reload leaves this instance live with its
+  // store dropped and its cached location possibly wrong, since the pane can
+  // move while the session is being switched.
   pi.on("session_start", () => {
     void enqueue(async () => {
       if (state.kind === "absent") state = { kind: "untried" };
       const location = here();
       lastWindow = location.window;
-      // Re-claim NOW, not on the next agent event.
-      //
-      // `session_shutdown` released the agent row, so between it and this
-      // handler the pane has no owner and `claimAgent` would refuse nobody. If
-      // the re-claim waited for an agent event -- which may be minutes away, or
-      // never, since /reload happens while the agent is idle -- a pi started in
-      // this pane in the meantime claims it legitimately, and this process is
-      // then refused permanently: silent for the rest of its life while its
-      // badge still paints. pi fires session_start immediately after the
-      // shutdown for exactly this reestablishment, which bounds the unowned
-      // window to the gap between two synchronous handler calls.
+      // Re-claim NOW, not on the next agent event. `session_shutdown` released
+      // the row, so until this runs the pane has no owner and `claimAgent` would
+      // refuse nobody. Waiting for an agent event -- minutes away, or never,
+      // since /reload happens while idle -- lets a pi started meanwhile claim the
+      // pane legitimately, leaving this process refused permanently: silent for
+      // life while its badge still paints. pi fires session_start immediately
+      // after shutdown, bounding the unowned window to two handler calls.
       await getStore();
     });
   });
