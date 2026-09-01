@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import type { Command } from "commander";
 import {
   agentLabel,
@@ -7,7 +7,7 @@ import {
   jumpToAgent,
   terminalText,
 } from "../agents.js";
-import { glance } from "../glance.js";
+import { type GlanceRunner, glance } from "../glance.js";
 import { status, statusWithCollect } from "../status.js";
 import { openStore, type Store } from "../store.js";
 import {
@@ -34,6 +34,12 @@ type PickOptions = { all?: boolean };
 type PickDeps = {
   fzf?: (args: string[], input: string, env: NodeJS.ProcessEnv) => string;
   jump?: (store: Store, agent: PaneView) => JumpResult;
+  /**
+   * Warm the cache for next time. Injectable so a test does not fork ssh at the
+   * real fleet, and so "was a refresh started at all" is assertable -- the
+   * production one is detached and deliberately reports nothing.
+   */
+  collect?: (self: string) => void;
 };
 
 const spawnFzf: NonNullable<PickDeps["fzf"]> = (args, input, env) =>
@@ -43,6 +49,37 @@ const spawnFzf: NonNullable<PickDeps["fzf"]> = (args, input, env) =>
     stdio: ["pipe", "pipe", "inherit"],
     env,
   }).stdout ?? "";
+
+/**
+ * Refresh the cache in the background, for the NEXT invocation.
+ *
+ * Fire and forget, deliberately. The picker paints from cache and the fetch
+ * cannot be shown without discarding what is on screen, so this exists to make
+ * the cache warm rather than to update this list. One keypress of staleness, and
+ * `^r` is there for a human who wants the fetch now.
+ *
+ * `detached` plus `unref` plus fully ignored stdio, all three load-bearing. The
+ * picker normally runs in a `display-popup`, which is modal: a child sharing its
+ * process group dies when the popup closes, and a child holding the popup's
+ * stdio paints ssh diagnostics over the list. Detaching makes it a session
+ * leader so it survives; ignoring stdio means it has nothing to draw on.
+ *
+ * Floored, unlike `^r`. This runs unattended on every launch, so an operator
+ * flicking the picker open repeatedly would otherwise fan out ssh on every
+ * keystroke -- which is the quadratic-in-a-mesh problem COLLECT_FLOOR_MS exists
+ * to bound.
+ */
+function spawnCollect(self: string): void {
+  try {
+    const child = spawn(process.execPath, [self, "collect", "--quiet", "--floored"], {
+      detached: true,
+      stdio: "ignore",
+    });
+    child.unref();
+  } catch {
+    // A warm cache is an optimisation; failing to start one must not fail a jump.
+  }
+}
 
 const PREVIEW_MESSAGE_MAX = 300;
 
@@ -322,7 +359,7 @@ export function pickerRow(
   return `${agent.host_id}\t${agent.pane}\t${label}`;
 }
 
-function previewText(store: Store, agent: PaneView): string {
+function previewText(store: Store, agent: PaneView, run?: GlanceRunner): string {
   const state = renderState(agent);
   const colour = COLOUR[state] ?? "";
   const head = [
@@ -358,7 +395,7 @@ function previewText(store: Store, agent: PaneView): string {
   // The glance is the point of the preview: what the agent is actually doing.
   // No history section, because there is no history -- the store holds current
   // state only, the accepted price of one writer owning each fact.
-  const pane = glance(store, agent);
+  const pane = glance(store, agent, undefined, run);
   const live = pane?.trimEnd()
     ? [
         `${DIM}\u2500\u2500 pane \u2500\u2500${RESET}`,
@@ -377,7 +414,12 @@ function previewText(store: Store, agent: PaneView): string {
  * fzf's `--preview` has a per-row command, rather than precomputing every
  * preview up front -- an ssh round-trip per remote pane before the list paints.
  */
-export function runPreview(store: Store, paneId: string, hostId?: string): void {
+export function runPreview(
+  store: Store,
+  paneId: string,
+  hostId?: string,
+  run?: GlanceRunner,
+): void {
   const identity = requireIdentity();
   if (!identity) return;
   // Reads the cache, never collects: this runs per keypress as the cursor moves,
@@ -395,7 +437,7 @@ export function runPreview(store: Store, paneId: string, hostId?: string): void 
   // printing nothing is indistinguishable from a broken preview command, and
   // the row can genuinely vanish between the collect and the keypress.
   process.stdout.write(
-    agent ? `${previewText(store, agent)}\n` : `${DIM}${paneId} is no longer here.${RESET}\n`,
+    agent ? `${previewText(store, agent, run)}\n` : `${DIM}${paneId} is no longer here.${RESET}\n`,
   );
 }
 
@@ -406,12 +448,20 @@ export async function runPick(
 ): Promise<void> {
   const fzf = deps.fzf ?? spawnFzf;
   const jumpTo = deps.jump ?? jumpToAgent;
+  const startCollect = deps.collect ?? spawnCollect;
   const identity = requireIdentity();
   if (!identity) return;
-  // Cache only. A collect costs the full ssh timeout per sleeping peer
-  // (measured: 1-3s against one dead host), and fzf cannot paint before its
-  // input arrives, so all of it was spent on a blank screen. The cached read is
-  // ~50ms; the `start:reload` binding below collects BEHIND the painted list.
+  // Cache only, and nothing on the launch path may wait for a collect: a peer
+  // that is asleep or cannot authenticate costs the full ssh timeout, measured
+  // at 1-3s against this fleet. The cached read is ~50ms.
+  //
+  // The refresh runs in a DETACHED process (see `spawnCollect`), not through an
+  // fzf `start:reload`. A reload discards the rows fzf already has the instant
+  // it starts -- verified by sampling a real fzf's screen inside tmux, which
+  // showed `0/0` and a spinner at t=0.15s for both `reload` and `reload-sync`,
+  // against `1/1` and the row with no start binding at all. So the binding that
+  // was supposed to paint from cache blanked the list for the whole fetch and
+  // moved the stall rather than removing it.
   const view = status(store, identity);
   const agents = view.panes.filter((agent) => options.all || isVisible(agent));
   const hidden = view.panes.length - agents.length;
@@ -428,6 +478,10 @@ export async function runPick(
   const input = agents
     .map((agent) => pickerRow(agent, showHost, agent.pane === currentPane))
     .join("\n");
+
+  // Started AFTER the rows are built and before fzf takes the terminal, so the
+  // fork is never between the reader and the paint.
+  startCollect(process.argv[1] ?? "murmur");
 
   const counts = new Map<string, number>();
   for (const agent of agents) {
@@ -517,11 +571,6 @@ export async function runPick(
       "ctrl-p:change-preview-window(bottom:60%,border-top,wrap|hidden|right:58%,border-left,wrap)",
       "--bind",
       `ctrl-r:reload(${process.execPath} ${self} pick --rows${allFlag})`,
-      // The collect the launch path no longer waits for. `start` fires once fzf
-      // is up and the cached rows are on screen, and `reload` is asynchronous,
-      // so the ssh fan-out runs against a painted list rather than a blank one.
-      "--bind",
-      `start:reload(${process.execPath} ${self} pick --rows${allFlag})`,
       // M-a toggles the POPULATION, which is what "all" means everywhere else in
       // murmur. It used to be the "clear the query" key, also labelled "all",
       // and that collision is what made it look broken: it emptied the query

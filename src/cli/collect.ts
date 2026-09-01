@@ -1,6 +1,6 @@
 import type { Command } from "commander";
 import { ssh } from "../channel.js";
-import { collect, describeFailure } from "../collector.js";
+import { COLLECT_FLOOR_MS, collect, describeFailure } from "../collector.js";
 import { openStore } from "../store.js";
 import { requireIdentity } from "./identity-guard.js";
 
@@ -9,11 +9,18 @@ export function registerCollect(program: Command): void {
     .command("collect")
     .description("Fetch each peer's snapshot")
     .option("-q, --quiet", "report nothing, not even unreachable peers")
-    .action(async (options: { quiet?: boolean }) => {
+    // For the picker's background refresh, which runs unattended on every
+    // launch: without a floor, flicking the picker open repeatedly fans out ssh
+    // per keystroke. A human typing `murmur collect` wants the fetch NOW, so the
+    // floor is opt-in and this flag is undocumented in the help text below.
+    .option("--floored", "skip peers attempted recently (internal)", false)
+    .action(async (options: { quiet?: boolean; floored?: boolean }) => {
       if (!requireIdentity()) return;
       const store = openStore();
       try {
-        const results = await collect(store, ssh);
+        const results = await collect(store, ssh, Date.now(), {
+          floorMs: options.floored ? COLLECT_FLOOR_MS : 0,
+        });
         if (options.quiet) return;
 
         // The ONLY place a peer failure is printed. `collect` is run by a human

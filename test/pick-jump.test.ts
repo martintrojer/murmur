@@ -88,6 +88,7 @@ async function pickReturning(selected: string): Promise<{ jumped: string[]; rows
         jumped.push(pane.pane);
         return { ok: true };
       },
+      collect: () => {},
     },
   );
   return { jumped, rows };
@@ -209,4 +210,49 @@ test("a selection is resolved on host AND pane, not on the pane alone", async ()
 
   expect(jumped.map((pane) => pane.host_id)).toEqual(["REMOTE"]);
   expect(jumped[0]?.local).toBe(false);
+});
+
+test("the launch path paints without waiting for a collect", async () => {
+  // THE REGRESSION THIS FILE EXISTS TO CATCH TWICE OVER.
+  //
+  // v1 awaited a full collect before handing fzf a single row, so the screen was
+  // blank for the whole ssh fan-out -- 1-3s against a fleet with one dead peer.
+  // v2 moved the fetch to an fzf `start:reload`, which was worse in a way no
+  // test could see: a reload DISCARDS the rows fzf already has, so the list
+  // showed `0/0` and a spinner for the same duration. The fix is a detached
+  // child, and what makes it a fix is precisely that `runPick` never awaits it.
+  //
+  // Asserted by making the refresh hostile: if anything on the launch path waits
+  // for this, the test hangs rather than fails, and a hang is a louder signal
+  // than an assertion here.
+  agent("%1");
+  let started = false;
+  const rows: string[] = [];
+
+  await runPick(
+    store,
+    {},
+    {
+      fzf: (_args, input) => {
+        rows.push(...input.split("\n"));
+        // fzf must already have its rows by the time the refresh is asked for.
+        expect(started).toBe(true);
+        return "";
+      },
+      jump: () => ({ ok: true }),
+      // A refresh that never settles must not stop the picker painting. Returned
+      // rather than cast: a `=> void` callback may return a value, TS just
+      // ignores it -- which is the whole point, since `runPick` must ignore it
+      // too. `as unknown as void` said the same thing and tripped
+      // noConfusingVoidType, whose suggested fix (`undefined`) would have
+      // quietly removed the hang this test depends on.
+      collect: () => {
+        started = true;
+        return new Promise<void>(() => {});
+      },
+    },
+  );
+
+  expect(started).toBe(true);
+  expect(rows.some((row) => row.split("\t")[1] === "%1")).toBe(true);
 });
