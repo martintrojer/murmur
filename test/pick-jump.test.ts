@@ -4,11 +4,10 @@ import { join } from "node:path";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { isVisible, runPick } from "../src/cli/pick.js";
 import { createIdentity, loadIdentity } from "../src/identity.js";
-import { asPaneId, asSessionId, asWindowId, type PaneId } from "../src/ids.js";
+import { asPaneId, asSessionId, asWindowId } from "../src/ids.js";
 import { openStore, type Store } from "../src/store.js";
 import type { AgentMeta, Driver, Location } from "../src/types.js";
 import type { PaneView } from "../src/view.js";
-import { fakeMux } from "./helpers/fake-mux.js";
 
 let store: Store;
 
@@ -16,9 +15,6 @@ beforeEach(() => {
   vi.stubEnv("MURMUR_STATE_DIR", mkdtempSync(join(tmpdir(), "murmur-pick-jump-")));
   createIdentity("here");
   store = openStore();
-  // Per test, like the database: a pane one test claimed must not keep another
-  // test's fixture alive through reconcile.
-  claimed.clear();
 });
 
 afterEach(() => {
@@ -33,11 +29,6 @@ function here(): string {
 }
 
 function location(pane: string): Location {
-  // Every fixture addresses its pane through here -- agents AND attention-only
-  // panes, which have no agent row and so never reach `agent()`. Registering the
-  // pane at this one point keeps the injected mux agreeing with whatever the
-  // test set up, without each test restating its own pane list.
-  claimed.add(asPaneId(pane));
   return {
     session: asSessionId("$0"),
     window: asWindowId("@1"),
@@ -73,19 +64,14 @@ function agent(pane: string, driver: Driver = "human"): void {
   });
 }
 
-/** Every pane these tests claim, as the mux the pre-read collect reconciles against. */
-const claimed = new Set<PaneId>();
-
 /**
  * A picker whose fzf returns `selected`, recording what it was asked to jump to.
  *
- * The mux is injected, and that is load-bearing rather than tidiness. `runPick`
- * collects before it reads, and a collect reconciles the local agents against
- * the panes the mux reports -- deleting any whose pane is gone. Against the REAL
- * tmux, every pane these tests invent is gone, so the fixtures were being
- * deleted between the claim and the read. The suite passed on a machine with no
- * tmux server (`livePanes()` returns null, which reconcile treats as absence of
- * evidence and skips) and failed inside tmux, which is where murmur runs.
+ * No mux injection, and none is needed: `runPick` reads the cache and never
+ * collects, so nothing reconciles these fixtures against the real tmux server
+ * of whoever runs the suite. That coupling is what the injected mux existed to
+ * break -- the fixtures were being deleted between the claim and the read, so
+ * the suite passed with no tmux server and failed inside tmux.
  */
 async function pickReturning(selected: string): Promise<{ jumped: string[]; rows: string[] }> {
   const jumped: string[] = [];
@@ -102,7 +88,6 @@ async function pickReturning(selected: string): Promise<{ jumped: string[]; rows
         jumped.push(pane.pane);
         return { ok: true };
       },
-      mux: fakeMux({ livePanes: () => claimed }),
     },
   );
   return { jumped, rows };

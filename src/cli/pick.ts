@@ -7,9 +7,7 @@ import {
   jumpToAgent,
   terminalText,
 } from "../agents.js";
-import { ssh } from "../channel.js";
 import { glance } from "../glance.js";
-import { type Mux, tmux } from "../mux.js";
 import { status, statusWithCollect } from "../status.js";
 import { openStore, type Store } from "../store.js";
 import {
@@ -36,17 +34,6 @@ type PickOptions = { all?: boolean };
 type PickDeps = {
   fzf?: (args: string[], input: string, env: NodeJS.ProcessEnv) => string;
   jump?: (store: Store, agent: PaneView) => JumpResult;
-  /**
-   * The mux the pre-read collect reconciles against.
-   *
-   * Injectable because collect deletes any agent whose pane the mux does not
-   * list, and that is the right behaviour in production and fatal in a test: a
-   * test that claims `%9` in a temp database was reconciled against the REAL
-   * tmux server of whoever ran it. `npm run check` then passed on a machine
-   * with no tmux -- `livePanes()` returns null, which is a no-op -- and failed
-   * inside tmux, where the fixture pane genuinely does not exist.
-   */
-  mux?: Mux;
 };
 
 const spawnFzf: NonNullable<PickDeps["fzf"]> = (args, input, env) =>
@@ -466,10 +453,15 @@ export async function runPick(
   const jumpTo = deps.jump ?? jumpToAgent;
   const identity = requireIdentity();
   if (!identity) return;
-  // No floor: pressing the key is a person asking for the state NOW.
-  const view = await statusWithCollect(store, identity, Date.now(), ssh, {
-    mux: deps.mux ?? tmux,
-  });
+  // Cache only, and deliberately: a collect costs the full ssh timeout for every
+  // peer that is asleep (measured: 1-3s against one dead host, capped at
+  // COLLECT_DEADLINE_MS), and every millisecond of it was spent with the screen
+  // blank because fzf cannot paint before its input arrives. The cached read is
+  // ~70ms, so the list appears immediately and the fetch happens BEHIND it: the
+  // `start:reload` binding below runs `--rows`, which collects and replaces the
+  // rows in place. Same data, one frame later, instead of one second earlier of
+  // nothing.
+  const view = status(store, identity);
   const agents = view.panes.filter((agent) => options.all || isVisible(agent));
   const hidden = view.panes.length - agents.length;
 
@@ -583,6 +575,11 @@ export async function runPick(
       "ctrl-p:change-preview-window(bottom:60%,border-top,wrap|hidden|right:58%,border-left,wrap)",
       "--bind",
       `ctrl-r:reload(${process.execPath} ${self} pick --rows${allFlag})`,
+      // The collect the launch path no longer waits for. `start` fires once fzf
+      // is up and the cached rows are on screen, and `reload` is asynchronous,
+      // so the ssh fan-out runs against a painted list rather than a blank one.
+      "--bind",
+      `start:reload(${process.execPath} ${self} pick --rows${allFlag})`,
       // M-a toggles the POPULATION, which is what "all" means everywhere else in
       // murmur: the --all flag, and the "crew hidden (--all)" notice.
       //
@@ -629,7 +626,14 @@ export async function runPick(
   // more, so two machines routinely hold a `%1`; matching on the pane alone
   // jumped to whichever one the sort happened to put first, which turns an ssh
   // into a local window switch.
-  const agent = view.panes.find(
+  // Re-read, rather than searching `view`. `view` is the CACHED snapshot this
+  // process printed at launch; the rows fzf actually offered came from the
+  // `start:reload` subprocess, which collected and wrote to the same store. So a
+  // pane that only the background collect discovered is in the store but not in
+  // `view`, and resolving against `view` would make the freshest rows -- exactly
+  // the ones the reload exists to reveal -- unselectable. Same failure alt-a
+  // already had.
+  const agent = status(store, identity).panes.find(
     (candidate) => candidate.pane === selected && candidate.host_id === selectedHost,
   );
   // So a miss here means the pane is genuinely gone between the collect and
