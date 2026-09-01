@@ -66,16 +66,33 @@ export const COLLECT_FLOOR_MS = 30_000;
 export const COLLECT_JITTER_MS = 20_000;
 
 /**
+ * What one pool slot did: settled either way, claimed but unfinished
+ * (`pending`), or -- as `undefined` -- never claimed at all.
+ *
+ * The distinction is load-bearing rather than descriptive. Only `undefined`
+ * means murmur asked a host nothing, and only then must it record nothing:
+ * `last_attempt_at` gates the collect floor and `last_error` gates the picker's
+ * glance, so a made-up attempt defers a peer and a made-up error silences it.
+ */
+export type PoolResult<R> = PromiseSettledResult<R> | { status: "pending" };
+
+/**
  * Runs `task` over `items` with at most `limit` in flight, preserving input
  * order in the output. Workers pull from a shared cursor rather than running
  * fixed batches, so one slow peer occupies a single slot instead of holding a
  * batch boundary.
  *
  * `deadline` bounds the whole run, not each task. Past it, workers stop
- * claiming items and anything unstarted is left `undefined` -- "did not
- * answer". In-flight tasks are not cancelled (there is no cancelling a forked
- * ssh) but stop holding the collect open, because the deadline races the pool
- * rather than joining it.
+ * claiming items. In-flight tasks are not cancelled (there is no cancelling a
+ * forked ssh) but stop holding the collect open, because the deadline races the
+ * pool rather than joining it.
+ *
+ * Three outcomes, not two, and the third is why `pending` exists. A slot that
+ * was CLAIMED and did not finish and one that was never claimed at all both
+ * used to read as `undefined`, and a caller cannot tell those apart -- so
+ * `collect` charged a peer it never dialled with a failed fetch. `pending` is
+ * written at claim time and overwritten on settle, which makes "we asked" a
+ * fact the pool reports rather than one the caller has to infer.
  *
  * Exported for `doctor`, which fans out over the same peers: a private copy
  * there would be a second answer to "how many ssh processes may be in flight".
@@ -86,8 +103,8 @@ export async function mapSettled<T, R>(
   limit: number,
   task: (item: T) => Promise<R>,
   deadline?: Promise<void>,
-): Promise<(PromiseSettledResult<R> | undefined)[]> {
-  const results = new Array<PromiseSettledResult<R> | undefined>(items.length);
+): Promise<(PoolResult<R> | undefined)[]> {
+  const results = new Array<PoolResult<R> | undefined>(items.length);
   let cursor = 0;
   let expired = false;
   const stop = deadline?.then(() => {
@@ -96,6 +113,9 @@ export async function mapSettled<T, R>(
   const worker = async () => {
     while (cursor < items.length && !expired) {
       const index = cursor++;
+      // Marked BEFORE the await, so a deadline landing mid-task still leaves
+      // evidence that this item was claimed.
+      results[index] = { status: "pending" };
       try {
         results[index] = { status: "fulfilled", value: await task(items[index] as T) };
       } catch (reason) {
@@ -297,11 +317,21 @@ export async function collect(
     );
     for (const [index, peer] of peers.entries()) {
       const fetch = fetches[index];
+      // Never claimed: the deadline passed with this peer still in the queue, so
+      // no ssh was forked and nothing was asked. Writing ANYTHING here is
+      // writing a fact we do not have, and both columns it would touch are
+      // load-bearing -- `last_attempt_at` defers the peer for another floor, and
+      // `last_error` stops `glance` dialling a host that may be perfectly
+      // healthy. Absent from `results` too: a report is about hosts we contacted.
+      if (!fetch) continue;
       try {
-        // Undefined means the deadline passed before this peer was claimed or
-        // finished. Not a fact about the peer, so it leaves fetched_at alone and
-        // the peer simply goes stale.
-        if (!fetch) throw new Error("collect deadline passed before this peer answered");
+        // Claimed but unfinished. Unlike the case above we DID dial, so the
+        // attempt is real and worth recording against the floor; it simply has
+        // no answer yet, and `replacePeerSnapshot` leaves fetched_at and the
+        // cached document alone, so the peer ages into `stale` on its own.
+        if (fetch.status === "pending") {
+          throw new Error("collect deadline passed before this peer answered");
+        }
         if (fetch.status === "rejected") throw fetch.reason;
         // Every field the cache derives comes out of the document itself, so
         // the cache structurally cannot disagree with the snapshot it holds.

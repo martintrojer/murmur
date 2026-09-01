@@ -58,11 +58,14 @@ export async function surveyFleet(
     return peers.map((peer, index) => {
       const result = settled[index];
       // `surveyPeer` catches its own failures, so a rejection here is a bug in
-      // it rather than a fact about the peer. Undefined is the deadline: that
-      // peer was never claimed, or was still in flight when time ran out.
+      // it rather than a fact about the peer.
       if (result?.status === "fulfilled") return result.value;
+      // Never claimed and claimed-but-unfinished are ONE case here, unlike in
+      // `collect`. The difference matters only to a writer -- an invented
+      // attempt defers a peer behind the floor -- and doctor writes nothing. It
+      // reports, and "not surveyed within the deadline" is equally true of both.
       const detail =
-        result === undefined
+        result === undefined || result.status === "pending"
           ? `not surveyed within ${DOCTOR_DEADLINE_MS / 1_000}s`
           : result.reason instanceof Error
             ? result.reason.message

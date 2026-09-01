@@ -84,16 +84,21 @@ function document(panes: SnapshotPane[], over: Partial<Snapshot> = {}): Snapshot
 
 const serve = (snapshot: Snapshot): Channel => ({ exec: async () => JSON.stringify(snapshot) });
 
-test("the collect deadline leaves an unanswered peer's cache and fetched_at alone", async () => {
+test("the collect deadline leaves a dialled peer's cache and fetched_at alone", async () => {
   // The deadline exists because the per-peer ssh timeout applies once per WAVE:
   // more peers than slots means the pool serialises the very timeouts it caps.
-  // A peer the deadline cut off must be indistinguishable from any other host
-  // that did not answer -- last-known document retained, `fetched_at` untouched
-  // -- because "did not answer in time" is not evidence about its panes.
+  // A peer the deadline cut off mid-fetch must be indistinguishable from any
+  // other host that did not answer -- last-known document retained,
+  // `fetched_at` untouched -- because "did not answer in time" is not evidence
+  // about its panes.
+  //
+  // Exactly as many peers as slots, so every one is CLAIMED and left hanging.
+  // That is this test's subject: we dialled, so the attempt is real and belongs
+  // against the floor. A peer the deadline never claimed is a different case and
+  // must record nothing at all -- see the never-dialled test below, which this
+  // one used to contradict by running one peer over the slot count.
   const s = store();
-  const names = Array.from({ length: MAX_CONCURRENT_PEERS + 1 }, (_, i) =>
-    String(i).padStart(2, "0"),
-  );
+  const names = Array.from({ length: MAX_CONCURRENT_PEERS }, (_, i) => String(i).padStart(2, "0"));
   for (const name of names) s.addPeer(name, name);
   const last = names[names.length - 1] as string;
   s.replacePeerSnapshot(last, { ok: true, at: 1_000, snapshot: document([pane("%1")]) });
@@ -319,4 +324,41 @@ test("the store exposes no reader-side mutation of remote state", () => {
     "requestAttention",
     "setActivity",
   ]);
+});
+
+test("a peer the deadline never dialled records no attempt and no error", async () => {
+  // The bug this pins: `mapSettled` reports `undefined` for a peer it never
+  // CLAIMED and for one still in flight, and `collect` wrote a failure verdict
+  // for both. Nine peers against eight slots means the last one is never
+  // dialled at all -- no ssh forked, nothing asked, nothing learned -- and it
+  // still came back with `last_attempt_at` bumped and `last_error` set.
+  //
+  // Both writes then cost something real, which is why this is not cosmetic:
+  //
+  //   `last_attempt_at` is what `duePeers` throttles on, so a peer that was
+  //   never dialled is deferred for another COLLECT_FLOOR_MS -- the floor
+  //   starves exactly the peer that has no data yet.
+  //
+  //   `last_error` is what `glance` refuses to dial on, so a perfectly healthy
+  //   host loses its picker preview because it happened to sort ninth.
+  const s = store();
+  const names = Array.from({ length: MAX_CONCURRENT_PEERS + 1 }, (_, i) =>
+    String(i).padStart(2, "0"),
+  );
+  for (const name of names) s.addPeer(name, name);
+  const unclaimed = names[names.length - 1] as string;
+
+  const hang: Channel = {
+    exec: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      return JSON.stringify(document([pane("%2")]));
+    },
+  };
+  await collect(s, hang, 9_000, {
+    deadline: new Promise<void>((resolve) => setTimeout(resolve, 20)),
+  });
+
+  const peer = s.peers().find((entry) => entry.name === unclaimed);
+  // Never asked, so there is nothing to record: not an attempt, not an error.
+  expect(peer).toMatchObject({ last_attempt_at: null, last_error: null });
 });

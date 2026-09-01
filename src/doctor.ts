@@ -702,7 +702,10 @@ export async function buildTopology(
     let probes = 0;
     for (const [index, pair] of dialled.entries()) {
       const result = settled[index];
-      if (result !== undefined) probes += 1;
+      // A SETTLED slot only. `pending` means claimed and unanswered, which is an
+      // attempt rather than a measurement, and this counter's whole discipline
+      // is not claiming more than it measured.
+      if (result !== undefined && result.status !== "pending") probes += 1;
       outcomes.set(
         `${pair.from.name}\u0000${pair.to.name}`,
         result?.status === "fulfilled" ? result.value : undefined,
@@ -711,7 +714,7 @@ export async function buildTopology(
 
     const edges: ReachEdge[] = pairs.map(({ from, to }) => {
       const outcome = outcomes.get(`${from.name}\u0000${to.name}`);
-      // Never dialled, or the deadline passed before this pair was claimed.
+      // Never dialled, or the deadline passed before this pair answered.
       if (outcome === undefined) {
         return {
           from: from.name,
