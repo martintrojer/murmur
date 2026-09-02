@@ -294,13 +294,13 @@ Open one and leave it running:
 ssh -M -S '~/.ssh/control/%r@%h:%p' dev    # answer the second factor once
 ```
 
-`-M` is the part that matters, and a plain `ssh dev` is **not** enough: that
-attaches as a client to whatever socket exists, or — behind a `ProxyCommand` —
-leaves a socket that can forward ports but has never authenticated a *session*.
-`ssh -O check` reports `Master running` either way, so the difference is
-invisible until a command over it fails with `Session open refused by peer`.
-`-M` makes the session you just authenticated the master, so murmur's channel
-rides a connection that has already cleared the second factor.
+Both flags are about *where the socket lives*, not about authentication.
+OpenSSH defaults to `ControlMaster no` and `ControlPath none`, so on a machine
+with no ssh_config of its own a bare `ssh dev` multiplexes nothing and leaves no
+socket for murmur to find. `-M` creates the master, `-S` puts it on the path
+murmur looks at. If your own ssh_config already sets `ControlMaster auto` and a
+matching `ControlPath`, a plain `ssh dev` gives murmur a master it can use — the
+flags just make one instruction correct on every machine.
 
 While that master lives, collects cost ~10ms. While it does not, the peer is
 skipped rather than dialled on every tick, its cached rows still list with their
@@ -312,10 +312,22 @@ real age, and the picker header names it with the command:
 
 `murmur doctor` carries the full list where the header trims.
 
-An **Eternal Terminal** session does not work for this, which is worth stating
-because it looks like it should: ET bootstraps over ssh, so opening one hits the
-same auth wall, and it exposes no multiplexing socket for another process to
-attach to. A plain `ssh -M` alongside it is what murmur can use.
+If a collect fails with `Session open refused by peer` while a master *is*
+running, that is not an auth problem and no flag above prevents it: some hosts
+cap session channels per connection (`MaxSessions 1`), so a collect that
+overlaps another command on the same socket is refused. ssh then retries on a
+fresh connection and dies at the auth wall, which makes the error text end in
+`Permission denied` and read like a login failure. murmur classifies that case
+separately and retries rather than asking you to re-authenticate.
+
+On such a host, an **Eternal Terminal** session is the best thing to do your own
+work in. ET cannot serve murmur — it bootstraps over ssh, so opening one hits
+the same auth wall, and it exposes no multiplexing socket to attach to — but
+that is exactly why the pairing works: once connected it holds no ssh session,
+so the capped slot stays free for murmur. Verified on a `MaxSessions 1` devvm,
+where an interactive `ssh` starved every collect for as long as it stayed open
+and an ET session on the same host did not. Run ET for yourself and one
+`ssh -MNf` master for murmur, and the two do not compete.
 
 **All nodes must speak the same snapshot format.** The format is versioned and a
 mismatch is rejected rather than guessed at, so a node on a different snapshot

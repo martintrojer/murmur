@@ -968,20 +968,34 @@ each was cheaper to accept than to solve:
    exists. Such a peer is skipped by ambient collects rather than dialled and
    failed on every tick, keeps its cached snapshot, and is named in the picker
    header with the command that fixes it. That command is `ssh -M -S
-   <ControlPath> <host>` and the `-M` is load-bearing: a plain `ssh` attaches as
-   a client, or behind a `ProxyCommand` leaves a socket that forwards but has
-   never authenticated a session — and `ssh -O check` reports `Master running`
-   for both, so `hasWarmSocket` cannot tell them apart. Measured against a real
-   2FA host, where every command over such a socket failed with `Session open
-   refused by peer`. Eternal Terminal does not substitute either, since it
-   bootstraps over ssh and leaves no socket to attach to.
+   <ControlPath> <host>`, and both flags are about socket LOCATION rather than
+   auth: OpenSSH defaults to `ControlMaster no` and `ControlPath none` (verified
+   with `ssh -F /dev/null -G`), so on a machine whose ssh_config murmur does not
+   control a bare `ssh` leaves no socket on the path `SSH_OPTIONS` reads. Where
+   the reader's own config sets `ControlMaster auto` and a matching
+   `ControlPath`, a plain `ssh` does produce a master murmur can ride; the flags
+   buy one instruction that is correct everywhere. Eternal Terminal does not
+   substitute, since it bootstraps over ssh and leaves no socket to attach to —
+   but on a session-capped host it is the right place for an operator's own
+   work, precisely because it holds no ssh session and so leaves the capped slot
+   to murmur.
+
+   An earlier version of this entry claimed `-M` was the cure for `Session open
+   refused by peer`, on the theory that a `ProxyCommand` can leave a socket that
+   forwards but has never authenticated a session. That was wrong. The error is
+   session-slot contention — a host with `MaxSessions 1` refuses a second
+   channel on one connection — and it reproduces against a fully authenticated
+   master built by this exact command. ssh then retries on a fresh connection
+   and fails at the auth wall, so the text ends in `Permission denied` and
+   mimics an auth problem; `sessionChannelBusy` is what keeps the two apart, and
+   `needsInteractiveAuth` excludes it explicitly rather than by check order.
 
    Two accepted costs. The reminder cannot say *when* a session lapsed, only
    that none exists now. And `hasWarmSocket` answers "is there a master", not
-   "can I open a session", so a forward-only socket opens the gate and the
-   collect then fails once — self-correcting on the next pass, since that
-   failure is itself auth-class, but a real gap between the check and the
-   question.
+   "can I open a session", so a peer whose one session slot is busy opens the
+   gate and the collect then fails once — self-correcting on the next pass, now
+   that the failure is classified retryable rather than auth-class, but a real
+   gap between the check and the question.
 
 ## Known gaps
 

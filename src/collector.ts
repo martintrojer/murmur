@@ -273,9 +273,44 @@ function isUnreachable(message: string): boolean {
  * That is a failure to establish anything at all, which `isUnreachable` claims
  * correctly, and prompting an operator to re-authenticate at an unreachable
  * host would be advice they cannot act on.
+ *
+ * Nor does it match a refused session channel, even though ssh's fallback makes
+ * one end in `Permission denied`. See `sessionChannelBusy`: that is contention
+ * on a working connection, and the remedy here would be a command the operator
+ * does not need.
  */
 export function needsInteractiveAuth(message: string): boolean {
-  return /Permission denied/i.test(message);
+  return /Permission denied/i.test(message) && !sessionChannelBusy(message);
+}
+
+/**
+ * Whether a failure means "the connection is fine, its session slot was taken".
+ *
+ * The fourth category, and it masquerades as the third. A host may cap session
+ * channels per connection -- `MaxSessions 1` on the devvm this was found on,
+ * set in every `Match` block that applies to us while the global stays 512 --
+ * so a second concurrent command over one master is refused. ssh then SILENTLY
+ * RETRIES on a fresh connection, which hits `AuthenticationMethods publickey,
+ * keyboard-interactive` and dies there, so the text ends in `Permission denied`
+ * and reads exactly like an auth wall.
+ *
+ * It is not one. Verified against a fully authenticated master: hold the one
+ * channel, collect concurrently, and this is the result -- with `ssh -O check`
+ * reporting `Master running` and a plain sequential collect over the same
+ * socket succeeding a second later. Nothing about it needs a human.
+ *
+ * Checked BEFORE the auth category rather than after, and `needsInteractiveAuth`
+ * excludes it explicitly, because the two are not disjoint by text: contention
+ * is a superset match on `Permission denied`. Ordering alone would leave the
+ * predicate wrong for any caller that asks it directly, and `doctor` and
+ * `status` both do.
+ *
+ * Matches either line, since ssh does not always print both: the mux client's
+ * `session request failed` and sshd's `Session open refused by peer` are the
+ * same event seen from the two ends.
+ */
+export function sessionChannelBusy(message: string): boolean {
+  return /Session open refused by peer|session request failed/i.test(message);
 }
 
 /**

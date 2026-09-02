@@ -484,12 +484,11 @@ test("a peer needing interactive auth is an observation, not a problem", () => {
 
   const finding = only(findings, "needs-session");
   expect(finding).toMatchObject({ severity: "observation", subject: "dev" });
-  // `-M` and an explicit `-S`, not a bare `ssh dev`. The short form shipped and
-  // was wrong: a plain ssh attaches as a client, or leaves a ProxyCommand socket
-  // that forwards but has never authenticated a session -- so `ssh -O check`
-  // reports a healthy master and every command over it still fails with
-  // `Session open refused by peer`. doctor was telling an operator to run the
-  // command that had just failed them.
+  // `-M` and an explicit `-S`, not a bare `ssh dev`. OpenSSH defaults to
+  // `ControlMaster no` and `ControlPath none`, so on a machine with no
+  // ssh_config of its own the short form leaves no socket where murmur looks
+  // and doctor was telling an operator to run a command that could not help
+  // them. Socket location, not authentication.
   expect(finding.message).toContain(warmSocketCommand("dev"));
   expect(finding.remedy).toBe(warmSocketCommand("dev"));
 });

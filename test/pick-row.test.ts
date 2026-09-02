@@ -428,9 +428,10 @@ test("the notice names the peer, its age, and the exact command", () => {
 
   expect(notice).toContain("dev");
   expect(notice).toContain("1h");
-  // The command that WORKS, which is `-M` plus an explicit `-S`. A plain
-  // `ssh dev` attaches as a client or leaves a forward-only socket, so the
-  // notice used to tell the reader to run the thing that had just failed them.
+  // The command that works on any machine, which is `-M` plus an explicit `-S`.
+  // OpenSSH defaults to `ControlMaster no` and `ControlPath none`, so a plain
+  // `ssh dev` can leave no socket where murmur looks, and the notice used to
+  // tell the reader to run the thing that had just failed them.
   // Asserted against the shared helper, so the suggestion cannot drift from the
   // ControlPath murmur actually uses.
   expect(notice).toContain(warmSocketCommand("dev.example"));

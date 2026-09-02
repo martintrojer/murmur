@@ -7,24 +7,42 @@ const CONTROL_PATH = "~/.ssh/control/%r@%h:%p";
 /**
  * The command that makes a host murmur can otherwise not reach collectable.
  *
- * `-M` is the load-bearing flag and the reason this is a constant rather than
- * prose in three places. A plain `ssh <host>` does NOT produce a usable master:
- * it either attaches as a client to whatever socket exists, or -- through a
- * `ProxyCommand` -- leaves a socket that can forward but has never authenticated
- * a SESSION. Verified against a real 2FA host, where `ssh -O check` reported
- * `Master running` and every command over it still failed with `Session open
- * refused by peer`. `-M` makes the interactive session the reader just
- * authenticated the master, so the session channel murmur wants rides a
- * connection that has already cleared the second factor.
+ * Both flags are load-bearing, and neither is about authentication -- they are
+ * about the socket EXISTING WHERE MURMUR LOOKS on a machine whose ssh_config
+ * murmur does not control. OpenSSH's defaults are `ControlMaster no` and
+ * `ControlPath none`, verified with `ssh -F /dev/null -G <host>`: so a bare
+ * `ssh <host>` on an unconfigured machine multiplexes nothing and leaves no
+ * socket at all, while `SSH_OPTIONS` below always looks at `CONTROL_PATH`.
+ * `-M` creates the master; `-S` puts it on that path.
  *
- * `-S` with the same `%r@%h:%p` tokens as `ControlPath`, so one string is
+ * A reader whose own ssh_config already sets `ControlMaster auto` and a matching
+ * `ControlPath` gets a usable master from a plain `ssh <host>` -- verified, the
+ * channel rides it fine. The flags are what make one instruction correct for
+ * everyone, not a fix for something a plain `ssh` does wrong.
+ *
+ * NOT the cure for `Session open refused by peer`. That earlier claim was wrong:
+ * see `sessionChannelBusy` in the collector, which reproduces the error against
+ * a fully authenticated master built by this very command. It is session-slot
+ * contention, and no flag here prevents it.
+ *
+ * `-N` is the flag whose absence made this remedy CAUSE the symptom. A host may
+ * cap session channels per connection (`MaxSessions 1` on the devvm this was
+ * found on), and `ssh -M <host>` opens an interactive shell that OCCUPIES the
+ * single slot -- so while the reader sat at the prompt the picker told them to
+ * open, every collect was refused with `Session open refused by peer` and the
+ * notice stayed up, pointing at the command holding the peer hostage. `-N`
+ * requests no remote command, so the master authenticates and consumes nothing.
+ * `-f` backgrounds it after auth, so the reader gets their prompt back instead
+ * of a terminal parked on a command that prints nothing.
+ *
+ * `-S` uses the same `%r@%h:%p` tokens as `ControlPath`, so one string is
  * correct for every host and cannot drift from where murmur actually looks.
  *
  * Documented as a template rather than resolved per peer: the shell expands
  * nothing here, ssh does, so a reader can paste it verbatim.
  */
 export function warmSocketCommand(target: string): string {
-  return `ssh -M -S ${CONTROL_PATH} ${target}`;
+  return `ssh -MNf -S ${CONTROL_PATH} ${target}`;
 }
 
 // Both timeouts are sized against the tmux status bar, which is what drives

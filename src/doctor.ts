@@ -531,12 +531,15 @@ export function diagnose(local: LocalNode, surveys: SurveyResult[]): Finding[] {
       // Opening any session creates the ControlMaster socket murmur then rides,
       // so the remedy is the plain login and nothing more -- no murmur
       // subcommand, because what is missing is the authenticated channel.
-      // `-M`, and the flag is the whole point: a plain `ssh` attaches as a
-      // client or leaves a `ProxyCommand` socket that can forward but has never
-      // authenticated a session, so `ssh -O check` reports a healthy master and
-      // every command over it still fails with `Session open refused by peer`.
-      // Measured against a real 2FA host. Suggesting the short form told an
-      // operator to run the command that had just failed them.
+      // `-M -S` rather than a bare `ssh <host>`, because OpenSSH defaults to
+      // `ControlMaster no` and `ControlPath none`: on a machine with no
+      // ssh_config of its own the short form leaves no socket where murmur
+      // looks, so it told an operator to run a command that could not help
+      // them. Where their config sets `ControlMaster auto` and a matching
+      // `ControlPath` the short form does work; the flags buy one suggestion
+      // that is correct on every machine. See `warmSocketCommand` -- this is
+      // socket location, not authentication, and not a fix for `Session open
+      // refused by peer`.
       remedy: warmSocketCommand(peer.target),
     });
   }

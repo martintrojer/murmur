@@ -10,6 +10,7 @@ import {
   describeFailure,
   MAX_CONCURRENT_PEERS,
   needsInteractiveAuth,
+  sessionChannelBusy,
 } from "../src/collector.js";
 import { asPaneId, asSessionId, asWindowId } from "../src/ids.js";
 import { openStore, type Store } from "../src/store.js";
@@ -623,6 +624,43 @@ test("an auth refusal is distinguished from an unreachable host", () => {
   expect(needsInteractiveAuth("Connection closed by UNKNOWN port 65535")).toBe(false);
   expect(needsInteractiveAuth("ssh: connect to host dev port 22: Operation timed out")).toBe(false);
   expect(needsInteractiveAuth("Host is down")).toBe(false);
+});
+
+test("a busy session channel is retryable, not an auth wall", () => {
+  // Captured verbatim from devvm5639 with a FULLY AUTHENTICATED master already
+  // running: hold the one session channel open, run a second command, and ssh
+  // prints both of these lines. The devvm's sshd sets `MaxSessions 1` in every
+  // Match block that applies to us (global is 512; `Match Group users Address
+  // ... LocalPort 22` overrides it), so one connection carries exactly one
+  // session channel and a concurrent collect is refused.
+  //
+  // The trailing `Permission denied` is a RED HERRING: ssh silently retries the
+  // refused channel on a fresh connection, which hits
+  // `AuthenticationMethods publickey,keyboard-interactive` and fails there.
+  // Reading it as an auth wall parks a healthy peer behind a "re-auth needed"
+  // notice naming a command the operator does not need to run -- and the master
+  // it tells them to open is already up.
+  const busy =
+    "mux_client_request_session: session request failed: Session open refused by peer\n" +
+    "mtrojer@devvm5639.dkl0.facebook.com: Permission denied (keyboard-interactive).";
+
+  expect(sessionChannelBusy(busy)).toBe(true);
+  // The whole point: contention must not be filed under "a human must
+  // authenticate", even though the text contains `Permission denied`.
+  expect(needsInteractiveAuth(busy)).toBe(false);
+
+  // Either line alone is enough. ssh does not always get to print the fallback.
+  expect(sessionChannelBusy("Session open refused by peer")).toBe(true);
+  expect(sessionChannelBusy("mux_client_request_session: session request failed")).toBe(true);
+
+  // A genuine auth wall has neither marker and must still be claimed, or the
+  // fix for this bug silently disables the 2FA gating that `duePeers` needs.
+  expect(sessionChannelBusy("Permission denied (keyboard-interactive).")).toBe(false);
+  expect(needsInteractiveAuth("Permission denied (keyboard-interactive).")).toBe(true);
+
+  // Contention is reachable-but-transient: the host answered, so calling it
+  // asleep would be wrong in the other direction.
+  expect(describeFailure("dev", busy)).not.toContain("unreachable");
 });
 
 test("the auth category does not overlap unreachability", () => {

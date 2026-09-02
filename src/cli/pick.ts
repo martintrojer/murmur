@@ -244,12 +244,14 @@ export function sessionNotice(peers: Status["peers"], now = Date.now()): string 
   // thing in the glyph column's own alphabet. The remedy stays undimmed because
   // it is the part meant to be copied.
   const attention = `${BOLD}${COLOUR.blocked ?? ""}`;
-  // The remedy is `warmSocketCommand`, not a hand-written `ssh <host>`. That
-  // shorter form was WRONG and shipped anyway: a plain `ssh` attaches as a
-  // client or leaves a forward-only socket, so the reader ran it, murmur still
-  // could not collect, and the notice kept telling them to do the thing that had
-  // just failed. Built from the same constant as `ControlPath`, so the suggestion
-  // cannot drift from where murmur looks.
+  // The remedy is `warmSocketCommand`, not a hand-written `ssh <host>`. The
+  // shorter form shipped once and could not be relied on: OpenSSH defaults to
+  // `ControlMaster no` and `ControlPath none`, so on a machine with no
+  // ssh_config of its own a plain `ssh` leaves no socket where murmur looks --
+  // the reader ran it, murmur still could not collect, and the notice kept
+  // telling them to do the thing that had just failed. Built from the same
+  // constant as `ControlPath`, so the suggestion cannot drift from where murmur
+  // looks.
   //
   // Keyed on TARGET, not name: `peer add <name> [target]` takes them separately,
   // so a command built from the name is not guaranteed to run.

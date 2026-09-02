@@ -3,6 +3,38 @@
 Notable changes per release. Written for someone deciding whether to upgrade,
 so it says what changed for a user rather than listing every commit.
 
+## Unreleased
+
+**A busy session channel is no longer mistaken for an auth wall.** Some hosts
+cap session channels per connection (`MaxSessions 1`), so a collect that
+overlaps another command on the same master is refused with `Session open
+refused by peer`. ssh then retries on a fresh connection and dies at the auth
+wall, so the error text ends in `Permission denied` — and murmur read that as
+"a human must authenticate", parking a healthy peer behind a `re-auth needed`
+notice that named a master which was already running. The two cases are now
+classified apart and contention simply retries on the next tick.
+
+This also corrects the reasoning published in 0.2.3, which claimed `-M` was the
+remedy for `Session open refused by peer` because a plain `ssh` leaves a socket
+that forwards but has never authenticated a session. That was wrong: the error
+reproduces against a fully authenticated master built by the recommended
+command. `ssh -M -S <ControlPath> <host>` is still the right thing to run, for a
+different reason — OpenSSH defaults to `ControlMaster no` and `ControlPath
+none`, so on a machine with no ssh_config of its own a bare `ssh` leaves no
+socket where murmur looks.
+
+**The suggested command no longer blocks the peer it unblocks.** It gained `-N`
+(and `-f`): the old form opened an interactive shell, and on a host capping
+sessions per connection that shell held the only slot, so following the picker's
+advice left murmur unable to collect for as long as the terminal stayed open
+— with the notice still up, naming the command that was doing the blocking.
+
+**Eternal Terminal is now documented as the companion, not the exception.** On a
+session-capped host, ET is the right place for your own work: it holds no ssh
+session, so the capped slot stays free for murmur. The previous text framed ET
+purely as something that cannot serve murmur, which is true and buries the
+useful half.
+
 ## 0.2.3
 
 Wire-compatible with 0.2.x: the snapshot format is unchanged at version 1, so a
