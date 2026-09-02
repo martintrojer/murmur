@@ -960,6 +960,18 @@ each was cheaper to accept than to solve:
 8. **Attention is per pane, not per agent.** A pane whose agent is replaced
    loses the previous occupant's attention, which is intended, and two
    sequential agents in one pane cannot each hold their own `done`.
+9. **A peer demanding interactive auth is collectable only while a session is
+   open.** Every ssh murmur runs sets `BatchMode=yes`, so a host wanting a
+   second factor, a token touch or a password per connection cannot be reached
+   unattended — which is the case `SSH_OPTIONS` names as out of scope
+   ("never prompt", not "never authenticate") and the reason `hasWarmSocket`
+   exists. Such a peer is skipped by ambient collects rather than dialled and
+   failed on every tick, keeps its cached snapshot, and is named in the picker
+   header with the `ssh <host>` that fixes it. A `ControlMaster` socket left by
+   an ordinary login is the whole mechanism; Eternal Terminal does not
+   substitute, since it bootstraps over ssh and leaves no socket to attach to.
+   The accepted cost is that the reminder cannot say *when* a session lapsed,
+   only that none exists now.
 
 ## Known gaps
 

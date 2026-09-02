@@ -451,3 +451,43 @@ test("the peer list is trimmed rather than counted", () => {
   expect(notice).toContain("peer-2");
   expect(notice).not.toContain("peer-3");
 });
+
+test("the notice is styled as an action, not as furniture", () => {
+  // It shipped DIM, which is this file's code for scenery -- the keybinding
+  // legend and the column header wear it. The one header line asking the reader
+  // to do something must not render in the same weight as the things they learn
+  // once and stop seeing.
+  //
+  // Asserted on the escape codes because that IS the behaviour here: a notice
+  // nobody notices has failed at its only job, and "we styled it" is not
+  // provable from the text alone.
+  const notice = sessionNotice([gated("dev", 1_000)], 5_000) ?? "";
+
+  // Bold, and `blocked`'s yellow -- COLOUR's vocabulary is "red needs you now,
+  // peach needs you soon", and a lapsed login is the latter. Reusing that hue
+  // keeps one meaning per colour rather than teaching a fourth.
+  expect(notice).toContain("\u001b[1m");
+  expect(notice).toContain("\u001b[33m");
+  // Never dim.
+  expect(notice).not.toContain("\u001b[2m");
+  // And it carries `blocked`'s glyph, so it reads as that class of thing in the
+  // alphabet the glyph column already established.
+  expect(notice).toContain("!");
+});
+
+test("the notice comes first in the header, above the legend", () => {
+  // Position is half of prominence: it was third of four, under two static
+  // legend lines. A warning printed beneath furniture reads as furniture, and
+  // everything after it is text a reader learns once and then ignores.
+  //
+  // Guards the ORDER, which no other test covers -- the header array is built in
+  // runPick, so this asserts the contract that conditional lines precede static
+  // ones by checking the one property that makes it observable.
+  const notice = sessionNotice([gated("dev", 1_000)], 5_000) ?? "";
+  const header = [notice, "enter jump   ^r refresh", "filter: M-x crashed", headerRow(true)]
+    .filter(Boolean)
+    .join("\n");
+
+  expect(header.split("\n")[0]).toBe(notice);
+  expect(header.indexOf("re-auth")).toBeLessThan(header.indexOf("enter jump"));
+});

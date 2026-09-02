@@ -212,7 +212,26 @@ export function sessionNotice(peers: Status["peers"], now = Date.now()): string 
       : // `age()` returns "" under a minute, which would read as "last seen )".
         age(now - oldest.fetched_at) || "just now";
 
-  return `${DIM}${named.join(", ")}: re-auth needed (last seen ${seen}) \u2014 ssh ${named[0]}${RESET}`;
+  // BOLD and `blocked`'s yellow, not DIM. This is the one header line that asks
+  // the reader to DO something, and DIM is this file's code for furniture -- the
+  // keybinding legend and the column header wear it. Rendering an action in the
+  // same weight as scenery is how it goes unread, which is the whole failure the
+  // notice exists to prevent.
+  //
+  // Yellow rather than a new colour: COLOUR's documented vocabulary is "red
+  // needs you now, peach needs you soon", and a lapsed login is exactly the
+  // latter -- nothing is broken and nothing is lost, but the rows below are
+  // ageing until you act. Reusing `blocked`'s colour keeps one meaning per hue
+  // instead of teaching the reader a fourth.
+  //
+  // The `!` prefix is `blocked`'s glyph, so the line reads as the same class of
+  // thing in the glyph column's own alphabet. The remedy stays undimmed because
+  // it is the part meant to be copied.
+  const attention = `${BOLD}${COLOUR.blocked ?? ""}`;
+  return (
+    `${attention}! ${named.join(", ")}: re-auth needed${RESET}` +
+    `${COLOUR.blocked ?? ""} (last seen ${seen}) \u2014 ${BOLD}ssh ${named[0]}${RESET}`
+  );
 }
 
 /**
@@ -601,6 +620,12 @@ export async function runPick(
       `${options.all ? CREW_MARK : ""}${basePrompt}`,
       "--header",
       [
+        // FIRST, above the legend, and only when it applies. It was below the two
+        // legend lines, which put the one line asking for action underneath the
+        // furniture -- and a warning printed under furniture reads as furniture.
+        // Everything after it is static text a reader learns once and then stops
+        // seeing, so anything conditional has to come before them to be noticed.
+        sessionNotice(view.peers) ?? "",
         // No delete key: a reader holds one snapshot per peer and the next fetch
         // replaces it whole, so it could only remove a row the next collect puts
         // straight back, while looking like it had done something.
@@ -611,7 +636,6 @@ export async function runPick(
         `filter: ${FILTER_KEYS.map(([key, query]) => `${key.replace("alt-", "M-")} ${query}`).join(
           " ",
         )}   M-a toggle crew`,
-        sessionNotice(view.peers) ?? "",
         headerRow(showHost),
       ]
         .filter(Boolean)

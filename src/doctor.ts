@@ -439,6 +439,28 @@ export function diagnose(local: LocalNode, surveys: SurveyResult[]): Finding[] {
     });
   }
 
+  // Peers whose unattended login was refused, resolved once and consulted by the
+  // two checks below.
+  //
+  // The same host otherwise collects three findings for one cause -- "never
+  // answered", "needs a login" and "could not be surveyed" -- each true in
+  // isolation and together just noise. This is the actionable one: it names the
+  // cause and carries the remedy, so it wins and the other two defer to it.
+  //
+  // A peer that ANSWERED this run's survey is excluded, for the reason the
+  // needs-session check gives: a survey success is stronger evidence than any
+  // stored error.
+  const gatedTargets = new Set(
+    local.peers
+      .filter(
+        (peer) =>
+          peer.last_error !== null &&
+          needsInteractiveAuth(peer.last_error) &&
+          !byTarget.has(peer.target),
+      )
+      .map((peer) => peer.target),
+  );
+
   // Never worked -- OBSERVATION. A fourth category, distinct from the two a
   // reader might confuse it with: not "answered before and is unreachable now"
   // (which is a laptop asleep, and normal), and not "never attempted" (which is
@@ -456,8 +478,14 @@ export function diagnose(local: LocalNode, surveys: SurveyResult[]): Finding[] {
   // would be skipped forever while looking exactly like one that works and has
   // nothing to report. `duePeers` treats a null `last_attempt_at` as always-due
   // for the same reason -- a new peer must appear promptly.
+  //
+  // Suppressed for a peer that is already reported as needing an interactive
+  // login: both findings would be true, and only one is actionable. "Never
+  // answered" invites an operator to hunt a wrong target or a missing install,
+  // when the cause is known and named one section down. One host, one diagnosis.
   for (const peer of local.peers) {
     if (peer.snapshot !== null || peer.last_attempt_at === null) continue;
+    if (gatedTargets.has(peer.target)) continue;
     findings.push({
       kind: "never-worked",
       severity: "observation",
@@ -571,8 +599,14 @@ export function diagnose(local: LocalNode, surveys: SurveyResult[]): Finding[] {
   // wrong on most runs. Reported per FAILED CALL, because that is what decides
   // the action: an old murmur needs an upgrade, an unreachable host needs the
   // network, and those must not read alike.
+  //
+  // Also suppressed for a gated peer, same rule: "could not be surveyed" is
+  // true of it and says less than the section that names the login as the cause
+  // -- and it would print ssh's raw refusal, banner included, which is the
+  // longest and least useful spelling of the fact.
   for (const survey of surveys) {
     if (survey.ok) continue;
+    if (gatedTargets.has(survey.target)) continue;
     const name = nameOf(survey.target);
     const detail = withoutTargetPrefix(survey.target, survey.detail);
     findings.push({

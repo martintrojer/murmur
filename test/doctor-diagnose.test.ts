@@ -512,3 +512,54 @@ test("a gated peer that answered the survey just now is not reported", () => {
   );
   expect(kinds(findings)).not.toContain("needs-session");
 });
+
+test("a gated peer gets ONE diagnosis, not three", () => {
+  // The same host otherwise collects three true-but-redundant findings: it has
+  // never answered, it needs a login, and it could not be surveyed. Only one of
+  // them names the cause and carries a remedy, and the other two actively
+  // mislead -- "never answered" invites a hunt for a wrong target or a missing
+  // remote install when the reason is known.
+  //
+  // Verified against the real fleet, where this printed `dev` in three sections
+  // of one report.
+  const findings = diagnose(
+    localNode([
+      peer({
+        name: "dev",
+        // The shape a 2FA host leaves: contacted, refused, nothing cached.
+        snapshot: null,
+        last_attempt_at: 5_000,
+        last_error: "Permission denied (keyboard-interactive).",
+      }),
+    ]),
+    // And it failed this run's survey too, which is what raises `unsurveyable`.
+    [{ ok: false, target: "dev", reason: "identity-unavailable", detail: "Permission denied" }],
+  );
+
+  const kinds = findings.filter((entry) => entry.subject === "dev").map((entry) => entry.kind);
+
+  expect(kinds).toEqual(["needs-session"]);
+});
+
+test("suppression is scoped to the gated peer, not to every peer", () => {
+  // The other half: deferring must not silence a genuinely never-worked host
+  // that happens to share a report with a gated one.
+  const findings = diagnose(
+    localNode([
+      peer({
+        name: "dev",
+        snapshot: null,
+        last_attempt_at: 5_000,
+        last_error: "Permission denied (keyboard-interactive).",
+      }),
+      // A different cause entirely: wrong target, or no remote murmur.
+      peer({ name: "typo", snapshot: null, last_attempt_at: 5_000, last_error: "Host is down" }),
+    ]),
+    [],
+  );
+
+  expect(findings.find((entry) => entry.subject === "typo")?.kind).toBe("never-worked");
+  expect(findings.filter((entry) => entry.subject === "dev").map((entry) => entry.kind)).toEqual([
+    "needs-session",
+  ]);
+});

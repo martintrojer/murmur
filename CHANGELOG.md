@@ -5,6 +5,29 @@ so it says what changed for a user rather than listing every commit.
 
 ## Unreleased
 
+**A peer that needs an interactive login is skipped, not dialled and failed.**
+Some hosts refuse an unattended connection — a second factor, a token, a
+password — and murmur never prompts, so it cannot reach them alone. Such a peer
+used to cost the full auth exchange to fail on every status tick and every
+picker launch: measured at 1.5s per collect against a real one, now 0.23s for
+the whole fleet. Its cached rows still list with their real age, so the agents
+stay visible while the peer waits.
+
+**The picker names it, so a lapsed session is not silent.** A header line, only
+when it applies: `dev: re-auth needed (last seen 2h) — ssh dev`. The remedy is
+one login: that leaves a `ControlMaster` socket murmur rides for as long as
+`ControlPersist` holds it, after which collects cost ~10ms. `doctor` carries the
+full list where the header trims to three. Note an Eternal Terminal session does
+not work here — it bootstraps over ssh and exposes no socket to attach to.
+
+**`doctor` separates three states it used to blur.** A peer contacted and never
+once successful ("never answered") is usually a wrong target or a missing remote
+install, and neither resolves by waiting — previously visible only as a blank
+LAST SEEN column, indistinguishable from a switched-off box. A peer refused on
+auth now gets one diagnosis naming the cause and the fix, instead of appearing
+in three sections of the same report. Both are observations rather than
+problems: they are correctly configured, not broken.
+
 **A corrupt `state.db` no longer takes every command down with it.** A database
 damaged past its header — a full disk, a killed write — made every murmur
 invocation exit with a SQLite stack trace, including the status bar on every
