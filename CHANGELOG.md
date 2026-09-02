@@ -3,6 +3,48 @@
 Notable changes per release. Written for someone deciding whether to upgrade,
 so it says what changed for a user rather than listing every commit.
 
+## Unreleased
+
+**A corrupt `state.db` no longer takes every command down with it.** A database
+damaged past its header — a full disk, a killed write — made every murmur
+invocation exit with a SQLite stack trace, including the status bar on every
+tick and every tmux focus hook, and the only way out was deleting the file by
+hand. The version-reset path already existed for a file murmur cannot use; it
+just never ran for this case, because the check that decides answered "fine" for
+any file it could not read. Nothing in the store is history, so it is rebuilt.
+
+**Opening the store is safe when several processes do it at once.** A schema
+bump used to race: after an upgrade the status-bar tick, every focus hook and
+every pi extension reopen together, all saw a stale version, all tried to create
+the schema, and the losers failed with `table agents already exists`. Worse, the
+rebuild could delete the database another process was mid-way through writing,
+which lost peer names and targets — the only rows in murmur that no collect can
+re-derive, because a person typed them. Measured at 6 of 12 concurrent upgrades
+losing a peer before the fix, 0 of 30 after.
+
+**Enter in the picker lands on the agent's pane, not its window.** Selecting an
+agent that shares a window with a shell put the cursor on whichever pane was
+last active, which was often the shell. The same change fixes a jump to an agent
+whose pane has moved between windows since it was recorded: that used to report
+`could not attach` for a perfectly healthy agent.
+
+**A remote jump from outside tmux is no longer killed after ten seconds.** The
+ssh attach shared a timeout with murmur's bounded probes, so a working remote
+session was terminated mid-use and reported as a failed attach.
+
+**The picker paints from cache and fetches behind it.** The popup no longer
+waits on an ssh fan-out before showing anything — measured at 1.5s on a fleet
+with one unreachable peer, against 0.06s now. The consequence is that the first
+frame can be one refresh stale; `^r` forces a fetch, and rows carry `stale host`
+and a `said` age so the staleness is visible rather than implied. A peer whose
+last fetch failed is also no longer dialled for the preview, which cost ~1.5s
+every time the cursor crossed that row.
+
+**A peer the collect deadline never reached is reported as unknown, not
+failed.** `peer list` and `status --json` used to show an error and a fresh
+attempt timestamp for a host murmur had not contacted at all, which also
+deferred the next attempt and suppressed that peer's preview.
+
 ## 0.2.2
 
 **The picker's name column shows `murmur`, not `hacking/murmur`.** 0.2.1 fixed

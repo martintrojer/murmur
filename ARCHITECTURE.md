@@ -314,9 +314,12 @@ or a cache.
 does not read `identity.json`. `createIdentity` is called only by `murmur init`;
 `setDisplayName` backs `murmur init --name` on an existing node and keeps its
 `host_id`. Every command that needs a `host_id` — `export`, `collect`, `status`,
-`pick`, `peer` — calls `loadIdentity()` and fails with `murmur is not initialised
-on this node; run: murmur init`. A node that came into existence as a side
-effect of a status-bar tick has an identity nobody chose.
+`pick`, `doctor` — calls `loadIdentity()` and fails with `murmur is not
+initialised on this node; run: murmur init`. A node that came into existence as a
+side effect of a status-bar tick has an identity nobody chose. `peer` reads
+identity opportunistically instead: `peer add` uses it only to refuse adding this
+node to itself, so an uninitialised node can still configure peers and that
+refusal is best effort.
 
 `notify` and `clear` are absent from that list as a consequence of the model
 rather than as an exemption: both address a pane, and `attention` is keyed on
@@ -454,16 +457,26 @@ pane and each owner pid once:
 | no | — | — | delete the agent row and all attention for the pane |
 | yes | yes | — | nothing |
 | yes | no | `running` | set `stopped`, upsert `crashed` attention |
-| yes | no | `stopped` | delete the agent row, **keep** attention |
+| yes | no | `stopped`, pane already `crashed` | nothing: the row says *which* agent died |
+| yes | no | `stopped`, no `crashed` row | delete the agent row, **keep** attention |
 
 Then, unconditionally, attention for any pane that no longer exists is deleted —
 which is what reaps an attention-only pane whose window was closed.
 
-The asymmetry in the last two rows is the point. A dead *running* owner is an
+The asymmetry in the last three rows is the point. A dead *running* owner is an
 unreported crash and must leave a durable trace; a dead *stopped* owner finished
 normally, so its row is noise, but a `done` it raised is a fact a human has not
 yet seen. For the same reason `releaseAgent` deletes the agent row and not its
 attention: completion must survive the process exiting.
+
+The two `stopped` rows are one distinction, and the split is load-bearing rather
+than pedantic. The crash path sets `activity = stopped` before it raises the
+attention, so a literal reading of a single `stopped` row would have the *second*
+reconcile delete the row the first had just marked — stripping `agent_name`,
+`workstream`, `role` and `cli` one tick after the crash, which is exactly the
+information saying which agent died, and breaking the idempotence claimed below.
+The `crashed` attention is what tells an owner that finished from one that died
+mid-run, so it is the right thing to key on.
 
 `requested_at` is never updated by a repeat, so re-reconciling changes nothing —
 crash attention is idempotent for free, and age keeps meaning "how long this has
@@ -533,8 +546,11 @@ machine has at that id. Names travel in the snapshot instead.
 ### `clear` may only cancel a request for attention
 
 `murmur clear --pane` runs from tmux focus hooks, so the single fact it knows is
-*the user looked at this pane*. It is one `DELETE FROM attention WHERE pane = ?`
-plus the badge, and it reads no agent row to decide anything.
+*the user looked at this pane*. Its only WRITE to murmur state is one `DELETE
+FROM attention WHERE pane = ?`, so a focus hook structurally cannot mutate an
+agent row — no activity, no identity, no owner metadata. It does read local
+panes once, to recompute the window badge from what the window's other panes are
+doing.
 
 There is no state focus must refuse to clear, because attention is the only
 thing focus can address. That whole class of bug — a whitelist, a resolver call,
@@ -545,8 +561,9 @@ because switching back to a pane wiped the state of the agent running in it.
 
 The badge is a window option while "you looked" is true of one pane, so `clear`
 keeps the badge lit when another pane in the same window still wants attention.
-That question is asked of attention only: a busy agent next door is not a reason
-to keep an attention badge on. It fails safe by keeping the badge — wrongly
+The badge is recomputed from attention AND activity, so a busy agent next door
+keeps the window showing `running` rather than going dark; `idle` is the one
+state never painted, since it is the absence of a signal. It fails safe by keeping the badge — wrongly
 keeping one is recoverable by focusing the pane, wrongly clearing one loses the
 signal — and it is silent and total, because it runs inside the tmux server.
 
@@ -817,7 +834,8 @@ and the user can fix the cause from outside without restarting it.
 ## Testing posture
 
 Bug-driven, not coverage-driven. A thing earns a test when it can fail *without
-you noticing*. The suite is 238 tests over 28 files, and the ones that matter
+you noticing*. `npm test` prints the current size — stating it here has drifted
+twice, since every commit that earns a test invalidates it — and the ones that matter
 assert what is **impossible** rather than what is implemented:
 
 | Target | Why it can fail silently |
@@ -918,10 +936,13 @@ each was cheaper to accept than to solve:
    on success would exempt exactly the sleeping laptops the floor exists to stop
    hammering. The jitter is drawn per peer per call and is what stops the floor
    becoming a synchroniser — a bare floor makes a fleet converge on hitting one
-   machine in the same instant, permanently. Only ambient callers pass a floor:
-   `murmur collect` is a person asking, and the picker is a keypress, including
-   its `^r` refresh, where a floor would be a refresh key that silently does
-   nothing.
+   machine in the same instant, permanently. A floor is passed by the two
+   unattended callers: `murmur status`, which tmux re-runs on a tick, and the
+   picker's launch-time background refresh, which runs on every popup open and
+   would otherwise fan out ssh per keystroke. The picker itself paints from
+   cache and never waits for a collect. `murmur collect` and the picker's `^r`
+   are a person asking now, so neither floors — a refresh key that skipped the
+   fetch would be a key that silently does nothing.
 4. **No nested agents.** A second live process in one pane is refused and
    reports nothing. A pane shows at most one agent.
 5. **No remote liveness inference.** `owner_pid` never crosses the wire, so a

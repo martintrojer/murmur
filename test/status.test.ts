@@ -212,6 +212,37 @@ test("an attention-only pane is a listable row with no agent", () => {
   expect(result.counts.blocked).toBe(1);
 });
 
+test("an attention-only pane is aged by its NEWEST request", () => {
+  // A pane with no agent row has no `updated_at` of its own, so `newestAttention`
+  // supplies one -- and it is the only source of age for every codex-style row.
+  // Nothing asserted its VALUE: the attention-only test above matches on five
+  // keys and `updated_at` is not among them, so returning 0 passed the whole
+  // suite while the picker rendered a two-minute-old notification as 56 years
+  // old. Returning the OLDEST instead of the newest also passed.
+  //
+  // Two kinds at different times, so both mutations fail: a fixed 0 misses the
+  // value, and a min picks 1_000.
+  store.requestAttention({
+    kind: "blocked",
+    location: location("%7"),
+    message: "",
+    source: "codex",
+    now: 1_000,
+  });
+  store.requestAttention({
+    kind: "done",
+    location: location("%7"),
+    message: "",
+    source: "codex",
+    now: 5_000,
+  });
+
+  const result = status(store, IDENTITY);
+
+  expect(result.panes).toHaveLength(1);
+  expect(result.panes[0]?.updated_at).toBe(5_000);
+});
+
 test("human and orchestrated panes are counted separately but both listed", () => {
   localAgent("%1", { attention: ["blocked"] });
   localAgent("%2", { activity: "running", driver: "orchestrated" });

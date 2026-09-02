@@ -92,8 +92,21 @@ export type PaneView = {
 /**
  * How long a peer may go unfetched before its panes render stale.
  *
- * Re-exported here rather than imported from the collector by view consumers, so
- * freshness has one definition. See collector.ts for why sixty seconds.
+ * DEFINED here, because freshness is a view concept: the collector re-exports it
+ * for callers already importing from there. The comment this replaces claimed
+ * the opposite direction and sent a reader to collector.ts for a rationale that
+ * was written nowhere.
+ *
+ * Sixty seconds is a ceiling on how wrong the HUD may be about a reachable host,
+ * chosen against the collect cadence rather than derived: it must leave room for
+ * a peer to miss two consecutive ambient attempts before it reads stale, so a
+ * single slow poll does not make a healthy fleet flap.
+ *
+ * That is a real coupling and the compiler cannot see it:
+ * `COLLECT_FLOOR_MS + COLLECT_JITTER_MS / 2` must stay strictly under this, or an
+ * unlucky jitter draw pushes a reachable peer over the line on its own.
+ * test/collector.test.ts asserts both halves of that inequality, so changing
+ * either number fails a test rather than silently making the HUD flap.
  */
 export const STALENESS_MS = 60_000;
 

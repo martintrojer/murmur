@@ -119,10 +119,6 @@ const BOLD = "\u001b[1m";
 const DIM = "\u001b[2m";
 const RESET = "\u001b[0m";
 
-// The order the prompt COUNTS appear in: RENDER_PRIORITY, imported rather than
-// restated, so this file and status.ts cannot disagree about whether `crashed`
-// or `blocked` leads.
-
 /**
  * Marks the picker as showing orchestrated agents, at the front of the prompt.
  *
@@ -600,12 +596,13 @@ export async function runPick(
   const [selectedHost, selected] = stdout.trim().split("\t");
   if (!selected) return;
   // A fresh read of the FULL list, not `view` and not `agents`. The rows fzf
-  // offered came from the `start:reload` and alt-a subprocesses, which collected
-  // into the same store, so a pane only they discovered is absent from this
-  // process's launch snapshot -- and filtering is a presentation concern that
-  // must not gate the action. Resolving against either made the freshest rows,
-  // exactly the ones the reload exists to reveal, display but not select: fzf
-  // returned a key, find() returned undefined, and enter silently did nothing.
+  // offered can have come from the `^r` or alt-a reload subprocesses, which
+  // collect into the same store, so a pane only they discovered is absent from
+  // this process's launch snapshot -- and filtering is a presentation concern
+  // that must not gate the action. Resolving against either made the freshest
+  // rows, exactly the ones a reload exists to reveal, display but not select:
+  // fzf returned a key, find() returned undefined, and enter silently did
+  // nothing.
   //
   // Matched on the WHOLE address. A pane id is unique per node and nothing more,
   // so two machines routinely hold a `%1`, and matching the pane alone jumped to
@@ -634,9 +631,10 @@ export async function runPick(
 async function runRows(store: Store, options: PickOptions = {}): Promise<void> {
   const identity = requireIdentity();
   if (!identity) return;
-  // Unfloored: this backs `^r refresh` and the launch `start:reload`, and a
-  // refresh that skipped the fetch would be a key that silently does nothing --
-  // the failure `alt-a` and `ctrl-b` were already fixed for.
+  // Unfloored: this backs `^r refresh` and the alt-a reload, both of which are a
+  // person asking now, and a refresh that skipped the fetch would be a key that
+  // silently does nothing -- the failure `alt-a` and `ctrl-b` were already fixed
+  // for. The launch-time background collect is the floored one, in `spawnCollect`.
   const view = await statusWithCollect(store, identity);
   const agents = view.panes.filter((agent) => options.all || isVisible(agent));
   const showHost = agents.some((agent) => !agent.local);

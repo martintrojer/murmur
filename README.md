@@ -9,12 +9,16 @@ Without murmur you walk the machines to find out. murmur answers in one
 keystroke and jumps you to the agent, wherever it is running.
 
 ```
-     state    agent                          workstream    host           age / flags
-   ! blocked  review the auth change          api           → devbox        4m
-   ▶ running  Fix the picker filter           murmur          here
-   ✓ done     migrate the fixtures            api           → devbox        12m
-   · idle     worker-2                        infra           here          crew
+    state    agent                          stream        host           age / flags
+  ! blocked  review the auth change         api           → devbox       4m
+  ▶ running  Fix the picker filter          murmur          here
+  ✓ done     migrate the fixtures           api           → devbox       12m
 ```
+
+That is captured from `headerRow` and `pickerRow` rather than typed by hand, so
+the column names are the ones the code prints. An idle `crew` row is deliberately
+absent: orchestrated agents are hidden unless they are `blocked` or `crashed`,
+since their supervisor consumes anything else. `M-a` or `--all` reveals them.
 
 Pick a row, press enter. Local agents are a window switch; remote ones open over
 ssh. The preview shows the last lines the agent printed, so you can tell "waiting
@@ -231,11 +235,13 @@ could not reach.
 bind -N "agent state picker" a display-popup -E -w 80% -h 60% "murmur pick"
 ```
 
-In the picker: `^r` refreshes, `^p` cycles the preview, `^u` clears the filter.
-`M-b` / `M-w` / `M-d` / `M-x` filter to blocked, running, done or crashed; `M-a`
-toggles orchestrated agents. Alt rather than ctrl because `^b` is tmux's prefix,
-which a popup never receives. Typing matches agent name, workstream or tmux
-session, and host, as literal substrings.
+In the picker: `^r` refreshes, `^p` cycles the preview, and fzf's own `^u` clears
+the filter. `M-b` / `M-w` / `M-d` / `M-x` filter to blocked, running, done or
+crashed, with `^w` / `^d` / `^x` as aliases for three of them; `M-a` toggles
+orchestrated agents. There is no `^b`: that is tmux's default prefix, which tmux
+consumes before a popup ever sees it, so the one filter that cannot have a ctrl
+alias is `blocked`. Typing matches agent name, workstream or tmux session, and
+host, as literal substrings.
 
 `murmur status` prints per-state counts for a status bar. Everything else is
 `--help`.
@@ -274,10 +280,13 @@ already full-screen, and you land back at your shell prompt on exit.
 It is new and not battle-tested. The known gaps and the accepted limitations are
 listed at the end of [ARCHITECTURE.md](ARCHITECTURE.md#known-gaps).
 
-**All nodes must run the same murmur version.** The snapshot format is versioned
-and a mismatch is rejected rather than guessed at, so a node running older code
-is reported as reachable-but-broken with the reason on it — `murmur peer list`
-shows each peer's version for exactly this. Upgrade the fleet together.
+**All nodes must speak the same snapshot format.** The format is versioned and a
+mismatch is rejected rather than guessed at, so a node on a different snapshot
+version is reported as reachable-but-broken with the reason on it. Patch versions
+interoperate freely — 0.2.0 and 0.2.2 both speak snapshot 1 — and `murmur peer
+list` shows each peer's version, so a bad pairing is visible before you start
+debugging it. Upgrading the fleet together is still the simplest way to stay out
+of it.
 
 ## Documentation
 
