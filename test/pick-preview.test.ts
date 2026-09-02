@@ -154,10 +154,28 @@ test("a peer whose last fetch failed is not dialled for a glance", () => {
   });
   // Then a failed attempt, which is the shape a sleeping or auth-broken peer
   // leaves behind: the cached snapshot stands, so the ROW is still listed.
+  //
+  // A failure murmur cannot explain, deliberately -- an x2ssh proxy drop, which
+  // the classifier reads as unreachable rather than auth-class. This test owns
+  // the skip and the GENERIC message; the gated case below owns the named one,
+  // and seeding an auth error here would silently move this test onto that
+  // branch and leave "murmur does not know why" untested.
   store.replacePeerSnapshot("dev", {
     ok: false,
     at: Date.now(),
-    error: "Permission denied (keyboard-interactive)",
+    error: "Connection closed by UNKNOWN port 65535",
+  });
+
+  // A DIFFERENT peer is gated at the same time, which is the normal state of a
+  // mesh where one host does 2FA. The message must be keyed on the previewed
+  // pane's own host: `find` with no host comparison names whichever gated peer
+  // sorts first, so this row would have advised `ssh macmini` for a machine
+  // that has nothing to do with it.
+  store.addPeer("macmini", "macmini.invalid");
+  store.replacePeerSnapshot("macmini", {
+    ok: false,
+    at: Date.now(),
+    error: "Permission denied (keyboard-interactive).",
   });
 
   const { text, dialled } = preview("%7", "REMOTE");
@@ -167,6 +185,7 @@ test("a peer whose last fetch failed is not dialled for a glance", () => {
   // But no ssh was attempted, and the pane section says why.
   expect(dialled).toEqual([]);
   expect(text).toContain("unreachable");
+  expect(text).not.toContain("ssh macmini");
 });
 
 test("a reachable peer is still dialled for a glance", () => {
@@ -220,4 +239,30 @@ test("a hostile pane id is quoted, not interpolated, into the remote command", (
   // One POSIX single-quoted word: every embedded quote is escaped as '\'' so the
   // shell rebuilds the original string and never sees `;` as a separator.
   expect(target).toBe("'%1'\\'';touch /tmp/murmur-pwned;'\\'''");
+});
+
+test("a gated peer's preview says why, and names the command", () => {
+  // The skip is right; the MESSAGE was a guess. `unavailable (host unreachable,
+  // or pane gone)` is what murmur says when it does not know, and here it knows
+  // exactly: a human must authenticate. The cached metadata above still renders,
+  // which is the part the blanket suppression was costing.
+  store.addPeer("dev", "dev");
+  store.replacePeerSnapshot("dev", {
+    ok: true,
+    at: Date.now(),
+    snapshot: remoteSnapshot([remotePane("%7")]),
+  });
+  store.replacePeerSnapshot("dev", {
+    ok: false,
+    at: Date.now(),
+    error: "Permission denied (keyboard-interactive).",
+  });
+
+  const { text, dialled } = preview("%7", "REMOTE");
+
+  expect(text).toContain("remote-worker");
+  expect(dialled).toEqual([]);
+  expect(text).toContain("needs an interactive session");
+  expect(text).toContain("ssh dev");
+  expect(text).not.toContain("pane gone");
 });

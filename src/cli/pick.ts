@@ -393,7 +393,16 @@ export function pickerRow(
   return `${agent.host_id}\t${agent.pane}\t${label}`;
 }
 
-function previewText(store: Store, agent: PaneView, run?: GlanceRunner): string {
+function previewText(
+  store: Store,
+  agent: PaneView,
+  // The already-resolved peer list, passed DOWN rather than re-read. `runPreview`
+  // has called `status()` once already, and this runs per keypress as the cursor
+  // moves, so a second read would double the ~20ms warm-socket probe
+  // `needs_session` pays -- on the one path in murmur that cannot afford it.
+  peers: Status["peers"],
+  run?: GlanceRunner,
+): string {
   const state = renderState(agent);
   const colour = COLOUR[state] ?? "";
   const head = [
@@ -430,6 +439,13 @@ function previewText(store: Store, agent: PaneView, run?: GlanceRunner): string 
   // No history section, because there is no history -- the store holds current
   // state only, the accepted price of one writer owning each fact.
   const pane = glance(store, agent, undefined, run);
+  // Named, not guessed. The generic message is honest when murmur does not know
+  // why a capture failed; when it does know, saying so is the difference between
+  // a dead end and an action. Matched on `host`, which `paneViews` sets from
+  // `peer.name` -- the name the operator typed, and so the name they can ssh.
+  const gatedPeer = agent.local
+    ? undefined
+    : peers.find((peer) => peer.needs_session && peer.name === agent.host);
   const live = pane?.trimEnd()
     ? [
         `${DIM}\u2500\u2500 pane \u2500\u2500${RESET}`,
@@ -437,7 +453,9 @@ function previewText(store: Store, agent: PaneView, run?: GlanceRunner): string 
       ]
     : [
         `${DIM}\u2500\u2500 pane \u2500\u2500${RESET}`,
-        `${DIM}unavailable (host unreachable, or pane gone)${RESET}`,
+        gatedPeer
+          ? `${DIM}needs an interactive session \u2014 ssh ${gatedPeer.name}${RESET}`
+          : `${DIM}unavailable (host unreachable, or pane gone)${RESET}`,
       ];
 
   return [...head, "", ...facts, "", ...live].join("\n");
@@ -463,7 +481,8 @@ export function runPreview(
   // nothing more, so two machines routinely hold a `%1` -- which is why fzf
   // hands both columns back. Matching on the pane alone previewed whichever row
   // the sort put first, so a local `capture-pane` stood in for a remote agent.
-  const agent = status(store, identity).panes.find(
+  const view = status(store, identity);
+  const agent = view.panes.find(
     (candidate) =>
       candidate.pane === paneId && (hostId === undefined || candidate.host_id === hostId),
   );
@@ -471,7 +490,9 @@ export function runPreview(
   // printing nothing is indistinguishable from a broken preview command, and
   // the row can genuinely vanish between the collect and the keypress.
   process.stdout.write(
-    agent ? `${previewText(store, agent, run)}\n` : `${DIM}${paneId} is no longer here.${RESET}\n`,
+    agent
+      ? `${previewText(store, agent, view.peers, run)}\n`
+      : `${DIM}${paneId} is no longer here.${RESET}\n`,
   );
 }
 
