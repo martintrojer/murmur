@@ -209,6 +209,7 @@ export type FindingKind =
   | "snapshot-skew"
   | "asymmetry"
   | "island"
+  | "never-worked"
   | "naming-drift"
   | "unsurveyable";
 
@@ -252,7 +253,16 @@ export type Finding = {
  */
 export type LocalPeer = Pick<
   PeerRecord,
-  "name" | "target" | "host_id" | "display_name" | "murmur_version" | "snapshot_version"
+  | "name"
+  | "target"
+  | "host_id"
+  | "display_name"
+  | "murmur_version"
+  | "snapshot_version"
+  // Both needed for the never-worked check, and both already on the record the
+  // CLI hands over, so widening this costs nothing at the call site.
+  | "snapshot"
+  | "last_attempt_at"
 >;
 
 /** This node: who it is, and who it has configured. */
@@ -416,6 +426,38 @@ export function diagnose(local: LocalNode, surveys: SurveyResult[]): Finding[] {
       // is a command to check, and `peer add` tolerates a target that does not
       // answer.
       remedy: `ssh ${survey.target} murmur peer add ${local.display_name}`,
+    });
+  }
+
+  // Never worked -- OBSERVATION. A fourth category, distinct from the two a
+  // reader might confuse it with: not "answered before and is unreachable now"
+  // (which is a laptop asleep, and normal), and not "never attempted" (which is
+  // a peer added seconds ago, where there is no evidence either way). This is
+  // tried, and never once successful.
+  //
+  // Worth stating because the causes are all setup errors a human fixes once --
+  // a typo in the target, no remote murmur, an auth wall -- and none of them
+  // resolve by waiting. Without this the only signal is a permanently blank LAST
+  // SEEN column, which reads the same as a host that is merely off.
+  //
+  // Reported, and NOTHING SKIPS ON IT. That restraint is load-bearing: every
+  // peer is never-worked before its first success, so a collect that skipped the
+  // category could never reach the success that clears it. A freshly added peer
+  // would be skipped forever while looking exactly like one that works and has
+  // nothing to report. `duePeers` treats a null `last_attempt_at` as always-due
+  // for the same reason -- a new peer must appear promptly.
+  for (const peer of local.peers) {
+    if (peer.snapshot !== null || peer.last_attempt_at === null) continue;
+    findings.push({
+      kind: "never-worked",
+      severity: "observation",
+      subject: peer.name,
+      message: `${peer.name} has been contacted and has never answered, so murmur holds no snapshot for it and its agents cannot appear`,
+      detail: "tried, never answered",
+      // The one command that shows the real error: a collect murmur ran in the
+      // background reports through `last_error`, which is bounded and
+      // normalised, while this prints ssh's own diagnosis in full.
+      remedy: `ssh ${peer.target} murmur export`,
     });
   }
 

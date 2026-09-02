@@ -499,20 +499,46 @@ test("a warm socket clears needs_session without a collect", () => {
   expect(result.peers[0]?.needs_session).toBe(false);
 });
 
-test("a peer that never authenticated is not asked to re-auth", () => {
-  // A box that is switched off must not tell the operator to ssh into it. The
-  // distinguishing fact is history: a peer murmur has reached holds a cached
-  // snapshot, and one it has never reached does not.
+test("a switched-off box is not asked to re-auth", () => {
+  // The protection that matters: never tell an operator to `ssh` into a host
+  // that is simply off, because the advice is unactionable.
+  //
+  // Asserted through the ERROR rather than through history, which is the
+  // correction this replaced. An earlier version required a cached snapshot as
+  // proof of contact, and that excluded a peer row re-added by hand -- the exact
+  // case the feature exists for. The classifier carries the proof instead:
+  // producing `Permission denied` needs a completed connect, key exchange and
+  // auth round, so an unreachable host cannot say it.
   store.addPeer("linuxpc", "linuxpc");
   store.replacePeerSnapshot("linuxpc", {
     ok: false,
     at: 2_000,
-    error: "Permission denied (publickey).",
+    error: "ssh: connect to host linuxpc port 22: Operation timed out",
   });
 
   const result = status(store, IDENTITY, 3_000, () => false);
 
   expect(result.peers[0]?.needs_session).toBe(false);
+});
+
+test("a peer refused on auth is asked to re-auth even if it never once worked", () => {
+  // The regression this whole correction is for. `murmur peer add` writes only
+  // `(name, target)`, so a re-added peer has a NULL snapshot and has "never
+  // worked" -- and the reminder must still fire, because being refused on auth
+  // is itself evidence murmur reached the host.
+  //
+  // No successful fetch is seeded, unlike every other test here. That omission
+  // is the point: seeding one is what hid this on the way in.
+  store.addPeer("dev", "dev");
+  store.replacePeerSnapshot("dev", {
+    ok: false,
+    at: 2_000,
+    error: "Permission denied (keyboard-interactive).",
+  });
+
+  const result = status(store, IDENTITY, 3_000, () => false);
+
+  expect(result.peers[0]).toMatchObject({ name: "dev", needs_session: true });
 });
 
 test("an unreachable peer is not asked to re-auth", () => {

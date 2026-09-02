@@ -119,13 +119,18 @@ const GROUP: Record<FindingKind, { heading: string; because: string | null }> = 
     heading: "Incompatible versions",
     because: "State will not sync with these until murmur versions match.",
   },
+  island: {
+    heading: "Not visible to the fleet",
+    because: null,
+  },
   asymmetry: {
     heading: "One-way peering",
     because: "These do not peer this node, so their pickers cannot see its agents.",
   },
-  island: {
-    heading: "Not visible to the fleet",
-    because: null,
+  "never-worked": {
+    heading: "Never answered",
+    because:
+      "Contacted and never once successful, so murmur holds no state for these. Usually a wrong target, no remote murmur, or an auth wall -- none of which resolve by waiting.",
   },
   "naming-drift": {
     heading: "Naming drift",
@@ -138,14 +143,21 @@ const GROUP: Record<FindingKind, { heading: string; because: string | null }> = 
 };
 
 /** The order groups appear in: problems first, then observations. */
-const GROUP_ORDER: FindingKind[] = [
-  "duplicate-host-id",
-  "snapshot-skew",
-  "island",
-  "asymmetry",
-  "naming-drift",
-  "unsurveyable",
-];
+/**
+ * Every kind, in the order the report prints them.
+ *
+ * Derived from `GROUP`'s keys rather than restated, which is what makes it
+ * complete by construction. `GROUP` is a `Record<FindingKind, ...>`, so the
+ * compiler already demands an entry for every kind; taking the order from it
+ * means a new kind cannot be computed, carried in `--json`, and then silently
+ * never rendered. That is exactly what happened to `never-worked` -- the
+ * heading was type-checked, the order was a hand-written array, and only a
+ * real-fleet run showed the section missing.
+ *
+ * The cost is that print order is now declaration order in `GROUP`, so that
+ * object is ordered deliberately: worst first, cosmetic last.
+ */
+const GROUP_ORDER = Object.keys(GROUP) as FindingKind[];
 
 export function render(
   local: LocalNode,

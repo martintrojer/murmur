@@ -104,21 +104,27 @@ export function status(
       // `freshness` is the one place that decides, so this list and the panes
       // the peer contributes cannot disagree about the same host.
       stale: freshness(peer.fetched_at, now) === "stale",
-      // Candidates ONLY, and the order of these conditions is the cost control:
-      // everything left of `warm(...)` is a free cached read, so the ~20ms probe
-      // runs for a peer that could plausibly need it and for no other. Probing
-      // all of them would more than double a picker launch path measured at
-      // ~60ms, to answer questions nobody reads.
+      // Candidates ONLY, and the order is the cost control: everything left of
+      // `warm(...)` is a free cached read, so the ~20ms probe runs for a peer
+      // that could plausibly need it and for no other. Probing all of them would
+      // more than double a picker launch path measured at ~60ms, to answer
+      // questions nobody reads.
       //
-      // `snapshot !== null` is the "has answered before" test, and it is what
-      // separates a re-auth prompt from a host that is simply switched off:
-      // telling an operator to `ssh` into a dead box is noise, and a peer murmur
-      // has never reached is a setup problem rather than a lapsed session.
+      // NO "has worked before" condition, deliberately. The first version
+      // required `snapshot !== null` and that excluded the exact peer this
+      // exists for: a peer row re-added by hand holds only `(name, target)`, so
+      // its snapshot is NULL and it has never worked as far as murmur knows.
+      // Every test passed, because every test seeds a successful fetch first;
+      // only the real fleet showed it.
+      //
+      // The classifier already carries the fact that test was reaching for.
+      // Producing `Permission denied` requires a completed TCP connect, key
+      // exchange and auth round, so an unreachable host cannot say it -- the
+      // error IS the proof of contact. Which is also why nagging `ssh linuxpc`
+      // at a switched-off box cannot happen: it fails with `Operation timed
+      // out`, which is not auth-class.
       needs_session:
-        peer.snapshot !== null &&
-        peer.last_error !== null &&
-        needsInteractiveAuth(peer.last_error) &&
-        !warm(peer.target),
+        peer.last_error !== null && needsInteractiveAuth(peer.last_error) && !warm(peer.target),
     })),
   };
 }

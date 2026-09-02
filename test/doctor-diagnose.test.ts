@@ -30,6 +30,11 @@ function peer(over: Partial<LocalPeer> & { name: string }): LocalPeer {
     display_name: null,
     murmur_version: "0.2.1",
     snapshot_version: 1,
+    // Defaults describing a HEALTHY peer, so a test opts in to the never-worked
+    // shape rather than inheriting it: most fixtures here are about other
+    // checks and must not accidentally raise this finding.
+    snapshot: {} as never,
+    last_attempt_at: 1_000,
     ...over,
   };
 }
@@ -431,4 +436,32 @@ test("a node that has itself in its own roster is not naming drift", () => {
     ],
   );
   expect(kinds(findings)).toEqual([]);
+});
+
+test("a peer tried and never once successful is reported, as an observation", () => {
+  // The fourth category: not "worked and is now unreachable", and not "never
+  // even attempted" -- tried, repeatedly, and never once answered. Almost always
+  // a setup error a human fixes once: a typo in the target, no remote install,
+  // or an auth wall. None of them resolve by waiting, which is why it is worth
+  // saying out loud rather than leaving as a blank LAST SEEN column.
+  //
+  // `observation`, not `problem`. doctor reserves `problem` for two conditions,
+  // and a peer whose remote murmur is not installed yet is a normal state during
+  // setup -- rating it a fault is how an operator learns to ignore doctor.
+  const findings = diagnose(
+    localNode([
+      peer({ name: "dev", snapshot: null, last_attempt_at: 5_000 }),
+      // Has answered before, currently just unreachable. NOT this category.
+      peer({ name: "linuxpc", snapshot: {} as never, last_attempt_at: 5_000 }),
+      // Never attempted at all -- added seconds ago. Also not this category:
+      // there is no evidence either way yet.
+      peer({ name: "fresh", snapshot: null, last_attempt_at: null }),
+    ]),
+    [],
+  );
+
+  const never = findings.filter((entry) => entry.kind === "never-worked");
+  expect(never).toHaveLength(1);
+  expect(never[0]).toMatchObject({ severity: "observation", subject: "dev" });
+  expect(never[0]?.remedy).toContain("dev");
 });
