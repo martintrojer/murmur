@@ -1,6 +1,11 @@
 import type { Channel } from "./channel.js";
 import { versionCell } from "./cli/peer.js";
-import { describeFailure, MAX_CONCURRENT_PEERS, mapSettled } from "./collector.js";
+import {
+  describeFailure,
+  MAX_CONCURRENT_PEERS,
+  mapSettled,
+  needsInteractiveAuth,
+} from "./collector.js";
 import { parseSnapshot } from "./snapshot.js";
 import type { PeerRecord } from "./types.js";
 
@@ -210,6 +215,7 @@ export type FindingKind =
   | "asymmetry"
   | "island"
   | "never-worked"
+  | "needs-session"
   | "naming-drift"
   | "unsurveyable";
 
@@ -263,6 +269,10 @@ export type LocalPeer = Pick<
   // CLI hands over, so widening this costs nothing at the call site.
   | "snapshot"
   | "last_attempt_at"
+  // The needs-session check's only input. `status` derives the same state from
+  // this field, so doctor reads the field rather than the derived flag -- see
+  // the check itself for why the two cannot be one call.
+  | "last_error"
 >;
 
 /** This node: who it is, and who it has configured. */
@@ -458,6 +468,42 @@ export function diagnose(local: LocalNode, surveys: SurveyResult[]): Finding[] {
       // background reports through `last_error`, which is bounded and
       // normalised, while this prints ssh's own diagnosis in full.
       remedy: `ssh ${peer.target} murmur export`,
+    });
+  }
+
+  // Needs a session -- OBSERVATION, and deliberately NOT the same finding as
+  // never-worked. That one is "tried, never once answered"; this is "answered
+  // before, and now a human has to authenticate". Different causes, different
+  // fixes, and a peer here has real state that is merely going stale.
+  //
+  // `observation`, and that is the whole decision. A 2FA-gated host is
+  // CORRECTLY CONFIGURED and unreachable by design -- murmur cannot type a
+  // token. `problem` is reserved for the two conditions murmur can prove are
+  // wrong, and rating a working setup a fault is how an operator learns to
+  // ignore doctor entirely.
+  //
+  // Derived here from `last_error` rather than read off `status.peers[]`:
+  // `status` is impure by necessity -- it probes for a warm ControlMaster
+  // socket -- and `diagnose` is pure, which is what makes every fleet shape one
+  // object literal in a test. doctor also has STRONGER evidence already in
+  // hand: it just asked every peer directly, so one that answered the survey
+  // needs no session whatever its stored error says.
+  //
+  // This is the FULL list, where the picker header trims to three. That
+  // division of labour is the point of reporting it here at all.
+  for (const peer of local.peers) {
+    if (peer.last_error === null || !needsInteractiveAuth(peer.last_error)) continue;
+    if (byTarget.has(peer.target)) continue;
+    findings.push({
+      kind: "needs-session",
+      severity: "observation",
+      subject: peer.name,
+      message: `${peer.name} refused an unattended login, so it cannot be collected until someone runs \`ssh ${peer.target}\` to open a session`,
+      detail: "needs an interactive login",
+      // Opening any session creates the ControlMaster socket murmur then rides,
+      // so the remedy is the plain login and nothing more -- no murmur
+      // subcommand, because what is missing is the authenticated channel.
+      remedy: `ssh ${peer.target}`,
     });
   }
 

@@ -132,6 +132,11 @@ const GROUP: Record<FindingKind, { heading: string; because: string | null }> = 
     because:
       "Contacted and never once successful, so murmur holds no state for these. Usually a wrong target, no remote murmur, or an auth wall -- none of which resolve by waiting.",
   },
+  "needs-session": {
+    heading: "Waiting on an interactive login",
+    because:
+      "These refused an unattended login and are working as configured -- murmur cannot type a 2FA token. Opening any ssh session leaves a socket murmur can ride.",
+  },
   "naming-drift": {
     heading: "Naming drift",
     because: "Harmless to murmur, confusing to read: one machine, several names.",

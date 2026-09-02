@@ -35,6 +35,7 @@ function peer(over: Partial<LocalPeer> & { name: string }): LocalPeer {
     // checks and must not accidentally raise this finding.
     snapshot: {} as never,
     last_attempt_at: 1_000,
+    last_error: null,
     ...over,
   };
 }
@@ -464,4 +465,50 @@ test("a peer tried and never once successful is reported, as an observation", ()
   expect(never).toHaveLength(1);
   expect(never[0]).toMatchObject({ severity: "observation", subject: "dev" });
   expect(never[0]?.remedy).toContain("dev");
+});
+
+test("a peer needing interactive auth is an observation, not a problem", () => {
+  // Severity is the whole decision here. A 2FA-gated host is correctly
+  // configured and unreachable by design -- not a fault. `problem` is reserved
+  // for two conditions, and diluting it is how an operator learns to ignore
+  // doctor entirely.
+  const findings = diagnose(
+    localNode([
+      peer({ name: "dev", last_error: "dev: Permission denied (publickey,keyboard-interactive)" }),
+      // Unreachable rather than refused: an asleep laptop, not an auth wall.
+      peer({ name: "linuxpc", last_error: "linuxpc: unreachable (No route to host)" }),
+    ]),
+    [],
+  );
+
+  const finding = only(findings, "needs-session");
+  expect(finding).toMatchObject({ severity: "observation", subject: "dev" });
+  expect(finding.message).toContain("ssh dev");
+  expect(finding.remedy).toBe("ssh dev");
+});
+
+test("doctor lists every gated peer, where the picker trims", () => {
+  // The division of labour the spec sets: the header is one trimmed line, and
+  // this is the full list for anyone who wants it.
+  const gated = (name: string) =>
+    peer({ name, last_error: `${name}: Permission denied (publickey)` });
+  const findings = diagnose(
+    localNode([gated("dev"), gated("dev2"), gated("dev3"), gated("dev4")]),
+    [],
+  );
+
+  expect(findings.filter((entry) => entry.kind === "needs-session")).toHaveLength(4);
+});
+
+test("a gated peer that answered the survey just now is not reported", () => {
+  // The stored `last_error` is history; an answer seconds ago is the present.
+  // doctor's own survey is stronger evidence than the warm-socket probe
+  // `status` has to fall back on, and it is already in hand.
+  const findings = diagnose(
+    localNode([
+      peer({ name: "dev", last_error: "dev: Permission denied (publickey)", host_id: "DEV" }),
+    ]),
+    [surveyed({ target: "dev", host_id: "DEV", roster: [row("mtrojer-mac", "mtrojer-mac")] })],
+  );
+  expect(kinds(findings)).not.toContain("needs-session");
 });
