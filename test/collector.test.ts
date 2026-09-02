@@ -9,6 +9,7 @@ import {
   collect,
   describeFailure,
   MAX_CONCURRENT_PEERS,
+  needsInteractiveAuth,
 } from "../src/collector.js";
 import { asPaneId, asSessionId, asWindowId } from "../src/ids.js";
 import { openStore, type Store } from "../src/store.js";
@@ -600,4 +601,37 @@ test("an unlucky draw still cannot push a peer into staleness", async () => {
   expect(COLLECT_FLOOR_MS + COLLECT_JITTER_MS / 2).toBeLessThan(STALENESS_MS);
   // And the earliest edge stays positive, so jitter can never mean "always due".
   expect(COLLECT_JITTER_MS / 2).toBeLessThan(COLLECT_FLOOR_MS);
+});
+
+test("an auth refusal is distinguished from an unreachable host", () => {
+  // Real strings, captured from a 2FA-gated host and from a proxy that could not
+  // establish anything. Both arrive as `last_error`, and conflating them is the
+  // bug: only the first is fixable by the operator running `ssh <host>`.
+  //
+  // The host this exists for answers `publickey` with *partial success* and then
+  // demands `keyboard-interactive`, which no cached credential satisfies.
+  expect(needsInteractiveAuth("Permission denied (keyboard-interactive).")).toBe(true);
+  // Any `Permission denied`, not the 2FA spelling: a publickey-only refusal is
+  // the same problem for an operator and has the same remedy.
+  expect(needsInteractiveAuth("Permission denied (publickey).")).toBe(true);
+
+  // MUST NOT match. This is an x2ssh proxy failing to establish a connection at
+  // all, which `isUnreachable` already claims correctly -- and treating it as an
+  // auth problem would tell the operator to re-authenticate at a host that is
+  // simply unreachable. It is also the error the local `dev` peer currently
+  // holds, so getting this wrong would fire the prompt on the wrong evidence.
+  expect(needsInteractiveAuth("Connection closed by UNKNOWN port 65535")).toBe(false);
+  expect(needsInteractiveAuth("ssh: connect to host dev port 22: Operation timed out")).toBe(false);
+  expect(needsInteractiveAuth("Host is down")).toBe(false);
+});
+
+test("the auth category does not overlap unreachability", () => {
+  // `isUnreachable` deliberately excludes `Permission denied` -- an auth
+  // misconfiguration is reachable-but-broken and an operator task, not a
+  // sleeping host. This pins that the new category is disjoint from it by
+  // construction rather than by which check happens to run first.
+  const auth = "Permission denied (keyboard-interactive).";
+
+  expect(needsInteractiveAuth(auth)).toBe(true);
+  expect(describeFailure("dev", auth)).not.toContain("unreachable");
 });

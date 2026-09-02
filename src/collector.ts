@@ -224,6 +224,35 @@ function isUnreachable(message: string): boolean {
 }
 
 /**
+ * Whether a failure means "a human must authenticate", rather than "the host
+ * could not be reached".
+ *
+ * The third category, and the two above do not cover it: this is reachable,
+ * authenticated as far as it goes, and blocked on a person. A host with
+ * two-factor auth answers `publickey` with *partial success* and then demands
+ * `keyboard-interactive`, which no cached credential and no agent can satisfy --
+ * verified against a real one, where plain `ssh` with none of murmur's options
+ * fails identically.
+ *
+ * Any `Permission denied`, not the 2FA spelling specifically: a publickey-only
+ * refusal is the same problem for an operator, and both are fixed the same way,
+ * by opening a session by hand so a ControlMaster socket exists to ride.
+ *
+ * Disjoint from `isUnreachable` BY CONSTRUCTION, not by ordering: that predicate
+ * deliberately excludes `Permission denied`, for the reason stated on it -- an
+ * auth misconfiguration filed under "asleep, probably" is how a fixable setup
+ * error stays invisible for weeks. This is the other half of that decision.
+ *
+ * Deliberately does NOT match a proxy's `Connection closed by UNKNOWN port N`.
+ * That is a failure to establish anything at all, which `isUnreachable` claims
+ * correctly, and prompting an operator to re-authenticate at an unreachable
+ * host would be advice they cannot act on.
+ */
+export function needsInteractiveAuth(message: string): boolean {
+  return /Permission denied/i.test(message);
+}
+
+/**
  * Drop Node's `Command failed: <argv>` first line, keeping the child's output.
  *
  * Every ssh-channel rejection arrives in that shape, so the first ~140
