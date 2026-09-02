@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdirSync, rmSync } from "node:fs";
+import { closeSync, mkdirSync, openSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
 import Database from "better-sqlite3";
 import type { NodeIdentity } from "./identity.js";
@@ -34,6 +34,15 @@ import { RENDER_PRIORITY } from "./view.js";
  * there is no additive path to forget to use.
  */
 const SCHEMA_USER_VERSION = 3;
+
+/**
+ * How long to wait for another process's reset before stealing its lock.
+ *
+ * A reset is a handful of file operations, so a lock held longer than this is a
+ * dead holder rather than a slow one. Matches `busy_timeout`, since both bound
+ * "wait for another process to finish writing".
+ */
+const RESET_LOCK_TIMEOUT_MS = 5_000;
 
 const SCHEMA = `
   CREATE TABLE agents (
@@ -163,6 +172,54 @@ type PeerDbRow = {
   snapshot_version: number | null;
 };
 
+/**
+ * Hold an exclusive lock beside the database while `work` runs, and return its
+ * result.
+ *
+ * Serialises the salvage-and-delete sequence across processes. Best effort in
+ * both directions, deliberately: a lock that could make murmur refuse to start
+ * would be worse than the race it prevents, so a lock held implausibly long is
+ * stolen and any inability to lock falls through to doing the work anyway.
+ *
+ * `wx` is atomic create-or-fail, which is what makes the file a lock. The wait
+ * is a synchronous spin because every caller of `openStore` is synchronous --
+ * `Atomics.wait` needs a SharedArrayBuffer and buys nothing here, since the
+ * critical section is a few file operations and contention is a once-per-
+ * upgrade burst rather than a steady state.
+ */
+function withResetLock<T>(path: string, work: () => T): T {
+  const lock = `${path}.reset-lock`;
+  const deadline = Date.now() + RESET_LOCK_TIMEOUT_MS;
+  let held = false;
+  while (!held) {
+    try {
+      closeSync(openSync(lock, "wx"));
+      held = true;
+    } catch {
+      // Still held by someone else. Keep trying until the deadline, then treat
+      // the holder as dead -- a lock this old means a process died mid-reset,
+      // and hanging a status-bar tick forever is worse than stealing it.
+      if (Date.now() < deadline) continue;
+      try {
+        rmSync(lock, { force: true });
+      } catch {
+        break; // Cannot even remove it; proceed unlocked.
+      }
+    }
+  }
+  try {
+    return work();
+  } finally {
+    if (held) {
+      try {
+        rmSync(lock, { force: true });
+      } catch {
+        // Left behind; the next opener's timeout steals it.
+      }
+    }
+  }
+}
+
 /** Peer names and targets: the two fields a human typed, and all we salvage. */
 function salvagePeers(path: string): { name: string; target: string }[] {
   try {
@@ -186,18 +243,47 @@ function salvagePeers(path: string): { name: string; target: string }[] {
   }
 }
 
+/**
+ * Whether the file at `path` must be thrown away and recreated.
+ *
+ * Three outcomes collapse into two answers, and getting that wrong was a bug:
+ * a file that opens and matches needs nothing, a file that opens and disagrees
+ * needs a reset, and a file murmur CANNOT READ needs one just as much.
+ *
+ * The last case is the subtle one. better-sqlite3's constructor does not touch
+ * the file, so a corrupt `state.db` constructs fine and the first `pragma` is
+ * what throws. That throw used to land in a catch that returned false -- "no
+ * reset needed" for precisely the file that needed one -- and every command
+ * that opened the store then died on the same pragma with a raw SqliteError,
+ * including the status bar on every tick and every focus hook. The only
+ * recovery was deleting the file by hand.
+ *
+ * Resetting is the right answer because nothing here is history: the store
+ * holds current state only, every fact in it is re-derived by the next collect
+ * or the next claim, so discarding an unusable file costs nothing. That is the
+ * same argument the version-mismatch path already makes.
+ *
+ * A missing file is the one case that is NOT a reset: there is nothing to
+ * delete, and `openStore` creates the schema anyway.
+ */
 function needsReset(path: string): boolean {
+  let existing: Database.Database;
   try {
-    const existing = new Database(path, { fileMustExist: true });
-    try {
-      return (
-        ((existing.pragma("user_version", { simple: true }) as number) ?? 0) !== SCHEMA_USER_VERSION
-      );
-    } finally {
-      existing.close();
-    }
+    existing = new Database(path, { fileMustExist: true });
   } catch {
+    // No file yet. Nothing to remove, and the schema is created below.
     return false;
+  }
+  try {
+    return (
+      ((existing.pragma("user_version", { simple: true }) as number) ?? 0) !== SCHEMA_USER_VERSION
+    );
+  } catch {
+    // Opened but unreadable: not a database, or damaged past the header. This
+    // is the case that used to answer `false` and crash every later command.
+    return true;
+  } finally {
+    existing.close();
   }
 }
 
@@ -242,24 +328,85 @@ export function openStore(): Store {
   const path = dbPath();
   mkdirSync(dirname(path), { recursive: true });
 
-  const salvaged = salvagePeers(path);
-  if (needsReset(path)) {
-    for (const suffix of ["", "-wal", "-shm"]) rmSync(`${path}${suffix}`, { force: true });
-  }
+  // Salvage, decide and delete under ONE lock, because deleting the database
+  // FILE is the operation SQLite cannot serialise for us: there is no handle to
+  // hold a transaction on across removing the file it lives in.
+  //
+  // Unlocked, this lost data a person typed, reproducibly -- peer rows vanished
+  // in 6 of 12 concurrent upgrade runs measured against `dist/`, and still 4 of
+  // 12 once the schema step alone was serialised. Each process salvaged, each
+  // agreed a reset was needed, and then each deleted the file, `-wal` included,
+  // so one `rmSync` destroyed the database another had just rebuilt and took
+  // its salvage with it.
+  //
+  // Peers are the only rows worth this trouble: every other fact is re-observed
+  // within a tick, while a name and target cannot be re-derived from anything.
+  // The whole sequence under ONE lock: salvage, delete, rebuild. Deleting the
+  // database FILE is the operation SQLite cannot serialise for us, since there
+  // is no handle to hold a transaction on across removing the file it lives in.
+  //
+  // Unlocked, this lost data a person typed, reproducibly: peer rows vanished in
+  // 6 of 12 concurrent upgrade runs measured against `dist/`. Each process
+  // salvaged, each agreed a reset was needed, and then each deleted the file,
+  // `-wal` included, so one `rmSync` destroyed the database another had just
+  // rebuilt and took its salvage with it.
+  //
+  // Delete and rebuild must be in the SAME critical section, which took three
+  // attempts to get right: serialising the delete alone still lost the peer
+  // about 1 run in 25, because the winner dropped the lock with the file gone
+  // and the schema not yet written, and whoever entered that window salvaged
+  // nothing from a database that did not exist yet. The invariant is that no
+  // other process ever observes the store mid-rebuild.
+  //
+  // Peers are the only rows worth this trouble: every other fact is re-observed
+  // within a tick, while a name and target cannot be re-derived from anything.
+  const database = withResetLock(path, () => {
+    const salvaged = salvagePeers(path);
+    if (needsReset(path)) {
+      for (const suffix of ["", "-wal", "-shm"]) rmSync(`${path}${suffix}`, { force: true });
+    }
 
-  const database = new Database(path);
-  database.pragma("journal_mode = WAL");
-  database.pragma("busy_timeout = 5000");
-  const version = (database.pragma("user_version", { simple: true }) as number) ?? 0;
-  if (version !== SCHEMA_USER_VERSION) {
-    database.exec(SCHEMA);
-    database.pragma(`user_version = ${SCHEMA_USER_VERSION}`);
-    // Re-inserted with every OBSERVED column null: a salvaged peer has no
-    // snapshot and has never been fetched, and saying otherwise would render a
-    // never-reached host as fresh.
-    const restore = database.prepare("INSERT OR IGNORE INTO peers (name, target) VALUES (?, ?)");
-    for (const peer of salvaged) restore.run(peer.name, peer.target);
-  }
+    const opened = new Database(path);
+    opened.pragma("journal_mode = WAL");
+    opened.pragma("busy_timeout = 5000");
+
+    // Transactional and `.immediate` even while holding the file lock, because
+    // that lock is best effort by design -- it can be stolen after a timeout,
+    // and failing to take it falls through to doing the work anyway -- so this
+    // has to stay correct without it.
+    //
+    // `.immediate` for the same reason `claimAgent` uses it, in the same terms:
+    // this reads `user_version` and then writes, so a deferred transaction
+    // starts as a READER and must upgrade, which fails the loser with
+    // SQLITE_BUSY_SNAPSHOT rather than making it wait. Taking the write lock up
+    // front means a second process blocks on `busy_timeout` and then finds the
+    // version already current, so it creates nothing. Measured against `dist/`:
+    // 23 failures over 20 trials of 8 concurrent opens, against 0 after.
+    //
+    // The re-read INSIDE the transaction is the other half. Without it the
+    // loser would hold the lock and still act on the version it read before
+    // waiting for it, which is the original bug with extra steps.
+    opened
+      .transaction(() => {
+        const version = (opened.pragma("user_version", { simple: true }) as number) ?? 0;
+        if (version === SCHEMA_USER_VERSION) return;
+        opened.exec(SCHEMA);
+        opened.pragma(`user_version = ${SCHEMA_USER_VERSION}`);
+        // Re-inserted with every OBSERVED column null: a salvaged peer has no
+        // snapshot and has never been fetched, and saying otherwise would
+        // render a never-reached host as fresh.
+        const restore = opened.prepare("INSERT OR IGNORE INTO peers (name, target) VALUES (?, ?)");
+        for (const peer of salvaged) restore.run(peer.name, peer.target);
+      })
+      .immediate();
+
+    // Forced out of the WAL before the lock drops, so the rebuilt rows live in
+    // the database file itself. Otherwise the salvage sits in `-wal` and the
+    // next process to decide on a reset deletes it -- the original bug, one
+    // step later.
+    opened.pragma("wal_checkpoint(TRUNCATE)");
+    return opened;
+  });
 
   const selectAgentByPane = database.prepare("SELECT * FROM agents WHERE pane = ?");
   const insertAgent = database.prepare(`

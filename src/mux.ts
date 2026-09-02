@@ -1,12 +1,5 @@
 import { execFileSync } from "node:child_process";
-import {
-  asPaneId,
-  asSessionId,
-  asWindowId,
-  type PaneId,
-  type SessionId,
-  type WindowId,
-} from "./ids.js";
+import { asPaneId, asSessionId, asWindowId, type PaneId, type WindowId } from "./ids.js";
 import type { Location } from "./types.js";
 import type { RenderState } from "./view.js";
 
@@ -19,10 +12,12 @@ export interface Mux {
   // moving between windows must clear the badge it left behind, since nothing
   // else knows it moved.
   setWindowBadge(window: WindowId, state: RenderState | null): void;
-  // Reports whether the attach happened. runTmux swallows failures into null,
-  // and a silently failed jump looked exactly like "enter did nothing" -- the
-  // symptom the remote probe exists to prevent, reproduced locally.
-  attach(session: SessionId, window: WindowId): boolean;
+  // Takes the PANE, which is the address, so one call resolves session, window
+  // and pane together. Reports whether the attach happened: runTmux swallows
+  // failures into null, and a silently failed jump looked exactly like "enter
+  // did nothing" -- the symptom the remote probe exists to prevent, reproduced
+  // locally.
+  attach(pane: PaneId): boolean;
   windowForPane(pane: PaneId): WindowId | null;
   panesInWindow(window: WindowId): PaneId[];
   capture(pane: PaneId, lines?: number): string | null;
@@ -165,17 +160,29 @@ export const tmux: Mux = {
     runTmux(["refresh-client", "-S"]);
   },
 
-  attach(session, window) {
-    // Two steps: switch-client moves the client between sessions, select-window
-    // moves that session to the right window. switch-client alone is a no-op
-    // when the target is in the session you are already attached to -- the
-    // common case for a local agent, and why "enter" appeared to do nothing.
+  attach(pane) {
+    // ONE call, targeting the pane. tmux resolves a bare `%N` to its session,
+    // window and pane together, which is the whole reason this takes the
+    // address rather than a session and window.
     //
-    // Only select-window decides the result: switch-client legitimately fails
-    // when there is no client to switch (outside tmux), and treating that as a
-    // failed jump would report an error for a working attach.
-    runTmux(["switch-client", "-t", session]);
-    return runTmux(["select-window", "-t", window]) !== null;
+    // The two-step it replaced (`switch-client -t $session` then
+    // `select-window -t @window`) was wrong twice over:
+    //
+    //   It landed on the window's ACTIVE pane, not the one asked for. A window
+    //   holding an agent beside a shell put the cursor on whichever was last
+    //   focused, so enter on the agent row selected the shell.
+    //
+    //   It targeted the RECORDED window id, which a live pane routinely
+    //   outlives -- `move-pane` and `break-pane` keep the pane and change the
+    //   window. `jumpToAgent` proves the pane is alive and then failed to
+    //   attach to it, reporting `attach_failed` for a healthy moved agent.
+    //   test/mux-targets.test.ts pins that a stale window id is not a usable
+    //   target, which is the mechanism.
+    //
+    // Both were symptoms of addressing by window when the model says the pane
+    // is the address, so both go away together here rather than being patched
+    // one at a time.
+    return runTmux(["switch-client", "-t", pane]) !== null;
   },
 
   // Sibling panes, for deciding whether an unowned pane may clear the window's

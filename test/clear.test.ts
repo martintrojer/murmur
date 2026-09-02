@@ -197,3 +197,59 @@ test("clear is silent and total when nothing can answer", () => {
     ),
   ).not.toThrow();
 });
+
+test("another window's attention cannot light this window's badge", () => {
+  // The badge is scoped to the FOCUSED window, and `windowBadge` enforces that
+  // by filtering local panes down to the ones tmux says are in it. Nothing
+  // tested the filter: every other case here stubs `panesInWindow` to return
+  // every seeded pane, so the filter was a no-op in all of them and deleting it
+  // left 342 tests passing.
+  //
+  // Without it, the badge is computed from EVERY pane on the machine, so a
+  // blocked agent in some other window projects `blocked` onto whichever window
+  // you happen to focus.
+  seed((store) => {
+    store.requestAttention({
+      kind: "blocked",
+      location: location("%elsewhere", "@9"),
+      message: "",
+      source: "pi",
+    });
+  });
+  const badges = badgeRecorder();
+
+  clearPane(
+    "%focused",
+    fakeMux({
+      windowForPane: () => asWindowId("@1"),
+      // tmux's answer is the authority on membership, and it says the blocked
+      // pane is not here.
+      panesInWindow: () => [asPaneId("%focused")],
+      setWindowBadge: badges.set,
+    }),
+  );
+
+  expect(badges.writes).toEqual([["@1", null]]);
+});
+
+test("a window whose only agent is idle clears to null, not to idle", () => {
+  // `idle` is the absence of a signal, so it must never be painted as one: the
+  // badge option is unset instead. The `state !== "idle"` guard in windowBadge
+  // is what does that, and it was also unprotected -- mutating it away kept the
+  // whole suite green while every focused window started reporting `idle`.
+  seed((store) => {
+    store.claimAgent({ location: location("%idle"), owner_pid: process.pid, meta: META });
+  });
+  const badges = badgeRecorder();
+
+  clearPane(
+    "%idle",
+    fakeMux({
+      windowForPane: () => asWindowId("@1"),
+      panesInWindow: () => [asPaneId("%idle")],
+      setWindowBadge: badges.set,
+    }),
+  );
+
+  expect(badges.writes).toEqual([["@1", null]]);
+});

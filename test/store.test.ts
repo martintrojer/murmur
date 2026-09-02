@@ -1,4 +1,5 @@
-import { mkdtempSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
@@ -699,4 +700,37 @@ test("a database from an older version is recreated with the peer names salvaged
     },
   ]);
   expect(reopened.localPanes()).toEqual([]);
+});
+
+test("a corrupt database is rebuilt rather than crashing every command", () => {
+  // The whole reset strategy exists for a file murmur cannot use, and this was
+  // the one case that did not get it. better-sqlite3's constructor does not READ
+  // the file, so a garbage state.db constructs fine and the `user_version`
+  // pragma is what throws -- straight through `needsReset`'s catch, which
+  // answered "no reset needed" for precisely the file that needed one. Every
+  // command that opens the store then died on the same pragma with a raw
+  // SqliteError: the status bar on every tick, and every focus hook.
+  //
+  // Nothing here is history, so throwing it away is free. That is exactly the
+  // argument the version-mismatch path already makes.
+  const s = store();
+  s.addPeer("dev", "dev.example");
+  s.close();
+
+  // Not a truncated or half-written file: bytes that are definitively not a
+  // database, which is what a full disk or a killed write leaves behind.
+  writeFileSync(dbPath(), randomBytes(4096));
+  for (const suffix of ["-wal", "-shm"]) rmSync(`${dbPath()}${suffix}`, { force: true });
+
+  // The assertion is simply that this does not throw.
+  const reopened = store();
+  expect(reopened.localPanes()).toEqual([]);
+  // Salvage is best-effort and correctly gives up here: an unreadable file has
+  // no peer table to read, so the names a human typed are genuinely gone. The
+  // claim is that murmur RUNS, not that it recovers data that no longer exists.
+  expect(reopened.peers()).toEqual([]);
+
+  // And the rebuilt file is a working store, not merely an opened one.
+  reopened.addPeer("bubba", "bubba.example");
+  expect(reopened.peers().map((peer) => peer.name)).toEqual(["bubba"]);
 });

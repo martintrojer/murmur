@@ -511,8 +511,8 @@ test("a local pane that MOVED window is still jumped to, and nothing is written"
       // the only liveness question tmux is asked, which is the structural half
       // of this fix.
       livePanes: () => new Set([asPaneId("%9")]),
-      attach: (session, window) => {
-        attempted.push(`${session}:${window}`);
+      attach: (pane) => {
+        attempted.push(pane);
         return true;
       },
     }),
@@ -520,7 +520,10 @@ test("a local pane that MOVED window is still jumped to, and nothing is written"
 
   // Attempted, not skipped: the jump is the whole point of not deleting.
   expect(result).toEqual({ ok: true });
-  expect(attempted).toEqual(["$0:@9"]);
+  // The PANE, not `$0:@9`. The recorded window is exactly what went stale when
+  // the pane moved, so attaching by it condemned the healthy agent this test
+  // exists to protect -- the liveness check passed and the attach then failed.
+  expect(attempted).toEqual(["%9"]);
   expect(snapshotOfEverything()).toBe(before);
 });
 

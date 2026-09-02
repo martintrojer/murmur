@@ -111,11 +111,33 @@ export type Runner = (
   inherit?: boolean,
 ) => { status: number | null; stdout: string; failed: boolean };
 
-const spawnRunner: Runner = (file, args, inherit = false) => {
+/**
+ * Bounds the PROBE, and only the probe.
+ *
+ * A probe runs on the picker's interactive path, so it must not hang the list;
+ * ten seconds is far above a warm ssh and still finite for a sleeping laptop.
+ */
+const PROBE_TIMEOUT_MS = 10_000;
+
+/**
+ * Exported for its TIMEOUT POSTURE only, which no fake can assert: every jump
+ * test injects a `Runner`, so the real one's options object was the one thing
+ * with no coverage -- and a hard kill on the interactive path is exactly the
+ * kind of bug that hides there.
+ */
+export const spawnRunner: Runner = (file, args, inherit = false) => {
   const result = spawnSync(file, args, {
     encoding: "utf8",
-    timeout: 10_000,
-    ...(inherit ? { stdio: "inherit" as const } : {}),
+    // `inherit` means the user is SITTING IN this process -- the outside-tmux
+    // ssh attach -- and a session a human is working in must have no deadline.
+    // spawnSync's timeout is a hard kill, so the shared 10s SIGTERMed the ssh
+    // ten seconds into a working remote pane, and because that leaves
+    // `status: null` with ETIMEDOUT, `failed` went true and murmur reported
+    // "ssh attach failed" with exit 1 for a session that was fine.
+    //
+    // Two callers, two postures: the same lesson as SSH_OPTIONS in channel.ts,
+    // where one posture reused across two purposes was also the bug.
+    ...(inherit ? { stdio: "inherit" as const } : { timeout: PROBE_TIMEOUT_MS }),
   });
   return {
     status: result.status,
@@ -161,13 +183,18 @@ export function jumpToAgent(
         message: `${agentLabel(agent)} is gone -- its pane no longer exists.`,
       };
     }
-    // Reported, not assumed. A failed select-window is the local twin of the
-    // remote symptom: the picker closes, nothing moves, nothing says why.
-    if (!mux.attach(agent.session, agent.window)) {
+    // Reported, not assumed. A failed attach is the local twin of the remote
+    // symptom: the picker closes, nothing moves, nothing says why.
+    //
+    // Keyed on the PANE, the same thing liveness was just asked about, so the
+    // check above and the action here cannot disagree about what is being
+    // jumped to. Passing the recorded window instead meant a pane that had
+    // moved passed the liveness check and then failed to attach.
+    if (!mux.attach(agent.pane)) {
       return {
         ok: false,
         reason: "attach_failed",
-        message: `could not attach to ${agentLabel(agent)} (tmux select-window failed).`,
+        message: `could not attach to ${agentLabel(agent)} (tmux switch-client failed).`,
       };
     }
     return { ok: true };
@@ -316,7 +343,9 @@ export function jumpToAgent(
   }
 
   // Outside tmux there is no popup to escape, so run it directly. stdio is
-  // inherited, so this blocks until the user leaves the remote session.
+  // inherited, which both hands the terminal to the remote session and -- see
+  // `spawnRunner` -- is what waives the probe's timeout, so this blocks for as
+  // long as the user stays rather than being killed ten seconds in.
   //
   // None of the wrapper machinery above applies, and must not: there is no local
   // client to switch, nothing to return to but the invoking shell, and no local

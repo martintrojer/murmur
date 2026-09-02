@@ -152,3 +152,37 @@ test("a bare target cannot address a session whose name starts with a sigil", ()
   // command a human types at it by hand, not just for murmur's own calls.
   expect(rigFails("set-option", "-t", exactPaneTarget("@sigil"), "status", "off")).toBe(false);
 });
+
+test("a pane id as a switch-client target selects the pane, not just its window", () => {
+  // The address in this model is the PANE, and `switch-client -t %pane` is what
+  // makes that true at attach time: it resolves session, window and pane in one
+  // call. The two-step it replaced -- switch-client to the session, then
+  // select-window -- moved the client to the right WINDOW and left whichever
+  // pane that window last had active as the active one. In a window holding an
+  // agent beside a shell, pressing enter on the agent row landed on the shell.
+  //
+  // A real server, because this is a claim about what tmux does with a target,
+  // and a fake mux asserting on argv would only restate the implementation.
+  rig("new-session", "-d", "-s", "picked", "sleep 600");
+  const window = rig("display-message", "-t", "picked", "-p", "#{window_id}");
+  const first = rig("display-message", "-t", "picked", "-p", "#{pane_id}");
+  const second = rig("split-window", "-t", window, "-P", "-F", "#{pane_id}", "sleep 600");
+
+  // The split leaves the NEW pane active, so `first` is the non-active pane in
+  // its own window -- the case that used to be unreachable.
+  expect(rig("display-message", "-t", window, "-p", "#{pane_id}")).toBe(second);
+
+  // No client is attached to this server, so switch-client cannot move one and
+  // `select-pane` is the assertable half of what the target resolves to. The
+  // claim under test is that a bare pane id is a valid, precise target.
+  rig("select-pane", "-t", first);
+  expect(rig("display-message", "-t", window, "-p", "#{pane_id}")).toBe(first);
+
+  // And the window-level target is genuinely ambiguous about panes: addressing
+  // the window says nothing about which pane becomes active, which is why the
+  // old two-step could not express "this pane".
+  rig("select-pane", "-t", second);
+  expect(rig("display-message", "-t", window, "-p", "#{pane_id}")).toBe(second);
+
+  rig("kill-session", "-t", exactSession("picked"));
+});
