@@ -8,7 +8,7 @@ import {
   terminalText,
 } from "../agents.js";
 import { type GlanceRunner, glance } from "../glance.js";
-import { status, statusWithCollect } from "../status.js";
+import { type Status, status, statusWithCollect } from "../status.js";
 import { openStore, type Store } from "../store.js";
 import {
   age,
@@ -175,6 +175,44 @@ export function headerRow(showHost: boolean): string {
   ]
     .filter(Boolean)
     .join(" ");
+}
+
+/** How many gated peers the header names before it stops. */
+const NOTICE_PEERS = 3;
+
+/**
+ * The header line for peers that need an interactive session, or null.
+ *
+ * The header, not the prompt or a row, and each rejection matters: the prompt is
+ * where `alt-a` stores the crew-toggle state via `$FZF_PROMPT`, so a
+ * variable-length string there would collide with it; a synthetic row would
+ * break the invariant that every row is a jumpable pane; and the preview is
+ * unreachable when the peer contributes no rows at all -- which is exactly when
+ * a lapsed session leaves the reader blind.
+ *
+ * Sorted oldest-first because that is the peer whose rows are most likely to
+ * mislead, and TRIMMED with no counter: a truncated list plus a count is more
+ * furniture than one header line can carry, and `murmur doctor` has the full
+ * list.
+ */
+export function sessionNotice(peers: Status["peers"], now = Date.now()): string | null {
+  const gated = peers
+    .filter((peer) => peer.needs_session)
+    // Null sorts first: never-reached is the oldest thing there is.
+    .sort((left, right) => (left.fetched_at ?? 0) - (right.fetched_at ?? 0));
+  if (gated.length === 0) return null;
+
+  const named = gated.slice(0, NOTICE_PEERS).map((peer) => peer.name);
+  const oldest = gated[0];
+  // NOT `const age` -- `age` is already imported from view.js at the top of
+  // this file, so that would shadow the function called on the next line.
+  const seen =
+    oldest?.fetched_at === null || oldest?.fetched_at === undefined
+      ? "never"
+      : // `age()` returns "" under a minute, which would read as "last seen )".
+        age(now - oldest.fetched_at) || "just now";
+
+  return `${DIM}${named.join(", ")}: re-auth needed (last seen ${seen}) \u2014 ssh ${named[0]}${RESET}`;
 }
 
 /**
@@ -552,6 +590,7 @@ export async function runPick(
         `filter: ${FILTER_KEYS.map(([key, query]) => `${key.replace("alt-", "M-")} ${query}`).join(
           " ",
         )}   M-a toggle crew`,
+        sessionNotice(view.peers) ?? "",
         headerRow(showHost),
       ]
         .filter(Boolean)

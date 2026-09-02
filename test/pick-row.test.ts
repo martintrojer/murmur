@@ -7,9 +7,11 @@ import {
   isPopup,
   isVisible,
   pickerRow,
+  sessionNotice,
 } from "../src/cli/pick.js";
 import { asPaneId, asSessionId, asWindowId } from "../src/ids.js";
 import { tmux } from "../src/mux.js";
+import type { Status } from "../src/status.js";
 import { type PaneView, RENDER_PRIORITY } from "../src/view.js";
 
 const base: PaneView = {
@@ -376,4 +378,76 @@ test("the row and the preview name a pane identically", () => {
       .trimEnd();
     expect(cell, JSON.stringify(over)).toBe(agentLabel(agent));
   }
+});
+
+/** A peer in the shape a lapsed interactive session leaves behind. */
+function gated(name: string, fetchedAt: number | null): Status["peers"][number] {
+  return {
+    name,
+    display_name: null,
+    fetched_at: fetchedAt,
+    snapshot_at: fetchedAt,
+    last_error: "Permission denied (keyboard-interactive).",
+    stale: true,
+    needs_session: true,
+  };
+}
+
+test("no notice when nothing needs a session", () => {
+  // The line must be absent, not empty: an always-present header row would be
+  // furniture in the common case, and the picker's header is already three lines
+  // inside a popup 60% of the screen tall.
+  expect(sessionNotice([])).toBeNull();
+  expect(sessionNotice([{ ...gated("dev", 1_000), needs_session: false }])).toBeNull();
+});
+
+test("the notice names the peer, its age, and the exact command", () => {
+  // Three facts the operator acts on: WHICH peer, HOW STALE the rows on screen
+  // are, and the command that fixes it. The age is what answers "do I care right
+  // now" without murmur inventing a staleness threshold.
+  const notice = sessionNotice([gated("dev", 1_000)], 1_000 + 3_600_000);
+
+  expect(notice).toContain("dev");
+  expect(notice).toContain("1h");
+  expect(notice).toContain("ssh dev");
+});
+
+test("a peer never reached reads as never, not as an age", () => {
+  // `fetched_at` is null before the first successful collect, and "0m ago" would
+  // be a lie about data that does not exist.
+  const notice = sessionNotice([gated("dev", null)], 5_000);
+
+  expect(notice).toContain("never");
+});
+
+test("several gated peers collapse into one line, oldest first", () => {
+  // One line, because the header cannot afford one per peer. Oldest first
+  // because that is the one whose rows are most likely to mislead.
+  const notice = sessionNotice(
+    [gated("bubba", 900_000), gated("dev", 1_000), gated("macmini", 500_000)],
+    1_000_000,
+  );
+
+  // The exact joined list, not `/dev.*macmini.*bubba/`. That pattern passes on
+  // an UNSORTED notice too, because the remedy at the tail repeats the first
+  // name -- verified by mutation: deleting the sort kept the loose regex green.
+  expect(notice).toContain("dev, macmini, bubba");
+  expect(notice?.split("\n")).toHaveLength(1);
+});
+
+test("the peer list is trimmed rather than counted", () => {
+  // Trimmed with no counter, per the spec: a truncated list plus "+3 more" is
+  // more furniture than the header can afford, and `murmur doctor` carries the
+  // full list for anyone who wants it.
+  const many = Array.from({ length: 6 }, (_, index) => gated(`peer-${index}`, 1_000));
+
+  const notice = sessionNotice(many, 5_000);
+
+  expect(notice).not.toMatch(/\+\d|more|\(\d/);
+  expect(notice?.length).toBeLessThan(120);
+  // Trimmed, asserted by NAME. The length bound alone does not catch it: six
+  // short fixture names fit inside 120 columns, so an untrimmed notice passed
+  // it -- verified by mutation on `slice(0, NOTICE_PEERS)`.
+  expect(notice).toContain("peer-2");
+  expect(notice).not.toContain("peer-3");
 });
