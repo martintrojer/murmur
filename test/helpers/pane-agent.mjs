@@ -46,13 +46,26 @@ await handlers.get(state === "working" ? "agent_start" : "agent_end")?.();
 // reason it cannot report a verdict below.
 const { openStore } = await import(process.env.MURMUR_STORE_MODULE);
 const deadline = Date.now() + 10_000;
+// The ACTIVITY this run should have produced, not merely "a row exists".
+//
+// Waiting for the row was subtly wrong and flaked about 1 run in 6 under
+// parallel load: `claimAgent` inserts `activity: 'stopped'` and the agent_start
+// handler sets `running` a moment later, so a row appears BEFORE the state the
+// caller asserts on. This process printed RAN in that window, the test read the
+// store immediately, and got `stopped`.
+//
+// A nested process is refused and writes nothing, so for it the incumbent's
+// value is whatever the owner left -- which is why a miss here still breaks on
+// the deadline rather than hanging: absence of our own write is the correct
+// outcome for that case and cannot be waited for.
+const wanted = state === "working" ? "running" : "stopped";
 for (;;) {
   const store = openStore();
   let seen = false;
   try {
-    // Any row for this pane means the claim resolved: either we own it, or the
-    // incumbent does and we were refused. Both are settled states.
-    seen = store.localPanes().some((pane) => pane.pane === process.env.TMUX_PANE);
+    seen = store
+      .localPanes()
+      .some((pane) => pane.pane === process.env.TMUX_PANE && pane.agent?.activity === wanted);
   } finally {
     store.close();
   }

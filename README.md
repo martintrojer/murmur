@@ -276,8 +276,9 @@ already full-screen, and you land back at your shell prompt on exit.
 
 ## Status
 
-**0.2.2.** In daily use on one machine and verified across two over real ssh.
-It is new and not battle-tested. The known gaps and the accepted limitations are
+**0.2.3.** In daily use on one machine and verified across a five-peer fleet
+over real ssh, including a host that demands a second factor per connection. It
+is new and not battle-tested. The known gaps and the accepted limitations are
 listed at the end of [ARCHITECTURE.md](ARCHITECTURE.md#known-gaps).
 
 **A host that demands interactive auth needs a master session open.** Some
@@ -319,7 +320,7 @@ attach to. A plain `ssh -M` alongside it is what murmur can use.
 **All nodes must speak the same snapshot format.** The format is versioned and a
 mismatch is rejected rather than guessed at, so a node on a different snapshot
 version is reported as reachable-but-broken with the reason on it. Patch versions
-interoperate freely — 0.2.0 and 0.2.2 both speak snapshot 1 — and `murmur peer
+interoperate freely — 0.2.0 and 0.2.3 both speak snapshot 1 — and `murmur peer
 list` shows each peer's version, so a bad pairing is visible before you start
 debugging it. Upgrading the fleet together is still the simplest way to stay out
 of it.

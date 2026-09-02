@@ -3,7 +3,15 @@
 Notable changes per release. Written for someone deciding whether to upgrade,
 so it says what changed for a user rather than listing every commit.
 
-## Unreleased
+## 0.2.3
+
+Wire-compatible with 0.2.x: the snapshot format is unchanged at version 1, so a
+0.2.3 node federates with 0.2.0 upward and no coordinated upgrade is needed.
+
+The theme is peers that cannot be reached unattended, and a store that survives
+being damaged. Both came out of running murmur against a devserver that demands
+a second factor per connection — a case the design had named as out of scope and
+never handled.
 
 **A peer that needs an interactive login is skipped, not dialled and failed.**
 Some hosts refuse an unattended connection — a second factor, a token, a
@@ -53,9 +61,19 @@ last active, which was often the shell. The same change fixes a jump to an agent
 whose pane has moved between windows since it was recorded: that used to report
 `could not attach` for a perfectly healthy agent.
 
-**A remote jump from outside tmux is no longer killed after ten seconds.** The
-ssh attach shared a timeout with murmur's bounded probes, so a working remote
-session was terminated mid-use and reported as a failed attach.
+**A remote jump lands on the agent's pane, and is no longer killed after ten
+seconds.** Two separate faults on the same path. Jumping to a peer addressed the
+recorded *window*, so you arrived at whichever pane that window last had active
+— often a shell sitting beside the agent — and a pane that had moved windows
+since the peer's last export failed outright while being perfectly alive. And
+the outside-tmux ssh attach shared a timeout with murmur's bounded probes, so a
+working remote session was terminated mid-use and reported as a failed attach.
+
+**`murmur init --name ''` is refused instead of producing a node no peer will
+accept.** An empty display name satisfied the writer and failed the snapshot
+validator, so the node read as healthy locally while every peer that collected
+it classed it reachable-but-broken — over a field the operator could not see was
+wrong.
 
 **The picker paints from cache and fetches behind it.** The popup no longer
 waits on an ssh fan-out before showing anything — measured at 1.5s on a fleet

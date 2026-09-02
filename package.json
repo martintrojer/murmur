@@ -1,23 +1,47 @@
 {
   "name": "@martintrojer/murmur",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Agent state across every machine you work on, in one view.",
-  "publishConfig": { "access": "public" },
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "module",
   "license": "MIT",
   "author": "Martin Trojer <martin.trojer@gmail.com>",
   "homepage": "https://github.com/martintrojer/murmur",
-  "repository": { "type": "git", "url": "git+https://github.com/martintrojer/murmur.git" },
-  "keywords": ["tmux", "agents", "ai", "pi-coding-agent", "pi-package", "ssh"],
-  "engines": { "node": ">=20" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/martintrojer/murmur.git"
+  },
+  "keywords": [
+    "tmux",
+    "agents",
+    "ai",
+    "pi-coding-agent",
+    "pi-package",
+    "ssh"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
-    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
     "./extension-store": "./dist/extension/store.js"
   },
-  "bin": { "murmur": "./dist/cli.js" },
-  "files": ["dist", "README.md", "ARCHITECTURE.md", "CHANGELOG.md"],
+  "bin": {
+    "murmur": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "ARCHITECTURE.md",
+    "CHANGELOG.md"
+  ],
   "scripts": {
     "build": "tsup",
     "test": "npm run build && vitest run",
