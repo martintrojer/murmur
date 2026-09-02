@@ -467,3 +467,79 @@ test("a fresh request outranks an older agent report on the same pane", () => {
   expect(result.panes.map((pane) => pane.pane)).toEqual(["%fresh", "%stale"]);
   expect(result.panes[0]?.updated_at).toBe(9_000);
 });
+
+/** A peer that has answered before, then failed, for the gating tests below. */
+function gatedPeer(name: string, error: string): void {
+  store.addPeer(name, name);
+  // A successful fetch first: "has answered before" is the fact that separates a
+  // re-auth prompt from a host that is merely switched off.
+  store.replacePeerSnapshot(name, { ok: true, at: 1_000, snapshot: remoteSnapshot([]) });
+  store.replacePeerSnapshot(name, { ok: false, at: 2_000, error });
+}
+
+test("a peer that cannot authenticate unattended is marked needs_session", () => {
+  // The operator-actionable state: murmur has reached this host before, the last
+  // attempt was refused on auth, and no warm ControlMaster socket exists to ride.
+  // `ssh <host>` is the only thing that fixes it.
+  gatedPeer("dev", "Permission denied (keyboard-interactive).");
+
+  const result = status(store, IDENTITY, 3_000, () => false);
+
+  expect(result.peers[0]).toMatchObject({ name: "dev", needs_session: true });
+});
+
+test("a warm socket clears needs_session without a collect", () => {
+  // The self-correcting half, and the reason this is derived rather than stored:
+  // the operator runs `ssh dev`, a ControlMaster socket appears, and the state
+  // clears on the next READ. No successful fetch required, no flag to reset.
+  gatedPeer("dev", "Permission denied (keyboard-interactive).");
+
+  const result = status(store, IDENTITY, 3_000, () => true);
+
+  expect(result.peers[0]?.needs_session).toBe(false);
+});
+
+test("a peer that never authenticated is not asked to re-auth", () => {
+  // A box that is switched off must not tell the operator to ssh into it. The
+  // distinguishing fact is history: a peer murmur has reached holds a cached
+  // snapshot, and one it has never reached does not.
+  store.addPeer("linuxpc", "linuxpc");
+  store.replacePeerSnapshot("linuxpc", {
+    ok: false,
+    at: 2_000,
+    error: "Permission denied (publickey).",
+  });
+
+  const result = status(store, IDENTITY, 3_000, () => false);
+
+  expect(result.peers[0]?.needs_session).toBe(false);
+});
+
+test("an unreachable peer is not asked to re-auth", () => {
+  // The proxy-failure case, which is what the live `dev` peer currently holds.
+  // Unreachability is not fixable by authenticating, so it must not produce the
+  // prompt -- the advice would be unactionable.
+  gatedPeer("dev", "Connection closed by UNKNOWN port 65535");
+
+  const result = status(store, IDENTITY, 3_000, () => false);
+
+  expect(result.peers[0]?.needs_session).toBe(false);
+});
+
+test("the warm-socket probe runs only for auth-class candidates", () => {
+  // Cost control, asserted rather than assumed: the probe is ~20ms per host
+  // against a picker launch path measured at ~60ms, so probing every peer would
+  // more than double it to answer questions nobody reads. The three conditions
+  // left of the probe are free cached reads and exist to gate it.
+  gatedPeer("dev", "Permission denied (keyboard-interactive).");
+  store.addPeer("bubba", "bubba");
+  store.replacePeerSnapshot("bubba", { ok: true, at: 1_000, snapshot: remoteSnapshot([]) });
+
+  const probed: string[] = [];
+  status(store, IDENTITY, 3_000, (target) => {
+    probed.push(target);
+    return false;
+  });
+
+  expect(probed).toEqual(["dev"]);
+});

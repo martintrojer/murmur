@@ -1,5 +1,5 @@
-import { type Channel, ssh } from "./channel.js";
-import { type CollectOptions, collect } from "./collector.js";
+import { type Channel, hasWarmSocket, ssh } from "./channel.js";
+import { type CollectOptions, collect, needsInteractiveAuth } from "./collector.js";
 import type { NodeIdentity } from "./identity.js";
 import type { Store } from "./store.js";
 import {
@@ -26,6 +26,16 @@ export type Status = {
     snapshot_at: number | null;
     last_error: string | null;
     stale: boolean;
+    /**
+     * The operator must authenticate interactively before this peer can be
+     * collected again: it has answered before, its last attempt was refused on
+     * auth, and no warm ControlMaster socket exists to ride.
+     *
+     * Derived, never stored, which is what makes it self-correcting -- `ssh
+     * <host>` creates the socket and this clears on the next read, with no
+     * successful fetch required and no state anyone has to remember to clean up.
+     */
+    needs_session: boolean;
   }[];
 };
 
@@ -59,7 +69,15 @@ export function tmuxStatus(view: Status): string {
  * `identity` is required rather than resolved here, because every caller is a
  * command that already fails without one.
  */
-export function status(store: Store, identity: NodeIdentity, now = Date.now()): Status {
+export function status(
+  store: Store,
+  identity: NodeIdentity,
+  now = Date.now(),
+  // Injected for the same reason `Channel` and `Mux` are: a test must not need
+  // an ssh binary, and "was this peer probed at all" has to be assertable --
+  // which is the only way to pin the cost control below.
+  warm: (target: string) => boolean = hasWarmSocket,
+): Status {
   const counts = emptyCounts();
   const orchestratedCounts = emptyCounts();
   const panes = viewSort(paneViews(store, identity, now));
@@ -86,6 +104,21 @@ export function status(store: Store, identity: NodeIdentity, now = Date.now()): 
       // `freshness` is the one place that decides, so this list and the panes
       // the peer contributes cannot disagree about the same host.
       stale: freshness(peer.fetched_at, now) === "stale",
+      // Candidates ONLY, and the order of these conditions is the cost control:
+      // everything left of `warm(...)` is a free cached read, so the ~20ms probe
+      // runs for a peer that could plausibly need it and for no other. Probing
+      // all of them would more than double a picker launch path measured at
+      // ~60ms, to answer questions nobody reads.
+      //
+      // `snapshot !== null` is the "has answered before" test, and it is what
+      // separates a re-auth prompt from a host that is simply switched off:
+      // telling an operator to `ssh` into a dead box is noise, and a peer murmur
+      // has never reached is a setup problem rather than a lapsed session.
+      needs_session:
+        peer.snapshot !== null &&
+        peer.last_error !== null &&
+        needsInteractiveAuth(peer.last_error) &&
+        !warm(peer.target),
     })),
   };
 }
