@@ -263,7 +263,19 @@ export function jumpToAgent(
     };
   }
 
-  const attachTarget = shellQuote(`${agent.session}:${agent.window}`);
+  // The PANE, which the probe immediately above just proved is alive on that
+  // host. Addressing the window instead was the remote twin of the local attach
+  // defect and failed the same two ways: you landed on whichever pane that
+  // window last had active (a split holding the agent and a shell drops you on
+  // the shell), and a pane that moved windows since the peer's last export
+  // attached to a stale `@id` -- "can't find window: @99" -- while the pane
+  // itself was alive and had just been confirmed.
+  //
+  // Establishing the pane and then addressing the window is precisely what
+  // "only a pane may decide whether an agent exists" exists to prevent, applied
+  // one level short of the action. `tmux attach -t %pane` resolves session,
+  // window and pane together, verified against a real tmux server.
+  const attachTarget = shellQuote(agent.pane);
 
   // Hand the ssh to tmux as its own detached SESSION rather than running it
   // here: `murmur pick` is usually a display-popup, and a popup is modal, so an

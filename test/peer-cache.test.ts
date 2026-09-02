@@ -11,6 +11,7 @@ import { dbPath } from "../src/paths.js";
 import { openStore, type Store } from "../src/store.js";
 import type { Snapshot, SnapshotPane } from "../src/types.js";
 import { paneViews, STALENESS_MS } from "../src/view.js";
+import { fakeMux } from "./helpers/fake-mux.js";
 
 /**
  * The peer cache: one opaque, validated document per peer, replaced whole or
@@ -39,6 +40,18 @@ afterEach(() => {
     }
   }
 });
+
+/**
+ * The mux every `collect` here must be given.
+ *
+ * `collect` finishes by reconciling LOCAL rows against `mux.livePanes()`, which
+ * defaults to the real tmux -- so without this, 68 bare `tmux list-panes -a`
+ * calls per suite run hit whichever server the developer had running, and these
+ * tests depended on ambient global state. No test in this file claims a local
+ * pane, so an empty set is the honest answer and `fakeMux` already defaults to
+ * it; naming it is what stops the default from being the environment.
+ */
+const LOCAL = fakeMux();
 
 function store(): Store {
   const opened = openStore();
@@ -111,6 +124,7 @@ test("the collect deadline leaves a dialled peer's cache and fetched_at alone", 
   };
   const results = await collect(s, hang, 9_000, {
     deadline: new Promise<void>((resolve) => setTimeout(resolve, 20)),
+    mux: LOCAL,
   });
 
   const cut = results.find((result) => result.peer === last);
@@ -141,6 +155,7 @@ test("a peer that has never answered holds no snapshot and renders stale", async
       },
     },
     5_000,
+    { mux: LOCAL },
   );
 
   expect(results[0]).toMatchObject({ ok: false, unreachable: true });
@@ -157,7 +172,7 @@ test("a stale node keeps its last-known panes verbatim, with no liveness inferre
   const identity = createIdentity("this-node");
   const s = store();
   s.addPeer("dev", "dev");
-  await collect(s, serve(document([pane("%7")])), 1_000);
+  await collect(s, serve(document([pane("%7")])), 1_000, { mux: LOCAL });
 
   const fresh = paneViews(s, identity, 1_000);
   expect(fresh).toHaveLength(1);
@@ -171,6 +186,7 @@ test("a stale node keeps its last-known panes verbatim, with no liveness inferre
       },
     },
     2_000,
+    { mux: LOCAL },
   );
 
   const stale = paneViews(s, identity, 1_000 + STALENESS_MS + 1);
@@ -206,7 +222,7 @@ test("freshness is our clock and updated_at is theirs, and fetching does not mer
     agent: served.agent === null ? null : { ...served.agent, updated_at: theirNews },
   };
 
-  await collect(s, serve(document([aged], { generated_at: theirNews })), now);
+  await collect(s, serve(document([aged], { generated_at: theirNews })), now, { mux: LOCAL });
 
   expect(s.peers()[0]).toMatchObject({ snapshot_at: theirNews, fetched_at: now });
   const view = paneViews(s, identity, now)[0];
@@ -226,7 +242,7 @@ test("a cached peer document carries no owner_pid, so remote liveness is unrepre
   // process in another machine's table.
   const s = store();
   s.addPeer("dev", "dev");
-  await collect(s, serve(document([pane("%1"), pane("%2")])), 1_000);
+  await collect(s, serve(document([pane("%1"), pane("%2")])), 1_000, { mux: LOCAL });
 
   const raw = new Database(dbPath(), { readonly: true });
   try {
@@ -277,7 +293,7 @@ test("removePeer takes the cached document with the row", async () => {
   const identity = createIdentity("this-node");
   const s = store();
   s.addPeer("dev", "dev");
-  await collect(s, serve(document([pane("%1")])), 1_000);
+  await collect(s, serve(document([pane("%1")])), 1_000, { mux: LOCAL });
   expect(paneViews(s, identity, 1_000)).toHaveLength(1);
 
   expect(s.removePeer("dev")).toBe(true);
@@ -356,6 +372,7 @@ test("a peer the deadline never dialled records no attempt and no error", async 
   };
   await collect(s, hang, 9_000, {
     deadline: new Promise<void>((resolve) => setTimeout(resolve, 20)),
+    mux: LOCAL,
   });
 
   const peer = s.peers().find((entry) => entry.name === unclaimed);

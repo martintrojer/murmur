@@ -78,22 +78,27 @@ function preview(
   pane: string,
   host?: string,
   glanceOutput = "pane contents",
-): { text: string; dialled: string[] } {
+): { text: string; dialled: string[]; argv: string[][] } {
   const written: string[] = [];
   const dialled: string[] = [];
+  // The argv too, because the pane id crosses a remote LOGIN SHELL: ssh joins
+  // its arguments into one string, so how the id is quoted is the whole defence
+  // and asserting only the target would miss it entirely.
+  const argv: string[][] = [];
   const stdout = vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
     written.push(String(chunk));
     return true;
   });
   try {
-    runPreview(store, pane, host, (target) => {
+    runPreview(store, pane, host, (target, args) => {
       dialled.push(target);
+      argv.push(args);
       return glanceOutput;
     });
   } finally {
     stdout.mockRestore();
   }
-  return { text: written.join(""), dialled };
+  return { text: written.join(""), dialled, argv };
 }
 
 test("the preview resolves the host as well as the pane", () => {
@@ -187,4 +192,32 @@ test("a pane that is gone says so rather than previewing nothing", () => {
   // the row can genuinely vanish between the collect and the keypress.
   const text = preview("%404", "LOCAL").text;
   expect(text).toContain("%404");
+});
+
+test("a hostile pane id is quoted, not interpolated, into the remote command", () => {
+  // The glance's one ssh interpolation used `'${agent.pane}'`, which does not
+  // escape an embedded single quote -- so a pane id containing one closed the
+  // quote and handed the rest to the remote login shell as code. ssh joins its
+  // argv into a single string, so that is execution rather than a mangled
+  // argument.
+  //
+  // Nothing upstream prevents it: the id comes from a peer's snapshot,
+  // `parseSnapshot` requires only a non-empty string, and `asPaneId` round-trips
+  // ids murmur does not recognise on purpose. The trust boundary is a configured
+  // peer, which is why this was never urgent -- but the fix is the tested helper
+  // every other ssh path already used.
+  const hostile = "%1';touch /tmp/murmur-pwned;'";
+  store.addPeer("bubba", "bubba.example");
+  store.replacePeerSnapshot("bubba", {
+    ok: true,
+    at: Date.now(),
+    snapshot: remoteSnapshot([remotePane(hostile)]),
+  });
+
+  const { argv } = preview(hostile, "REMOTE");
+
+  const target = argv[0]?.[argv[0].indexOf("-t") + 1];
+  // One POSIX single-quoted word: every embedded quote is escaped as '\'' so the
+  // shell rebuilds the original string and never sees `;` as a separator.
+  expect(target).toBe("'%1'\\'';touch /tmp/murmur-pwned;'\\'''");
 });

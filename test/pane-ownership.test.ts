@@ -224,7 +224,10 @@ test("a live owner is not displaced, and the nested process writes nothing", asy
   } finally {
     holder.kill("SIGKILL");
   }
-});
+  // Same reason as the test below: this spawns a deliberately long-lived holder
+  // and five nested launches against it, so vitest's 5s default was never the
+  // right budget for it.
+}, 30_000);
 
 test("an owner's real child process is refused with nothing passed to it", async () => {
   // An owner's own child, with no environment arrangement of any kind: the child
@@ -240,4 +243,12 @@ test("an owner's real child process is refused with nothing passed to it", async
   // ran INSIDE the owner's lifetime, so the probe saw a live pid and refused.
   const after = agentFor(pane);
   expect(after).toMatchObject({ activity: "running" });
-});
+  // Explicit timeout, well above the ~3s `holdMs` this test deliberately spends
+  // keeping the owner alive. vitest's default is 5s, which left under a second
+  // of margin once the owner and its nested child had each settled, and that
+  // margin is what vanished under parallel load: 2 runs in 5 failed on main, and
+  // reverting just this line still flakes 2 in 8 with everything else in place.
+  // So this is the fix, and the helper's polling (which cut the file from ~16s to
+  // ~7s) is the reason the budget is rarely needed rather than the reason it
+  // passes.
+}, 30_000);

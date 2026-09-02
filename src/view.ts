@@ -153,7 +153,14 @@ export function renderState(view: Pick<PaneView, "activity" | "attention">): Ren
   return view.activity === "running" ? "running" : "idle";
 }
 
-/** The newest attention request on a pane, for the `updated_at` of one with no agent. */
+/** The later of two clock readings, either of which may be absent. */
+function newest(left: number | null, right: number | null): number | null {
+  if (left === null) return right;
+  if (right === null) return left;
+  return Math.max(left, right);
+}
+
+/** The newest attention request on a pane, and half of its `updated_at`. */
 function newestAttention(pane: SnapshotPane): number | null {
   let newest: number | null = null;
   for (const entry of pane.attention) {
@@ -192,7 +199,23 @@ function paneView(pane: SnapshotPane, source: ViewSource): PaneView {
     role: agent?.role ?? null,
     cli: agent?.cli ?? null,
     driver: agent?.driver ?? DEFAULT_DRIVER,
-    updated_at: agent?.updated_at ?? newestAttention(pane),
+    // The NEWER of the two, not the agent row with attention as a fallback.
+    //
+    // `??` consulted the attention clock only for a pane with no agent row, so
+    // an existing agent row discarded every attention timestamp -- including a
+    // newer one. Both numbers are the owning node's own clock, so this was never
+    // a two-clocks problem; it was one clock read from the wrong row.
+    //
+    // The writer it hurt is the one that structurally cannot touch an agent row:
+    // `murmur notify` writes attention with no agent field, by design. So a
+    // codex agent blocked seconds ago on a pane whose pi last reported two hours
+    // ago carried a two-hour age -- and `viewSort`'s second key is "the newest
+    // news", so the freshest request for a human sank in the list the human
+    // opened to act on it. The picker prints the same field as `age` and `said`.
+    //
+    // Matches the field's docblock, which says "when the pane's own node last
+    // said something": a `blocked` row IS the node saying something.
+    updated_at: newest(agent?.updated_at ?? null, newestAttention(pane)),
     snapshot_at: source.snapshot_at,
     fetched_at: source.fetched_at,
   };

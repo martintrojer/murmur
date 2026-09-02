@@ -302,10 +302,13 @@ test("with no existing session, exactly one is opened for the peer", () => {
 
   expect(result).toEqual({ ok: true });
   expect(opened).toHaveLength(1);
-  // Named after the configured peer, and the remote session:window is quoted
-  // against the LOCAL shell -- `$0:@9` would otherwise expand to `:@9`.
+  // Named after the configured peer, and the remote PANE is quoted against the
+  // local shell. `%9` is shell-inert where `$0:@9` was not, so the quoting is no
+  // longer what rescues this particular value -- it stays because nothing
+  // validates a pane id's shape (`asPaneId` deliberately round-trips whatever a
+  // peer sent), and the layer below still crosses two shells.
   expect(opened[0]).toContain("p~ ::");
-  expect(opened[0]).toContain("'$0:@9'");
+  expect(opened[0]).toContain("'%9'");
 });
 
 test("the wrapper session hides the local status bar and disables the local prefix", () => {
@@ -359,11 +362,14 @@ test("the wrapper returns the originating client to where the jump started", () 
   //
   // The remote target is quoted TWICE, and both layers are load-bearing. This
   // string is a wrapper command, so a local shell strips the outer layer to
-  // `'$0:@9'`, ssh joins its arguments and a remote shell strips the inner one
-  // to `$0:@9`. With one layer the local shell expanded `$0` and the remote
-  // attach failed with "can't find session"; verified by hand through `sh -c`.
+  // `'%9'`, ssh joins its arguments and a remote shell strips the inner one to
+  // `%9`. The lesson was learned on a session id: with one layer the local shell
+  // expanded `$0` and the remote attach failed with "can't find session",
+  // verified by hand through `sh -c`. The target is a pane now, which happens to
+  // be shell-inert, so this asserts the STRUCTURE that protects the next value
+  // rather than a rescue this one needs.
   expect(command).toBe(
-    `ssh -t 'p' tmux attach -t ''\\''$0:@9'\\'''; ` +
+    `ssh -t 'p' tmux attach -t ''\\''%9'\\'''; ` +
       `tmux switch-client -c '/dev/ttys004' -t '=work:@3'`,
   );
 });
@@ -439,7 +445,7 @@ test("outside tmux, no local wrapper session is created", () => {
   // and only one layer of quoting -- unlike the wrapper command above. ssh
   // still joins argv and hands it to a remote shell, which is what this layer
   // is for.
-  expect(attached).toEqual([["-t", "p", "tmux", "attach", "-t", "'$0:@9'"]]);
+  expect(attached).toEqual([["-t", "p", "tmux", "attach", "-t", "'%9'"]]);
 });
 
 test("outside tmux, a failed ssh attach is reported", () => {

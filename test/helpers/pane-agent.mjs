@@ -29,8 +29,36 @@ murmurPi({ on: (event, handler) => handlers.set(event, handler) });
 
 await handlers.get(state === "working" ? "agent_start" : "agent_end")?.();
 // The handlers are `void enqueue(...)`, so they return before the write runs.
-// Wait for the queue to drain rather than guessing with a timer.
-await new Promise((resolve) => setTimeout(resolve, 600));
+//
+// POLL for the write to land rather than sleeping a fixed 600ms. The comment
+// here used to claim it waited for the queue to drain; it did no such thing, it
+// guessed, and every process paid the full 600ms whether the write had landed in
+// 20ms or not. Measured: pane-ownership.test.ts went from ~16-21s to ~7-8s.
+//
+// This is a SPEED fix, not the flake fix -- the flake was vitest's 5s default
+// timeout against a test that deliberately sleeps 3s, and the explicit budgets
+// in pane-ownership.test.ts are what close it. Halving the runtime is what makes
+// those budgets rarely matter.
+//
+// The store is the observable the test asserts on, so waiting for it is the
+// honest wait. Polling rather than awaiting the extension's queue because that
+// queue is deliberately private -- this process has no handle on it, the same
+// reason it cannot report a verdict below.
+const { openStore } = await import(process.env.MURMUR_STORE_MODULE);
+const deadline = Date.now() + 10_000;
+for (;;) {
+  const store = openStore();
+  let seen = false;
+  try {
+    // Any row for this pane means the claim resolved: either we own it, or the
+    // incumbent does and we were refused. Both are settled states.
+    seen = store.localPanes().some((pane) => pane.pane === process.env.TMUX_PANE);
+  } finally {
+    store.close();
+  }
+  if (seen || Date.now() >= deadline) break;
+  await new Promise((resolve) => setTimeout(resolve, 10));
+}
 
 // Always RAN, never a verdict. This process cannot honestly say whether it won
 // the pane: `owner_pid` is local-only and deliberately absent from every read

@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { shellQuote } from "./agents.js";
 import { SSH_OPTIONS } from "./channel.js";
 import { tmux } from "./mux.js";
 import type { Store } from "./store.js";
@@ -61,10 +62,26 @@ export function glance(
   // exactly why the row is on screen at all.
   if (peer?.last_error !== null) return null;
   try {
-    // The pane id is `%N`, which a remote shell leaves alone, but quote it
-    // anyway: the same class of bug as the `$N` session id that made remote
-    // jump fail silently for a day.
-    return run(target, ["tmux", "capture-pane", "-p", "-t", `'${agent.pane}'`, "-S", `-${lines}`]);
+    // `shellQuote`, not `'${...}'`, because nothing constrains this value to
+    // `%N`: it arrives in a peer's snapshot, `parseSnapshot` checks only that it
+    // is a non-empty string, and `asPaneId` deliberately round-trips an id
+    // murmur does not recognise. Hand-rolled quotes do not escape an embedded
+    // single quote, so a pane containing one would close the quote and hand the
+    // remainder to the remote login shell as code -- ssh joins its argv into one
+    // string, so this is execution rather than a mangled argument.
+    //
+    // The trust boundary is a peer the operator configured, which is why this
+    // was never urgent; the posture is safety by construction, and the tested
+    // helper every other ssh path already uses was one import away.
+    return run(target, [
+      "tmux",
+      "capture-pane",
+      "-p",
+      "-t",
+      shellQuote(agent.pane),
+      "-S",
+      `-${lines}`,
+    ]);
   } catch {
     // Cold socket, dead tmux, gone pane. The preview says so rather than the
     // picker failing.

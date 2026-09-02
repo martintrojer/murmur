@@ -11,6 +11,7 @@ import { openStore, type Store } from "../src/store.js";
 import type { AgentMeta, Location } from "../src/types.js";
 import type { PaneView } from "../src/view.js";
 import { paneViews, renderState, STALENESS_MS, viewSort } from "../src/view.js";
+import { fakeMux } from "./helpers/fake-mux.js";
 
 /**
  * §11.19, the two-node smoke test, as a deterministic test.
@@ -103,6 +104,26 @@ function live(...panes: string[]): Set<PaneId> {
 }
 
 /**
+ * The reconcile options every `collect` in this file must pass.
+ *
+ * `collect` ends by reconciling the LOCAL node against `mux.livePanes()`, and it
+ * defaults to the real tmux. Not one call site here passed a mux, so 68 bare
+ * `tmux list-panes -a` calls per suite run went to whichever server the
+ * developer happened to have running -- and these tests then passed or failed on
+ * ambient global state. Proven: with a shim returning no panes, "each node
+ * authors only its own panes" fails (reconcile deletes the local agent), and it
+ * passed here only because this machine's tmux happens to hold a `%1`. It would
+ * fail on CI, for a reason that has nothing to do with what it asserts.
+ *
+ * `fakeMux` already defaults `livePanes` to an empty set, so the panes a test
+ * claims locally have to be named -- which also makes the local half of each
+ * two-node fixture explicit instead of inherited from the environment.
+ */
+function reconciling(...panes: string[]) {
+  return { mux: fakeMux({ livePanes: () => live(...panes) }) };
+}
+
+/**
  * The single pane a node contributes, asserted to exist.
  *
  * `paneViews(...)[0]` is `PaneView | undefined`, and these tests care about the
@@ -165,7 +186,12 @@ test("a remote RUNNING agent renders running on the other node, never crashed", 
   runningAgentOnB(b, "%11", 424242);
   a.addPeer("bubba", "bubba");
 
-  await collect(a, exportFrom(b, { panes: live("%11"), isAlive: () => true, now: 1_000 }), 2_000);
+  await collect(
+    a,
+    exportFrom(b, { panes: live("%11"), isAlive: () => true, now: 1_000 }),
+    2_000,
+    reconciling(),
+  );
 
   const view = onlyPane(paneViews(a, IDENTITY_A, 2_000));
   expect(view).toMatchObject({
@@ -191,7 +217,12 @@ test("a node that goes quiet keeps its last-known panes and only loses freshness
   const b = nodeStore(dirB);
   runningAgentOnB(b, "%11", 424242);
   a.addPeer("bubba", "bubba");
-  await collect(a, exportFrom(b, { panes: live("%11"), isAlive: () => true, now: 1_000 }), 1_000);
+  await collect(
+    a,
+    exportFrom(b, { panes: live("%11"), isAlive: () => true, now: 1_000 }),
+    1_000,
+    reconciling(),
+  );
 
   const gone: Channel = {
     exec: async () => {
@@ -201,7 +232,7 @@ test("a node that goes quiet keeps its last-known panes and only loses freshness
       );
     },
   };
-  const results = await collect(a, gone, 2_000);
+  const results = await collect(a, gone, 2_000, reconciling());
 
   expect(results[0]).toMatchObject({ peer: "bubba", ok: false, unreachable: true });
   const view = onlyPane(paneViews(a, IDENTITY_A, 1_000 + STALENESS_MS + 1));
@@ -223,7 +254,12 @@ test("an owner replaced on one node replaces it on the other, leaving one row", 
   const b = nodeStore(dirB);
   const firstId = runningAgentOnB(b, "%11", 424242);
   a.addPeer("bubba", "bubba");
-  await collect(a, exportFrom(b, { panes: live("%11"), isAlive: () => true, now: 1_000 }), 1_000);
+  await collect(
+    a,
+    exportFrom(b, { panes: live("%11"), isAlive: () => true, now: 1_000 }),
+    1_000,
+    reconciling(),
+  );
   expect(paneViews(a, IDENTITY_A, 1_000)[0]?.agent_id).toBe(firstId);
 
   // A live second claimant is refused; only a DEAD owner is replaced.
@@ -251,7 +287,12 @@ test("an owner replaced on one node replaces it on the other, leaving one row", 
     now: 3_000,
   });
 
-  await collect(a, exportFrom(b, { panes: live("%11"), isAlive: () => true, now: 3_000 }), 4_000);
+  await collect(
+    a,
+    exportFrom(b, { panes: live("%11"), isAlive: () => true, now: 3_000 }),
+    4_000,
+    reconciling(),
+  );
 
   const views = paneViews(a, IDENTITY_A, 4_000);
   expect(views).toHaveLength(1);
@@ -277,7 +318,7 @@ test("attention raised on one node is visible on the other, and acknowledging it
   a.addPeer("bubba", "bubba");
   const world = { panes: live("%11", "%12"), isAlive: () => true, now: 2_000 };
 
-  await collect(a, exportFrom(b, world), 2_000);
+  await collect(a, exportFrom(b, world), 2_000, reconciling());
 
   const before = viewSort(paneViews(a, IDENTITY_A, 2_000));
   // Attention sorts ahead of a merely running agent, so the row that wants a
@@ -292,7 +333,7 @@ test("attention raised on one node is visible on the other, and acknowledging it
   // than a state change. Asserted here because acknowledging %12 alone could not
   // catch it -- %12 has no agent row for a bad acknowledge to damage.
   expect(b.acknowledgePane(asPaneId("%11"))).toBe(0);
-  await collect(a, exportFrom(b, { ...world, now: 3_000 }), 3_000);
+  await collect(a, exportFrom(b, { ...world, now: 3_000 }), 3_000, reconciling());
 
   const after = paneViews(a, IDENTITY_A, 3_000);
   expect(after.map((view) => view.pane)).toEqual(["%11"]);
@@ -313,7 +354,12 @@ test("a crash detected on one node reaches the other as crashed, with the dead a
   // The pane is still live; the process in it is not.
   const summary = b.reconcileLocal({ panes: live("%11"), isAlive: () => false, now: 5_000 });
   expect(summary.crashed).toEqual(["%11"]);
-  await collect(a, exportFrom(b, { panes: live("%11"), isAlive: () => false, now: 5_000 }), 5_000);
+  await collect(
+    a,
+    exportFrom(b, { panes: live("%11"), isAlive: () => false, now: 5_000 }),
+    5_000,
+    reconciling(),
+  );
 
   const view = onlyPane(paneViews(a, IDENTITY_A, 5_000));
   expect(view).toMatchObject({
@@ -336,7 +382,12 @@ test("a node whose tmux cannot answer publishes its last-known panes rather than
   runningAgentOnB(b, "%11", 424242);
   a.addPeer("bubba", "bubba");
 
-  await collect(a, exportFrom(b, { panes: null, isAlive: () => false, now: 2_000 }), 2_000);
+  await collect(
+    a,
+    exportFrom(b, { panes: null, isAlive: () => false, now: 2_000 }),
+    2_000,
+    reconciling(),
+  );
 
   const views = paneViews(a, IDENTITY_A, 2_000);
   expect(views).toHaveLength(1);
@@ -352,7 +403,12 @@ test("a peer serving a document this version cannot read is broken, not absent",
   const b = nodeStore(dirB);
   runningAgentOnB(b, "%11", 424242);
   a.addPeer("bubba", "bubba");
-  await collect(a, exportFrom(b, { panes: live("%11"), isAlive: () => true, now: 1_000 }), 1_000);
+  await collect(
+    a,
+    exportFrom(b, { panes: live("%11"), isAlive: () => true, now: 1_000 }),
+    1_000,
+    reconciling(),
+  );
 
   const oldBuild: Channel = {
     exec: async () => {
@@ -362,7 +418,7 @@ test("a peer serving a document this version cannot read is broken, not absent",
       );
     },
   };
-  const results = await collect(a, oldBuild, 2_000);
+  const results = await collect(a, oldBuild, 2_000, reconciling());
 
   // Reachable: the host answered. It answered wrongly, which is actionable.
   expect(results[0]).toMatchObject({ peer: "bubba", ok: false, unreachable: false });
@@ -387,6 +443,7 @@ test("two nodes' clocks stay separate: a freshly fetched old fact is fresh and o
     a,
     exportFrom(b, { panes: live("%11"), isAlive: () => true, now: threeHoursAgo }),
     100_000_000,
+    reconciling(),
   );
 
   const [view] = paneViews(a, IDENTITY_A, 100_000_000);
@@ -413,7 +470,13 @@ test("each node authors only its own panes, so identically-numbered panes do not
   runningAgentOnB(b, "%1", 424242, { agent_name: "remote-worker" });
   a.addPeer("bubba", "bubba");
 
-  await collect(a, exportFrom(b, { panes: live("%1"), isAlive: () => true, now: 1_000 }), 1_000);
+  await collect(
+    a,
+    exportFrom(b, { panes: live("%1"), isAlive: () => true, now: 1_000 }),
+    1_000,
+    // A holds %1 locally too -- that collision is the point of this test.
+    reconciling("%1"),
+  );
 
   const views = paneViews(a, IDENTITY_A, 1_000);
   expect(views).toHaveLength(2);

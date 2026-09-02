@@ -17,6 +17,7 @@ import type {
   SnapshotPane,
 } from "../src/types.js";
 import { STALENESS_MS } from "../src/view.js";
+import { fakeMux } from "./helpers/fake-mux.js";
 
 const stores: Store[] = [];
 let store: Store;
@@ -382,7 +383,13 @@ test("statusWithCollect awaits the collect before reading", async () => {
   };
 
   let settled = false;
-  const pending = statusWithCollect(store, IDENTITY, Date.now(), channel).then((view) => {
+  // The mux is named, not defaulted: `statusWithCollect` collects, and a collect
+  // reconciles local rows against `mux.livePanes()`, which defaults to the real
+  // tmux -- so this test otherwise asked the developer's live server whether the
+  // fixture panes were alive.
+  const pending = statusWithCollect(store, IDENTITY, Date.now(), channel, {
+    mux: fakeMux({ livePanes: () => new Set([asPaneId("%1")]) }),
+  }).then((view) => {
     settled = true;
     return view;
   });
@@ -397,4 +404,66 @@ test("statusWithCollect awaits the collect before reading", async () => {
   expect(view.panes.map((pane) => pane.pane)).toContain("%far");
   expect(view.peers[0]?.fetched_at).not.toBeNull();
   expect(() => store.close()).not.toThrow();
+});
+
+test("a fresh request outranks an older agent report on the same pane", () => {
+  // `viewSort`'s second key is "the newest news", and `updated_at` is what feeds
+  // it. That field used to be the agent row's clock with attention as a mere
+  // FALLBACK, so a pane holding an agent discarded every attention timestamp --
+  // including a newer one.
+  //
+  // The writer this hurt is the one that structurally cannot touch an agent row:
+  // `murmur notify` writes attention alone, so a codex agent blocked seconds ago
+  // on a pane whose pi last reported hours earlier sorted BELOW a staler
+  // request. The freshest thing wanting a human sank in the list opened to act
+  // on it, and the picker labelled it with the agent's age.
+  //
+  // Two blocked panes, so state cannot decide the order and the age key has to.
+  const stale = store.claimAgent({
+    location: location("%stale"),
+    owner_pid: process.pid,
+    meta: meta({}),
+  });
+  store.setActivity({
+    agent_id: "agent_id" in stale ? stale.agent_id : "",
+    owner_pid: process.pid,
+    activity: "running",
+    location: location("%stale"),
+    now: 1_000,
+  });
+  // Blocked long ago, on a pane whose agent has spoken recently.
+  store.requestAttention({
+    kind: "blocked",
+    location: location("%stale"),
+    message: "",
+    source: "codex",
+    now: 2_000,
+  });
+
+  const fresh = store.claimAgent({
+    location: location("%fresh"),
+    owner_pid: process.pid,
+    meta: meta({}),
+  });
+  store.setActivity({
+    agent_id: "agent_id" in fresh ? fresh.agent_id : "",
+    owner_pid: process.pid,
+    activity: "running",
+    location: location("%fresh"),
+    now: 1_000,
+  });
+  // Blocked JUST NOW, on a pane whose agent last reported at the same old time.
+  store.requestAttention({
+    kind: "blocked",
+    location: location("%fresh"),
+    message: "",
+    source: "codex",
+    now: 9_000,
+  });
+
+  const result = status(store, IDENTITY);
+
+  // The newest REQUEST wins, whatever the agent rows say.
+  expect(result.panes.map((pane) => pane.pane)).toEqual(["%fresh", "%stale"]);
+  expect(result.panes[0]?.updated_at).toBe(9_000);
 });
