@@ -117,6 +117,10 @@ const ANSI_AT_END = new RegExp(`(?:${ANSI_PATTERN})+$`);
 const REMOTE = "\u001b[36m";
 const BOLD = "\u001b[1m";
 const DIM = "\u001b[2m";
+// For the column header only, so the grid's labels read as attached to the grid
+// rather than as another line of preamble. Dim would have put them in the same
+// register as the key legend, which is the confusion this exists to end.
+const UNDERLINE = "\u001b[4m";
 const RESET = "\u001b[0m";
 
 /**
@@ -161,11 +165,21 @@ const COLUMNS = {
 /**
  * The column header fzf pins above the list.
  *
- * Built from COLUMNS so it cannot drift from the rows, and dim so it reads as
- * furniture rather than as an agent.
+ * Built from COLUMNS so it cannot drift from the rows.
+ *
+ * UNDERLINED, not dim, and that is the whole distinction from the key legend
+ * above it. This docstring used to claim it was dim and nothing made it so --
+ * neither header line carried an escape code, so fzf painted the column labels
+ * and the keybindings in one indistinguishable block. A column header is a
+ * label FOR the grid beneath it and belongs visually attached to it; the legend
+ * is a different kind of thing and now reads as one.
+ *
+ * The padding still happens outside the styling: `pad` counts visible columns,
+ * but wrapping each cell would put an escape sequence between every column and
+ * the grid has to line up with rows that style per cell.
  */
 export function headerRow(showHost: boolean): string {
-  return [
+  const labels = [
     " ".repeat(COLUMNS.glyph),
     pad("state", COLUMNS.state),
     pad("agent", COLUMNS.name),
@@ -175,6 +189,7 @@ export function headerRow(showHost: boolean): string {
   ]
     .filter(Boolean)
     .join(" ");
+  return `${UNDERLINE}${labels}${RESET}`;
 }
 
 /** How many gated peers the header names before it stops. */
@@ -626,16 +641,24 @@ export async function runPick(
         // Everything after it is static text a reader learns once and then stops
         // seeing, so anything conditional has to come before them to be noticed.
         sessionNotice(view.peers) ?? "",
+        // DIM, both of them: these are the lines a reader learns once and then
+        // stops seeing, which is what dim is for everywhere else in this file.
+        // They carried no styling at all, so fzf painted them in the same plain
+        // white as the column header directly below -- three different kinds of
+        // line in one indistinguishable block. Keys are furniture, the column
+        // labels belong to the grid, and the notice above is an action; each now
+        // says which it is.
+        //
         // No delete key: a reader holds one snapshot per peer and the next fetch
         // replaces it whole, so it could only remove a row the next collect puts
         // straight back, while looking like it had done something.
-        `enter jump   ^r refresh   ^p preview   ^u clear`,
+        `${DIM}enter jump   ^r refresh   ^p preview   ^u clear${RESET}`,
         // "toggle crew", not "show crew": the header is built once and the bind
         // flips per keypress, so a directional label would be wrong half the
         // time. The prompt's `crew` marker says which way it is set.
-        `filter: ${FILTER_KEYS.map(([key, query]) => `${key.replace("alt-", "M-")} ${query}`).join(
-          " ",
-        )}   M-a toggle crew`,
+        `${DIM}filter: ${FILTER_KEYS.map(
+          ([key, query]) => `${key.replace("alt-", "M-")} ${query}`,
+        ).join(" ")}   M-a toggle crew${RESET}`,
         headerRow(showHost),
       ]
         .filter(Boolean)

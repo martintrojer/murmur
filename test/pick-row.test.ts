@@ -39,9 +39,22 @@ const base: PaneView = {
 };
 
 /** The visible label: the row minus its two hidden key columns and the escapes. */
+const ANSI = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
+
 function label(row: string): string {
-  const ansi = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
-  return (row.split("\t")[2] ?? "").replace(ansi, "");
+  return (row.split("\t")[2] ?? "").replace(ANSI, "");
+}
+
+/**
+ * The header's VISIBLE text.
+ *
+ * Every alignment assertion below is about what a reader sees in a column, so
+ * the styling has to come off first -- `headerRow` is underlined, and comparing
+ * raw `indexOf` offsets against an unstyled row counts the escape bytes and
+ * reports a four-column drift that does not exist on screen.
+ */
+function visible(header: string): string {
+  return header.replace(ANSI, "");
 }
 
 test("the state word is in the searchable label, not a hidden column", () => {
@@ -110,7 +123,7 @@ test("the header lines up with the columns it names", () => {
   // Header and rows read one COLUMNS table, because they were literals in two
   // functions and had already drifted by a column. Assert the alignment rather
   // than the numbers, so the test survives a deliberate width change.
-  const header = headerRow(true);
+  const header = visible(headerRow(true));
   const row = label(pickerRow(base, true, false, false));
   expect(header.indexOf("state")).toBe(row.indexOf("blocked"));
   expect(header.indexOf("stream")).toBe(row.indexOf("ws"));
@@ -370,7 +383,9 @@ test("the row and the preview name a pane identically", () => {
     // unshortened path would satisfy it -- which is precisely the regression this
     // test exists to catch. Verified by mutation: with toContain, restoring the
     // duplicated chain kept the suite green.
-    const header = headerRow(false);
+    // Visible text: the offsets are column positions on screen, and the
+    // underline's escape bytes are not columns.
+    const header = visible(headerRow(false));
     const start = header.indexOf("agent");
     const width = header.indexOf("stream") - start;
     const cell = label(pickerRow(agent, false, false))
@@ -490,4 +505,40 @@ test("the notice comes first in the header, above the legend", () => {
 
   expect(header.split("\n")[0]).toBe(notice);
   expect(header.indexOf("re-auth")).toBeLessThan(header.indexOf("enter jump"));
+});
+
+test("the column header is styled, and not as furniture", () => {
+  // It shipped with NO escape codes while its own docstring claimed it was dim,
+  // so fzf painted the column labels in the same plain white as the keybinding
+  // legend directly above -- two different kinds of line in one
+  // indistinguishable block, which is what a reader reported.
+  //
+  // Underlined, because a column header is a label FOR the grid beneath it and
+  // should read as attached to it. Dim would put it in the legend's register,
+  // which is the confusion being fixed.
+  const header = headerRow(true);
+
+  expect(header).toContain("\u001b[4m");
+  expect(header).not.toContain("\u001b[2m");
+  // Closed, so the underline cannot leak into the rows fzf prints after it.
+  expect(header.endsWith("\u001b[0m")).toBe(true);
+});
+
+test("the three header registers are visually distinct", () => {
+  // The actual complaint: keys and column labels rendered identically. Each of
+  // the three lines is a different kind of thing -- an action, furniture, and a
+  // label belonging to the grid -- so each must carry a different attribute.
+  // Asserted together, because "distinct" is a property of the SET and a test
+  // per line would let two of them drift into agreement.
+  const notice = sessionNotice([gated("dev", 1_000)], 5_000) ?? "";
+  const keys = `\u001b[2menter jump   ^r refresh\u001b[0m`;
+  const columns = headerRow(true);
+
+  // Built from a char class, not written literally: a bare \u001b in a pattern
+  // trips biome noControlCharactersInRegex, and the rule is right that an
+  // invisible byte in a regex is a hazard. Same construction as ANSI above and
+  // as ANSI_PATTERN in the production file.
+  const attribute = (line: string) => (line.match(ANSI) ?? []).sort().join(",");
+
+  expect(new Set([attribute(notice), attribute(keys), attribute(columns)]).size).toBe(3);
 });
