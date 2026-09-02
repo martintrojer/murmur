@@ -967,11 +967,21 @@ each was cheaper to accept than to solve:
    ("never prompt", not "never authenticate") and the reason `hasWarmSocket`
    exists. Such a peer is skipped by ambient collects rather than dialled and
    failed on every tick, keeps its cached snapshot, and is named in the picker
-   header with the `ssh <host>` that fixes it. A `ControlMaster` socket left by
-   an ordinary login is the whole mechanism; Eternal Terminal does not
-   substitute, since it bootstraps over ssh and leaves no socket to attach to.
-   The accepted cost is that the reminder cannot say *when* a session lapsed,
-   only that none exists now.
+   header with the command that fixes it. That command is `ssh -M -S
+   <ControlPath> <host>` and the `-M` is load-bearing: a plain `ssh` attaches as
+   a client, or behind a `ProxyCommand` leaves a socket that forwards but has
+   never authenticated a session — and `ssh -O check` reports `Master running`
+   for both, so `hasWarmSocket` cannot tell them apart. Measured against a real
+   2FA host, where every command over such a socket failed with `Session open
+   refused by peer`. Eternal Terminal does not substitute either, since it
+   bootstraps over ssh and leaves no socket to attach to.
+
+   Two accepted costs. The reminder cannot say *when* a session lapsed, only
+   that none exists now. And `hasWarmSocket` answers "is there a master", not
+   "can I open a session", so a forward-only socket opens the gate and the
+   collect then fails once — self-correcting on the next pass, since that
+   failure is itself auth-class, but a real gap between the check and the
+   question.
 
 ## Known gaps
 

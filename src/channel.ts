@@ -4,6 +4,29 @@ import { promisify } from "node:util";
 const execFileAsync = promisify(execFile);
 const CONTROL_PATH = "~/.ssh/control/%r@%h:%p";
 
+/**
+ * The command that makes a host murmur can otherwise not reach collectable.
+ *
+ * `-M` is the load-bearing flag and the reason this is a constant rather than
+ * prose in three places. A plain `ssh <host>` does NOT produce a usable master:
+ * it either attaches as a client to whatever socket exists, or -- through a
+ * `ProxyCommand` -- leaves a socket that can forward but has never authenticated
+ * a SESSION. Verified against a real 2FA host, where `ssh -O check` reported
+ * `Master running` and every command over it still failed with `Session open
+ * refused by peer`. `-M` makes the interactive session the reader just
+ * authenticated the master, so the session channel murmur wants rides a
+ * connection that has already cleared the second factor.
+ *
+ * `-S` with the same `%r@%h:%p` tokens as `ControlPath`, so one string is
+ * correct for every host and cannot drift from where murmur actually looks.
+ *
+ * Documented as a template rather than resolved per peer: the shell expands
+ * nothing here, ssh does, so a reader can paste it verbatim.
+ */
+export function warmSocketCommand(target: string): string {
+  return `ssh -M -S ${CONTROL_PATH} ${target}`;
+}
+
 // Both timeouts are sized against the tmux status bar, which is what drives
 // collection: tmux re-runs `murmur status` every `status-interval` (5s here,
 // 15s by default), and a collect that outlives its tick overlaps itself with no

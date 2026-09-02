@@ -280,26 +280,33 @@ already full-screen, and you land back at your shell prompt on exit.
 It is new and not battle-tested. The known gaps and the accepted limitations are
 listed at the end of [ARCHITECTURE.md](ARCHITECTURE.md#known-gaps).
 
-**A host that demands interactive auth needs a session open.** Some machines
-refuse an unattended login — a second factor per connection, a hardware token,
-a password. murmur never prompts (every ssh it runs sets `BatchMode=yes`, so a
-background collect cannot block on a human), which means such a peer is only
-collectable while an authenticated connection already exists.
+**A host that demands interactive auth needs a master session open.** Some
+machines refuse an unattended login — a second factor per connection, a
+hardware token, a password. murmur never prompts (every ssh it runs sets
+`BatchMode=yes`, so a background collect cannot block on a human), which means
+such a peer is only collectable while an authenticated connection already
+exists.
 
-Open one by hand and murmur rides it:
+Open one and leave it running:
 
 ```sh
-ssh dev    # answer the second factor once
+ssh -M -S '~/.ssh/control/%r@%h:%p' dev    # answer the second factor once
 ```
 
-That leaves an OpenSSH `ControlMaster` socket, which murmur attaches to for as
-long as your `ControlPersist` keeps it alive — collects then cost ~10ms instead
-of failing. While no socket exists, that peer is skipped rather than dialled on
-every tick, its cached rows still list with their real age, and the picker
-header names it:
+`-M` is the part that matters, and a plain `ssh dev` is **not** enough: that
+attaches as a client to whatever socket exists, or — behind a `ProxyCommand` —
+leaves a socket that can forward ports but has never authenticated a *session*.
+`ssh -O check` reports `Master running` either way, so the difference is
+invisible until a command over it fails with `Session open refused by peer`.
+`-M` makes the session you just authenticated the master, so murmur's channel
+rides a connection that has already cleared the second factor.
+
+While that master lives, collects cost ~10ms. While it does not, the peer is
+skipped rather than dialled on every tick, its cached rows still list with their
+real age, and the picker header names it with the command:
 
 ```
-dev: re-auth needed (last seen 2h) — ssh dev
+! dev: re-auth needed (last seen 2h) — ssh -M -S ~/.ssh/control/%r@%h:%p dev
 ```
 
 `murmur doctor` carries the full list where the header trims.
@@ -307,7 +314,7 @@ dev: re-auth needed (last seen 2h) — ssh dev
 An **Eternal Terminal** session does not work for this, which is worth stating
 because it looks like it should: ET bootstraps over ssh, so opening one hits the
 same auth wall, and it exposes no multiplexing socket for another process to
-attach to. A plain `ssh` alongside it is what murmur can use.
+attach to. A plain `ssh -M` alongside it is what murmur can use.
 
 **All nodes must speak the same snapshot format.** The format is versioned and a
 mismatch is rejected rather than guessed at, so a node on a different snapshot

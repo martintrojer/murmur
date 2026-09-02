@@ -1,5 +1,6 @@
 import { expect, test } from "vitest";
 import { agentLabel } from "../src/agents.js";
+import { warmSocketCommand } from "../src/channel.js";
 import {
   FILTER_ALIASES,
   FILTER_KEYS,
@@ -399,6 +400,9 @@ test("the row and the preview name a pane identically", () => {
 function gated(name: string, fetchedAt: number | null): Status["peers"][number] {
   return {
     name,
+    // Distinct from the name on purpose: `peer add <name> [target]` takes them
+    // separately, so a remedy built from the name would not necessarily run.
+    target: `${name}.example`,
     display_name: null,
     fetched_at: fetchedAt,
     snapshot_at: fetchedAt,
@@ -424,7 +428,14 @@ test("the notice names the peer, its age, and the exact command", () => {
 
   expect(notice).toContain("dev");
   expect(notice).toContain("1h");
-  expect(notice).toContain("ssh dev");
+  // The command that WORKS, which is `-M` plus an explicit `-S`. A plain
+  // `ssh dev` attaches as a client or leaves a forward-only socket, so the
+  // notice used to tell the reader to run the thing that had just failed them.
+  // Asserted against the shared helper, so the suggestion cannot drift from the
+  // ControlPath murmur actually uses.
+  expect(notice).toContain(warmSocketCommand("dev.example"));
+  // And it names the TARGET, not the peer's local name.
+  expect(notice).toContain("dev.example");
 });
 
 test("a peer never reached reads as never, not as an age", () => {
@@ -459,7 +470,11 @@ test("the peer list is trimmed rather than counted", () => {
   const notice = sessionNotice(many, 5_000);
 
   expect(notice).not.toMatch(/\+\d|more|\(\d/);
-  expect(notice?.length).toBeLessThan(120);
+  // VISIBLE width, not string length: the styling is ~30 escape bytes that
+  // occupy no columns, and the raw length now exceeds any sane bound while the
+  // line on screen is ~79 wide. Measuring the wrong one turned a real
+  // regression signal into a false alarm.
+  expect(visible(notice ?? "").length).toBeLessThan(120);
   // Trimmed, asserted by NAME. The length bound alone does not catch it: six
   // short fixture names fit inside 120 columns, so an untrimmed notice passed
   // it -- verified by mutation on `slice(0, NOTICE_PEERS)`.

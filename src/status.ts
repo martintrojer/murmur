@@ -21,6 +21,13 @@ export type Status = {
   panes: PaneView[];
   peers: {
     name: string;
+    /**
+     * The ssh target, which is what a REMEDY must name. `peer add <name>
+     * [target]` takes them separately, so a peer called `dev` can point at
+     * `user@box.example` -- and a suggested command built from the name would
+     * then not run.
+     */
+    target: string;
     display_name: string | null;
     fetched_at: number | null;
     snapshot_at: number | null;
@@ -92,6 +99,7 @@ export function status(
     panes,
     peers: store.peers().map((peer) => ({
       name: peer.name,
+      target: peer.target,
       display_name: peer.display_name,
       fetched_at: peer.fetched_at,
       // Their clock and ours, separately: a peer polled a second ago can be

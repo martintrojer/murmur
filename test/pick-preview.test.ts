@@ -2,6 +2,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { warmSocketCommand } from "../src/channel.js";
 import { runPreview } from "../src/cli/pick.js";
 import { createIdentity } from "../src/identity.js";
 import { asPaneId, asSessionId, asWindowId } from "../src/ids.js";
@@ -78,6 +79,12 @@ function preview(
   pane: string,
   host?: string,
   glanceOutput = "pane contents",
+  // No warm socket by default, so a gated peer READS gated. The probe is
+  // injected because the real one consults the developer's own ssh control
+  // sockets: without it, whether the gated-peer test passed depended on whether
+  // someone had a session open to that host, and it flipped the moment one
+  // appeared. A test must assert the code, not the machine.
+  warm: (target: string) => boolean = () => false,
 ): { text: string; dialled: string[]; argv: string[][] } {
   const written: string[] = [];
   const dialled: string[] = [];
@@ -90,11 +97,17 @@ function preview(
     return true;
   });
   try {
-    runPreview(store, pane, host, (target, args) => {
-      dialled.push(target);
-      argv.push(args);
-      return glanceOutput;
-    });
+    runPreview(
+      store,
+      pane,
+      host,
+      (target, args) => {
+        dialled.push(target);
+        argv.push(args);
+        return glanceOutput;
+      },
+      warm,
+    );
   } finally {
     stdout.mockRestore();
   }
@@ -263,6 +276,8 @@ test("a gated peer's preview says why, and names the command", () => {
   expect(text).toContain("remote-worker");
   expect(dialled).toEqual([]);
   expect(text).toContain("needs an interactive session");
-  expect(text).toContain("ssh dev");
+  // The working command, from the shared helper, so the preview and the header
+  // cannot suggest different things.
+  expect(text).toContain(warmSocketCommand("dev"));
   expect(text).not.toContain("pane gone");
 });

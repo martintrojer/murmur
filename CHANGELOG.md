@@ -14,9 +14,11 @@ the whole fleet. Its cached rows still list with their real age, so the agents
 stay visible while the peer waits.
 
 **The picker names it, so a lapsed session is not silent.** A header line, only
-when it applies: `dev: re-auth needed (last seen 2h) — ssh dev`. The remedy is
-one login: that leaves a `ControlMaster` socket murmur rides for as long as
-`ControlPersist` holds it, after which collects cost ~10ms. `doctor` carries the
+when it applies, in bold amber above the key legend: `dev: re-auth needed (last
+seen 2h) — ssh -M -S ~/.ssh/control/%r@%h:%p dev`. The `-M` is the whole
+remedy — a plain `ssh` leaves a socket that can forward but has never
+authenticated a session, which `ssh -O check` reports as a healthy master right
+up until a command over it fails. With a real master, collects cost ~10ms. `doctor` carries the
 full list where the header trims to three. Note an Eternal Terminal session does
 not work here — it bootstraps over ssh and exposes no socket to attach to.
 

@@ -7,6 +7,7 @@ import {
   jumpToAgent,
   terminalText,
 } from "../agents.js";
+import { warmSocketCommand } from "../channel.js";
 import { type GlanceRunner, glance } from "../glance.js";
 import { type Status, status, statusWithCollect } from "../status.js";
 import { openStore, type Store } from "../store.js";
@@ -243,9 +244,19 @@ export function sessionNotice(peers: Status["peers"], now = Date.now()): string 
   // thing in the glyph column's own alphabet. The remedy stays undimmed because
   // it is the part meant to be copied.
   const attention = `${BOLD}${COLOUR.blocked ?? ""}`;
+  // The remedy is `warmSocketCommand`, not a hand-written `ssh <host>`. That
+  // shorter form was WRONG and shipped anyway: a plain `ssh` attaches as a
+  // client or leaves a forward-only socket, so the reader ran it, murmur still
+  // could not collect, and the notice kept telling them to do the thing that had
+  // just failed. Built from the same constant as `ControlPath`, so the suggestion
+  // cannot drift from where murmur looks.
+  //
+  // Keyed on TARGET, not name: `peer add <name> [target]` takes them separately,
+  // so a command built from the name is not guaranteed to run.
+  const oldestTarget = oldest?.target ?? named[0] ?? "";
   return (
     `${attention}! ${named.join(", ")}: re-auth needed${RESET}` +
-    `${COLOUR.blocked ?? ""} (last seen ${seen}) \u2014 ${BOLD}ssh ${named[0]}${RESET}`
+    `${COLOUR.blocked ?? ""} (last seen ${seen}) \u2014 ${BOLD}${warmSocketCommand(oldestTarget)}${RESET}`
   );
 }
 
@@ -488,7 +499,7 @@ function previewText(
     : [
         `${DIM}\u2500\u2500 pane \u2500\u2500${RESET}`,
         gatedPeer
-          ? `${DIM}needs an interactive session \u2014 ssh ${gatedPeer.name}${RESET}`
+          ? `${DIM}needs an interactive session \u2014 ${warmSocketCommand(gatedPeer.target)}${RESET}`
           : `${DIM}unavailable (host unreachable, or pane gone)${RESET}`,
       ];
 
@@ -505,6 +516,12 @@ export function runPreview(
   paneId: string,
   hostId?: string,
   run?: GlanceRunner,
+  // The warm-socket probe, threaded through so a test does not consult the
+  // developer's REAL ssh sockets. Without this seam, whether the gated-peer
+  // preview test passed depended on whether someone happened to have a session
+  // open to that host -- it inverted the moment a master appeared, which is a
+  // test asserting the state of the machine rather than the state of the code.
+  warm?: (target: string) => boolean,
 ): void {
   const identity = requireIdentity();
   if (!identity) return;
@@ -515,7 +532,7 @@ export function runPreview(
   // nothing more, so two machines routinely hold a `%1` -- which is why fzf
   // hands both columns back. Matching on the pane alone previewed whichever row
   // the sort put first, so a local `capture-pane` stood in for a remote agent.
-  const view = status(store, identity);
+  const view = status(store, identity, Date.now(), warm);
   const agent = view.panes.find(
     (candidate) =>
       candidate.pane === paneId && (hostId === undefined || candidate.host_id === hostId),

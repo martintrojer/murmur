@@ -1,4 +1,4 @@
-import type { Channel } from "./channel.js";
+import { type Channel, warmSocketCommand } from "./channel.js";
 import { versionCell } from "./cli/peer.js";
 import {
   describeFailure,
@@ -526,12 +526,18 @@ export function diagnose(local: LocalNode, surveys: SurveyResult[]): Finding[] {
       kind: "needs-session",
       severity: "observation",
       subject: peer.name,
-      message: `${peer.name} refused an unattended login, so it cannot be collected until someone runs \`ssh ${peer.target}\` to open a session`,
+      message: `${peer.name} refused an unattended login, so it cannot be collected until someone opens a master session with \`${warmSocketCommand(peer.target)}\``,
       detail: "needs an interactive login",
       // Opening any session creates the ControlMaster socket murmur then rides,
       // so the remedy is the plain login and nothing more -- no murmur
       // subcommand, because what is missing is the authenticated channel.
-      remedy: `ssh ${peer.target}`,
+      // `-M`, and the flag is the whole point: a plain `ssh` attaches as a
+      // client or leaves a `ProxyCommand` socket that can forward but has never
+      // authenticated a session, so `ssh -O check` reports a healthy master and
+      // every command over it still fails with `Session open refused by peer`.
+      // Measured against a real 2FA host. Suggesting the short form told an
+      // operator to run the command that had just failed them.
+      remedy: warmSocketCommand(peer.target),
     });
   }
 

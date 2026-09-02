@@ -1,4 +1,5 @@
 import { expect, test } from "vitest";
+import { warmSocketCommand } from "../src/channel.js";
 import {
   diagnose,
   type Finding,
@@ -483,8 +484,14 @@ test("a peer needing interactive auth is an observation, not a problem", () => {
 
   const finding = only(findings, "needs-session");
   expect(finding).toMatchObject({ severity: "observation", subject: "dev" });
-  expect(finding.message).toContain("ssh dev");
-  expect(finding.remedy).toBe("ssh dev");
+  // `-M` and an explicit `-S`, not a bare `ssh dev`. The short form shipped and
+  // was wrong: a plain ssh attaches as a client, or leaves a ProxyCommand socket
+  // that forwards but has never authenticated a session -- so `ssh -O check`
+  // reports a healthy master and every command over it still fails with
+  // `Session open refused by peer`. doctor was telling an operator to run the
+  // command that had just failed them.
+  expect(finding.message).toContain(warmSocketCommand("dev"));
+  expect(finding.remedy).toBe(warmSocketCommand("dev"));
 });
 
 test("doctor lists every gated peer, where the picker trims", () => {
