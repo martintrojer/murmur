@@ -4,7 +4,7 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import type { Channel } from "../src/channel.js";
-import { collect, MAX_CONCURRENT_PEERS } from "../src/collector.js";
+import { COLLECT_FLOOR_MS, collect, MAX_CONCURRENT_PEERS } from "../src/collector.js";
 import { createIdentity } from "../src/identity.js";
 import { asPaneId, asSessionId, asWindowId } from "../src/ids.js";
 import { dbPath } from "../src/paths.js";
@@ -378,4 +378,116 @@ test("a peer the deadline never dialled records no attempt and no error", async 
   const peer = s.peers().find((entry) => entry.name === unclaimed);
   // Never asked, so there is nothing to record: not an attempt, not an error.
   expect(peer).toMatchObject({ last_attempt_at: null, last_error: null });
+});
+
+/** A peer that has answered before and whose last attempt was refused on auth. */
+function authRefused(s: Store, name: string): void {
+  s.addPeer(name, name);
+  s.replacePeerSnapshot(name, { ok: true, at: 1_000, snapshot: document([pane("%1")]) });
+  s.replacePeerSnapshot(name, {
+    ok: false,
+    at: 2_000,
+    error: "Permission denied (keyboard-interactive).",
+  });
+}
+
+test("an ambient collect skips a peer that needs a human, recording nothing", async () => {
+  // The gating, and the reason it is worth having: a host demanding a second
+  // factor per connection costs the full auth exchange to fail -- measured at
+  // ~1.5s against a real one -- and the ambient path pays that on every status
+  // tick and every picker launch, forever, to learn nothing.
+  //
+  // Recording NOTHING is the other half. `last_attempt_at` gates the collect
+  // floor and `last_error` gates the picker's glance, so inventing either would
+  // defer the peer and suppress its preview. Same invariant as a peer the
+  // deadline never dialled.
+  const s = store();
+  authRefused(s, "dev");
+
+  const dialled: string[] = [];
+  const channel: Channel = {
+    exec: async (target) => {
+      dialled.push(target);
+      return JSON.stringify(document([]));
+    },
+  };
+
+  const results = await collect(s, channel, 999_000, {
+    floorMs: COLLECT_FLOOR_MS,
+    warm: () => false,
+    mux: LOCAL,
+  });
+
+  expect(dialled).toEqual([]);
+  // Absent from the report too: a result row is about a host murmur contacted.
+  expect(results).toEqual([]);
+  const peer = s.peers().find((entry) => entry.name === "dev");
+  // The attempt clock still reads the last REAL attempt, and the cached document
+  // stands -- so the picker can still list this peer's agents while it waits.
+  expect(peer).toMatchObject({ last_attempt_at: 2_000 });
+  expect(peer?.snapshot?.panes.map((entry) => entry.pane)).toEqual(["%1"]);
+});
+
+test("a deliberate collect still tries a peer that needs a human", async () => {
+  // Unfloored means a person asked, and the reasoning is the same as `^r` being
+  // unfloored: a command that silently declined to do the thing would be worse
+  // than a slow failure, and ssh's own diagnosis is what the operator needs.
+  const s = store();
+  authRefused(s, "dev");
+
+  const dialled: string[] = [];
+  const channel: Channel = {
+    exec: async (target) => {
+      dialled.push(target);
+      throw new Error("Permission denied (keyboard-interactive).");
+    },
+  };
+
+  await collect(s, channel, 999_000, { warm: () => false, mux: LOCAL });
+
+  expect(dialled).toEqual(["dev"]);
+});
+
+test("a warm socket makes a gated peer collectable again", async () => {
+  // Self-correcting, with nothing to reset: the operator opens a session, a
+  // ControlMaster socket appears, and the very next ambient collect rides it.
+  const s = store();
+  authRefused(s, "dev");
+
+  const dialled: string[] = [];
+  const channel: Channel = {
+    exec: async (target) => {
+      dialled.push(target);
+      return JSON.stringify(document([]));
+    },
+  };
+
+  await collect(s, channel, 999_000, {
+    floorMs: COLLECT_FLOOR_MS,
+    warm: () => true,
+    mux: LOCAL,
+  });
+
+  expect(dialled).toEqual(["dev"]);
+});
+
+test("the warm-socket probe is not paid for peers that are not gated", async () => {
+  // Cost control on the ambient path, which runs on every status tick: the probe
+  // is ~20ms per host, and only an auth-class error can make it worth asking.
+  const s = store();
+  authRefused(s, "dev");
+  s.addPeer("bubba", "bubba");
+  s.replacePeerSnapshot("bubba", { ok: true, at: 1_000, snapshot: document([]) });
+
+  const probed: string[] = [];
+  await collect(s, { exec: async () => JSON.stringify(document([])) }, 999_000, {
+    floorMs: COLLECT_FLOOR_MS,
+    warm: (target) => {
+      probed.push(target);
+      return false;
+    },
+    mux: LOCAL,
+  });
+
+  expect(probed).toEqual(["dev"]);
 });

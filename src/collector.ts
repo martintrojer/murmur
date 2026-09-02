@@ -1,4 +1,4 @@
-import type { Channel } from "./channel.js";
+import { type Channel, hasWarmSocket } from "./channel.js";
 import { type Mux, tmux } from "./mux.js";
 import { parseSnapshot, SnapshotInvalidError } from "./snapshot.js";
 import type { Store } from "./store.js";
@@ -154,6 +154,14 @@ export type CollectOptions = {
    * a value approaching 1, rather than sampling and hoping.
    */
   random?: () => number;
+  /**
+   * Whether a peer has a warm ControlMaster socket to ride.
+   *
+   * Injected like `random` and `now`, so a test needs no ssh binary and can
+   * assert WHICH peers were probed -- the only way to pin the cost control in
+   * `duePeers`, since the probe is ~20ms per host on a path that runs per tick.
+   */
+  warm?: (target: string) => boolean;
 };
 
 /**
@@ -178,9 +186,27 @@ function duePeers(
   now: number,
   floorMs: number,
   random: () => number,
+  warm: (target: string) => boolean,
 ): PeerRecord[] {
   if (floorMs <= 0) return [...peers];
   return peers.filter((peer) => {
+    // A peer that needs a human, with no warm socket to ride, is not due -- it
+    // is not collectable at all. Skipping costs nothing and records nothing;
+    // dialling costs the full auth exchange to fail (~1.5s measured against a
+    // real 2FA host) on every status tick and every picker launch, forever, to
+    // learn what the cached error already says.
+    //
+    // AMBIENT ONLY, and structurally so: this function returns above when
+    // `floorMs <= 0`, which is how a deliberate `murmur collect` is spelled. A
+    // person asking gets the attempt and ssh's own diagnosis.
+    //
+    // Ordered so the free cached read gates the ~20ms probe. `needsInteractiveAuth`
+    // is also what proves contact -- an unreachable host cannot answer
+    // `Permission denied` -- so there is no "has it ever worked" test here and
+    // deliberately none: requiring one excluded the peer this exists for.
+    if (peer.last_error !== null && needsInteractiveAuth(peer.last_error) && !warm(peer.target)) {
+      return false;
+    }
     if (peer.last_attempt_at === null) return true;
     // Centred on the floor: [-span/2, +span/2).
     const jitter = (random() - 0.5) * COLLECT_JITTER_MS;
@@ -319,13 +345,13 @@ export async function collect(
   now = Date.now(),
   options: CollectOptions = {},
 ): Promise<CollectResult[]> {
-  const { deadline, mux = tmux, floorMs = 0, random = Math.random } = options;
+  const { deadline, mux = tmux, floorMs = 0, random = Math.random, warm = hasWarmSocket } = options;
   const results: CollectResult[] = [];
   let timer: NodeJS.Timeout | undefined;
   try {
     // Only the peers due a fetch are passed to the pool, so a skipped peer costs
     // no ssh, no slot and no result row.
-    const peers = duePeers(store.peers(), now, floorMs, random);
+    const peers = duePeers(store.peers(), now, floorMs, random, warm);
     // Default deadline, injectable so tests do not have to wait out real time.
     // Unref'd: a pending timer must not hold the process open after a CLI
     // command has printed its output and finished.
