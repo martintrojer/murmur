@@ -229,7 +229,7 @@ test("a running agent with blocked attention is a valid state, not a contradicti
   expect(pane?.agent).toMatchObject({ activity: "running", agent_name: "worker-1" });
   expect(pane?.attention.map((entry) => entry.kind)).toEqual(["blocked"]);
   // A surface that must pick one word picks the request over the description.
-  expect(renderState({ activity: "running", attention: ["blocked"] })).toBe("blocked");
+  expect(renderState({ activity: "running", attention: [{ kind: "blocked" }] })).toBe("blocked");
 });
 
 test("focus acknowledges attention without ending the run it interrupted", () => {

@@ -498,6 +498,43 @@ ordering table both the status bar and the picker import rather than restating.
 already fails without one. Optional-chaining it is what previously classed every
 row as remote — including local ones — whenever identity was absent.
 
+### Ordering: one band table, then heuristics inside a band
+
+`RENDER_PRIORITY` decides the band and nothing else may cross one. That is the
+only thing a reader is entitled to read off a row's position, so a local `idle`
+row in the stream you are working in still sorts below a remote `crashed` one on
+a host you cannot reach.
+
+Inside a band, `viewSort` ranks by how much the row wants you. Every input is
+already in the snapshot, so this needs no configuration and no new schema:
+
+| Signal | Effect | Why |
+| --- | --- | --- |
+| age of the **rendered kind** | the main key | `attention.requested_at` per kind, not the pane's `updated_at`, which is the max over every fact on the pane |
+| direction of age | `crashed`/`blocked` oldest first, everything else newest first | a request for a human *starves*; a result is *news* |
+| extra attention kinds | +15 min each | a pane that crashed *and* was flagged blocked is two requests deep |
+| your stream | +10 min | the workstream mu set, else the tmux session name — the same chain the picker's `stream` column prints |
+| local | +2 min | a keypress, against an ssh and a nested tmux attach |
+| **the pane you are in** | last in its band | you do not need a picker to reach your own cursor |
+| **stale host** | after every fresh row in its band | its fields are last-known and may be hours dead |
+
+Bonuses are denominated in **minutes of waiting**, so each is a sentence that
+can be checked against a real list rather than a dimensionless weight. Age is
+unbounded and the bonuses are not, so no pile of nudges can outrank a genuinely
+starving row — which is the guarantee that makes the oldest-first bands safe.
+
+The last two are categorical rather than scored, both deliberately. Scoring
+staleness would let an ever-growing age on an unreachable host outrun every fact
+we can still verify: an abandoned laptop would own the top of the list, and grow
+more convincing the longer it stayed gone.
+
+What is deliberately *not* here: anything needing a past. The store holds
+current state only, so time-in-state beyond `requested_at`, flap counts and
+learned ranking would each cost a table, a `user_version` bump and a rebuild.
+And anything that is an opinion — which workstream matters, whether a `reviewer`
+outranks a `worker`, muting a noisy host — is config, and murmur has no config
+file yet. Both are follow-on work, not gaps in this.
+
 ### State and freshness are different axes, and the ages are two
 
 `stale` is not a state. It is a property of a NODE.

@@ -23,7 +23,7 @@ function windowBadge(window: WindowId, mux: Mux, store: Store): RenderState | nu
     .map((pane) =>
       renderState({
         activity: pane.agent?.activity ?? null,
-        attention: pane.attention.map((entry) => entry.kind),
+        attention: pane.attention,
       }),
     );
   return RENDER_PRIORITY.find((state) => state !== "idle" && states.includes(state)) ?? null;

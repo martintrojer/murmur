@@ -144,7 +144,8 @@ test("counts group by render state, and attention beats activity", () => {
   // Both facts survive on the row that carries both, which is the point of
   // keeping them separate: a running agent CAN be waiting on a human.
   const blocked = result.panes.find((pane) => pane.pane === "%2");
-  expect(blocked).toMatchObject({ activity: "running", attention: ["blocked"] });
+  expect(blocked).toMatchObject({ activity: "running" });
+  expect(blocked?.attention.map((entry) => entry.kind)).toEqual(["blocked"]);
 });
 
 test("a remote pane keeps its own node's fields and takes its node's freshness", () => {
@@ -205,11 +206,15 @@ test("an attention-only pane is a listable row with no agent", () => {
     pane: "%7",
     activity: null,
     agent_id: null,
-    attention: ["blocked"],
     // No agent row means no reported driver, and `human` is the answer that
     // keeps the row visible in the picker.
     driver: "human",
   });
+  // Each request carries its OWN clock now, which is what lets the sort age a
+  // row by the kind it renders as rather than by the newest fact on the pane.
+  expect(result.panes[0]?.attention).toEqual([
+    { kind: "blocked", requested_at: expect.any(Number) },
+  ]);
   expect(result.counts.blocked).toBe(1);
 });
 
@@ -406,19 +411,17 @@ test("statusWithCollect awaits the collect before reading", async () => {
   expect(() => store.close()).not.toThrow();
 });
 
-test("a fresh request outranks an older agent report on the same pane", () => {
-  // `viewSort`'s second key is "the newest news", and `updated_at` is what feeds
-  // it. That field used to be the agent row's clock with attention as a mere
+test("a pane's age comes from its newest fact, agent row or attention request", () => {
+  // `updated_at` used to be the agent row's clock with attention as a mere
   // FALLBACK, so a pane holding an agent discarded every attention timestamp --
   // including a newer one.
   //
   // The writer this hurt is the one that structurally cannot touch an agent row:
   // `murmur notify` writes attention alone, so a codex agent blocked seconds ago
-  // on a pane whose pi last reported hours earlier sorted BELOW a staler
-  // request. The freshest thing wanting a human sank in the list opened to act
-  // on it, and the picker labelled it with the agent's age.
+  // on a pane whose pi last reported hours earlier carried a two-hour age into
+  // the sort and into the row the picker painted.
   //
-  // Two blocked panes, so state cannot decide the order and the age key has to.
+  // Two blocked panes, so state cannot decide the order and age has to.
   const stale = store.claimAgent({
     location: location("%stale"),
     owner_pid: process.pid,
@@ -463,9 +466,17 @@ test("a fresh request outranks an older agent report on the same pane", () => {
 
   const result = status(store, IDENTITY);
 
-  // The newest REQUEST wins, whatever the agent rows say.
-  expect(result.panes.map((pane) => pane.pane)).toEqual(["%fresh", "%stale"]);
-  expect(result.panes[0]?.updated_at).toBe(9_000);
+  // The newest REQUEST supplies the age, whatever the agent rows say.
+  const byPane = new Map(result.panes.map((pane) => [pane.pane as string, pane]));
+  expect(byPane.get("%fresh")?.updated_at).toBe(9_000);
+  expect(byPane.get("%stale")?.updated_at).toBe(2_000);
+
+  // And the LONGER wait leads, because `blocked` is a request that starves: the
+  // pane asking since 2_000 has been waiting seven seconds longer than the one
+  // asking since 9_000. This assertion read the other way round while one age
+  // rule served every state, which is the bug `OLDEST_FIRST` fixes -- see
+  // view.test.ts for the whole table.
+  expect(result.panes.map((pane) => pane.pane)).toEqual(["%stale", "%fresh"]);
 });
 
 /** A peer that has answered before, then failed, for the gating tests below. */

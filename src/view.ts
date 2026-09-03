@@ -49,6 +49,29 @@ export const RENDER_PRIORITY: readonly RenderState[] = [
 export const NEEDS_HUMAN: readonly AttentionKind[] = ["blocked", "crashed"];
 
 /**
+ * One attention request as a surface reads it: the kind, and WHEN it was asked.
+ *
+ * The timestamp is per kind rather than folded into the pane's `updated_at`,
+ * because urgency is per request: a pane crashed an hour ago and blocked ten
+ * seconds ago has two different ages, and the one that decides its position is
+ * the one belonging to the kind it renders as. Collapsing them to a single
+ * `max` -- which is what `updated_at` is -- let a fresh `done` mask a starving
+ * `blocked` on the same pane.
+ *
+ * `message` and `source` stay in the snapshot and out of here: nothing paints
+ * them, and a field carried for a future reader is a field nobody keeps true.
+ */
+export type PaneAttention = { kind: AttentionKind; requested_at: number };
+
+/** Does this pane want this kind of attention? */
+export function wants(
+  view: { attention: readonly { kind: AttentionKind }[] },
+  kind: AttentionKind,
+): boolean {
+  return view.attention.some((entry) => entry.kind === kind);
+}
+
+/**
  * One pane, as every surface reads it: address, the three independent facts,
  * owner metadata, and ages.
  *
@@ -70,7 +93,7 @@ export type PaneView = {
   // the three independent facts
   /** Null for an attention-only pane, which has no agent row. */
   activity: Activity | null;
-  attention: AttentionKind[];
+  attention: PaneAttention[];
   freshness: Freshness;
   // owner-reported metadata, null for an attention-only pane
   agent_id: string | null;
@@ -146,9 +169,12 @@ export function freshness(
  * A running agent with `blocked` attention is valid and expected, and surfaces
  * that can show both do -- this is only for the ones that must pick one.
  */
-export function renderState(view: Pick<PaneView, "activity" | "attention">): RenderState {
+export function renderState(view: {
+  activity: Activity | null;
+  attention: readonly { kind: AttentionKind }[];
+}): RenderState {
   for (const kind of ["crashed", "blocked", "done"] as const) {
-    if (view.attention.includes(kind)) return kind;
+    if (wants(view, kind)) return kind;
   }
   return view.activity === "running" ? "running" : "idle";
 }
@@ -190,7 +216,10 @@ function paneView(pane: SnapshotPane, source: ViewSource): PaneView {
     session_name: pane.session_name,
     window_name: pane.window_name,
     activity: agent?.activity ?? null,
-    attention: pane.attention.map((entry) => entry.kind),
+    attention: pane.attention.map((entry) => ({
+      kind: entry.kind,
+      requested_at: entry.requested_at,
+    })),
     freshness: source.freshness,
     agent_id: agent?.agent_id ?? null,
     agent_name: agent?.agent_name ?? null,
@@ -267,29 +296,183 @@ export function paneViews(store: Store, identity: NodeIdentity, now = Date.now()
 const ORDER = new Map<RenderState, number>(RENDER_PRIORITY.map((state, index) => [state, index]));
 
 /**
- * Attention-first ordering, then the newest news, then address.
+ * Which way age points, per state.
  *
- * TOTAL on purpose, which is why the last two comparisons exist. Ties on state
- * and age are ordinary -- two crashed panes reconciled in one transaction share
- * a `requested_at` exactly -- and `sort` is stable only with respect to the
- * order it was GIVEN, here whatever SQLite and the peer loop produced. An
- * unbroken tie makes the list depend on that: a status bar reshuffles between
- * two identical ticks, and a picker row moves under the keypress aimed at it.
+ * Not one rule, and the single rule it replaces was wrong for half the table.
+ * `done` is news: the freshest result is the one you have not seen, and an
+ * acknowledged-but-unfocused pane from this morning is the one you have. But a
+ * request for a human STARVES -- an agent blocked forty minutes ago has been
+ * waiting forty minutes, and newest-first buried it under one blocked thirty
+ * seconds ago, every single time the newer one appeared. The list a human opens
+ * to unblock things sorted the longest-waiting thing to the bottom.
+ *
+ * `running` and `idle` ask for nothing, so the direction there is only a
+ * tiebreak and newest reads best: it is the pane you last touched.
+ */
+const OLDEST_FIRST: readonly RenderState[] = ["crashed", "blocked"];
+
+/**
+ * How much a signal is worth, in MINUTES OF WAITING.
+ *
+ * One unit for every bonus, so each is a sentence a reader can check against
+ * their own list -- "being in the stream you are working in is worth ten minutes
+ * of age" -- rather than a dimensionless weight that can only be tuned by
+ * flailing. It also means a bonus can never dominate: age is unbounded, so a
+ * genuinely starving row eventually outranks any pile of nudges, which is what
+ * `OLDEST_FIRST` exists to guarantee.
+ *
+ * These are the same knobs a config file would set, and none is set anywhere
+ * yet, deliberately: every signal here is already in the snapshot, so the
+ * ordering improves for everyone with nothing to configure and nothing to parse.
+ */
+const BONUS_MINUTES = {
+  /** Per attention kind BEYOND the one the row renders as. */
+  pile: 15,
+  /** The row is in the workstream (or tmux session) you are sitting in. */
+  stream: 10,
+  /** A keypress away, against an ssh and a nested tmux attach. */
+  local: 2,
+} as const;
+
+/** What a reader knows about themselves. Everything optional; all of it a nudge. */
+export type SortContext = {
+  now?: number;
+  /** The pane the reader is sitting in, if they are in one. */
+  here?: string;
+};
+
+/** The context after defaulting, plus the stream `viewSort` resolved from the list. */
+type Resolved = { now: number; here: string; stream: string | null };
+
+/**
+ * When the fact a row RENDERS was reported, or null if nothing said.
+ *
+ * The rendered kind's own `requested_at`, not the pane's `updated_at`, which is
+ * the max over every fact on the pane. A pane crashed an hour ago and marked
+ * `done` a second ago renders `crashed` and must carry the crash's age: under
+ * the max it read as a one-second-old crash and sorted above genuinely fresh
+ * ones.
+ */
+function statedAt(view: PaneView, state: RenderState): number | null {
+  for (const entry of view.attention) {
+    if (entry.kind === state) return entry.requested_at;
+  }
+  return view.updated_at;
+}
+
+/**
+ * How much this row wants the reader, within its state band. Higher is sooner.
+ *
+ * Presentation only, and deliberately NOT exported as a number anyone stores or
+ * paints: it has no meaning across bands (a hot `idle` never outranks a cold
+ * `crashed`), and printing it would invite exactly that comparison.
+ *
+ * `-Infinity` for a row that never said when: unknown is not new, and it is not
+ * urgent either. It sorts last in its band in both directions rather than
+ * pretending to a position, which is the same answer the old `?? 0` gave for
+ * newest-first, now also correct for oldest-first -- where a missing timestamp
+ * read as 1970 and won the whole list.
+ */
+function urgency(view: PaneView, state: RenderState, context: Resolved): number {
+  const at = statedAt(view, state);
+  if (at === null) return Number.NEGATIVE_INFINITY;
+
+  const minutes = (context.now - at) / 60_000;
+  let score = OLDEST_FIRST.includes(state) ? minutes : -minutes;
+
+  score += BONUS_MINUTES.pile * (view.attention.length - 1);
+  if (view.local) score += BONUS_MINUTES.local;
+  if (context.stream !== null && stream(view) === context.stream) score += BONUS_MINUTES.stream;
+  return score;
+}
+
+/**
+ * Which piece of work a row belongs to: the workstream mu set, else the tmux
+ * session name.
+ *
+ * The same chain the picker's `stream` column prints, so "in my stream" means
+ * exactly what the column a reader can see says, rather than a second answer
+ * only the sort knows.
+ */
+function stream(view: PaneView): string | null {
+  return view.workstream ?? view.session_name;
+}
+
+/**
+ * Attention-first ordering, then confidence, then urgency, then address.
+ *
+ * The state band is still lexicographic and still `RENDER_PRIORITY`: nothing
+ * below may lift an `idle` row above a `blocked` one, because the band is the
+ * one thing a reader is entitled to read off a position. Everything else
+ * decides only who leads WITHIN a band.
+ *
+ * Two demotions are categorical rather than scored, because both are statements
+ * about whether the row is worth acting on at all:
+ *
+ *   - The pane you are SITTING IN goes last in its band. You do not need a
+ *     picker to reach the pane your cursor is already in, and it was reliably at
+ *     the top -- it is the pane that most recently said something.
+ *   - A row from a STALE host goes below every fresh row in its band. Its fields
+ *     are last-known and may be hours dead; a fresh row we can vouch for should
+ *     be reached first. Scoring this instead would have let an ever-growing age
+ *     on an unreachable host outrun every fact we can still verify.
+ *
+ * TOTAL on purpose, which is why the address comparisons remain. Ties are
+ * ordinary -- two crashed panes reconciled in one transaction share a
+ * `requested_at` exactly -- and `sort` is stable only with respect to the order
+ * it was GIVEN, here whatever SQLite and the peer loop produced. An unbroken tie
+ * makes the list depend on that: a status bar reshuffles between two identical
+ * ticks, and a picker row moves under the keypress aimed at it.
  *
  * Presentation only. No caller may read meaning into a row's position -- pane
  * order in a snapshot carries none either, so a reader sorts for itself.
  */
-export function viewSort(views: PaneView[]): PaneView[] {
+export function viewSort(views: PaneView[], context: SortContext = {}): PaneView[] {
+  const at = context.now ?? Date.now();
+  const here = context.here ?? "";
+  // The reader's own row, found once rather than per comparison. Local by
+  // construction: a pane id names a pane on the machine reading it, and two
+  // hosts routinely hold a `%1`.
+  //
+  // The reader's stream is resolved FROM the list rather than passed in, because
+  // it is not a separate fact -- it is whatever the row for their own pane says.
+  // A caller supplying it would be deriving it from this same list, one copy of
+  // the fallback chain per surface.
+  const mine = here ? views.find((view) => view.local && view.pane === here) : undefined;
+  const resolved: Resolved = { now: at, here, stream: mine ? stream(mine) : null };
+
   return [...views].sort((left, right) => {
-    const byState = (ORDER.get(renderState(left)) ?? 99) - (ORDER.get(renderState(right)) ?? 99);
+    const leftState = renderState(left);
+    const rightState = renderState(right);
+    const byState = (ORDER.get(leftState) ?? 99) - (ORDER.get(rightState) ?? 99);
     if (byState !== 0) return byState;
-    // Unknown age sorts last within its state: an attention-only pane with no
-    // timestamp is not news, and 0 is older than any real clock reading.
-    const byAge = (right.updated_at ?? 0) - (left.updated_at ?? 0);
-    if (byAge !== 0) return byAge;
+
+    const byHere = sittingIn(left, resolved.here) - sittingIn(right, resolved.here);
+    if (byHere !== 0) return byHere;
+
+    const byFreshness = stale(left) - stale(right);
+    if (byFreshness !== 0) return byFreshness;
+
+    const byUrgency = urgency(right, rightState, resolved) - urgency(left, leftState, resolved);
+    // NaN-proof: two `-Infinity` urgencies subtract to NaN, which is neither
+    // positive nor negative, so a raw return would leave the pair unordered and
+    // hand the position back to the input order this function exists to remove.
+    if (byUrgency > 0) return 1;
+    if (byUrgency < 0) return -1;
+
     // Address as the final key, because it is the only field guaranteed unique
     // across the whole view: `pane` is unique per node and `host` per peer.
     const byHost = left.host.localeCompare(right.host);
     return byHost !== 0 ? byHost : left.pane.localeCompare(right.pane);
   });
+}
+
+/** 1 for the pane the reader is sitting in, which sorts last in its band. */
+function sittingIn(view: PaneView, pane: string): number {
+  return pane && view.local && view.pane === pane ? 1 : 0;
+}
+
+/** 1 for a row whose host we have not reached lately, which sorts after fresh ones. */
+function stale(view: PaneView): number {
+  return view.freshness === "stale" ? 1 : 0;
 }

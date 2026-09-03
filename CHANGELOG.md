@@ -5,6 +5,27 @@ so it says what changed for a user rather than listing every commit.
 
 ## Unreleased
 
+**The longest wait now leads the list.** A request for a human starves: an
+agent blocked forty minutes ago has been waiting forty minutes. One age rule
+served every state, and it was newest-first, so that agent sat below one blocked
+thirty seconds ago and sank further every time a newer request arrived — the
+list you open to unblock things put the longest wait at the bottom. `crashed`
+and `blocked` now sort oldest first. `done` still sorts newest first, because a
+result is news rather than a wait.
+
+**A row is aged by the fact it shows.** Attention requests now carry their own
+timestamps, so a pane that crashed an hour ago and printed a `done` a second ago
+is ranked as an hour-old crash rather than a one-second-old one.
+
+**Rows nearer to hand rank sooner, within a state.** A pane wanting two kinds of
+attention leads one wanting a single kind; the workstream you are sitting in
+leads one you are not; a local pane leads an identical remote one. The pane your
+cursor is already in drops to the bottom of its state, and a stale host's rows
+fall below every fresh row — its fields are last-known and may be hours dead.
+
+Nothing crosses a state boundary and nothing is configurable: a busy pane never
+outranks a crashed one, and every signal above is already in the snapshot.
+
 **A busy session channel is no longer mistaken for an auth wall.** Some hosts
 cap session channels per connection (`MaxSessions 1`), so a collect that
 overlaps another command on the same master is refused with `Session open

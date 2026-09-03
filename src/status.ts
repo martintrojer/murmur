@@ -10,6 +10,7 @@ import {
   RENDER_PRIORITY,
   type RenderState,
   renderState,
+  type SortContext,
   viewSort,
 } from "./view.js";
 
@@ -57,7 +58,7 @@ export function tmuxStatus(view: Status): string {
   // supervisor consumes a `done` worker's result and `running` asks for nothing.
   // The list is `NEEDS_HUMAN`, shared with the picker's visibility rule so the
   // two surfaces cannot disagree about which crew rows matter.
-  const needsHuman = new Set<string>(NEEDS_HUMAN);
+  const needsHuman = new Set<RenderState>(NEEDS_HUMAN);
   const total = (state: RenderState): number =>
     view.counts[state] + (needsHuman.has(state) ? view.orchestrated_counts[state] : 0);
   return (
@@ -84,10 +85,19 @@ export function status(
   // an ssh binary, and "was this peer probed at all" has to be assertable --
   // which is the only way to pin the cost control below.
   warm: (target: string) => boolean = hasWarmSocket,
+  // Where the reader is sitting, which only affects ORDER within a state band.
+  // Read from the environment here rather than in `viewSort`, so the pure
+  // function stays pure and a test can place the reader anywhere.
+  //
+  // $TMUX_PANE, never a tmux query: the same rule `mux.currentWindow()` follows.
+  // Asking tmux answers for whichever pane the server thinks is active, which is
+  // not the pane this process runs in -- and the status bar renders in the tmux
+  // server itself, where that would name an unrelated agent.
+  context: SortContext = { here: process.env.TMUX_PANE },
 ): Status {
   const counts = emptyCounts();
   const orchestratedCounts = emptyCounts();
-  const panes = viewSort(paneViews(store, identity, now));
+  const panes = viewSort(paneViews(store, identity, now), { ...context, now });
   for (const pane of panes) {
     const target = pane.driver === "human" ? counts : orchestratedCounts;
     target[renderState(pane)] += 1;

@@ -18,6 +18,7 @@ import {
   RENDER_PRIORITY,
   type RenderState,
   renderState,
+  wants,
 } from "../view.js";
 import { requireIdentity } from "./identity-guard.js";
 
@@ -146,7 +147,7 @@ const CREW_MARK = "crew ";
  * human could not see.
  */
 export function isVisible(agent: PaneView): boolean {
-  return agent.driver === "human" || NEEDS_HUMAN.some((kind) => agent.attention.includes(kind));
+  return agent.driver === "human" || NEEDS_HUMAN.some((kind) => wants(agent, kind));
 }
 
 /**
@@ -406,7 +407,7 @@ export function pickerRow(
   // Attention and activity simultaneously. A running agent with `blocked`
   // attention is expected, and the row has room to say so rather than picking
   // one word and hiding the other.
-  const extra = agent.attention.filter((kind) => kind !== state);
+  const extra = agent.attention.map((entry) => entry.kind).filter((kind) => kind !== state);
   const flags = [
     agent.driver === "orchestrated" ? "crew" : "",
     // Freshness belongs to the NODE, stated rather than inferred from an age: a
@@ -467,7 +468,9 @@ function previewText(
   // recently we reached the node that said either.
   const facts = [
     `activity ${agent.activity ?? "none (attention only)"}`,
-    agent.attention.length ? `wants    ${agent.attention.join(", ")}` : "",
+    agent.attention.length
+      ? `wants    ${agent.attention.map((entry) => entry.kind).join(", ")}`
+      : "",
     agent.workstream ? `stream   ${terminalText(agent.workstream)}` : "",
     agent.role ? `role     ${terminalText(agent.role)}` : "",
     agent.pi_session ? `session  ${terminalText(agent.pi_session)}` : "",

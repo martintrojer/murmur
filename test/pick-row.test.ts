@@ -13,7 +13,13 @@ import {
 import { asPaneId, asSessionId, asWindowId } from "../src/ids.js";
 import { tmux } from "../src/mux.js";
 import type { Status } from "../src/status.js";
-import { type PaneView, RENDER_PRIORITY } from "../src/view.js";
+import type { AttentionKind } from "../src/types.js";
+import { type PaneAttention, type PaneView, RENDER_PRIORITY } from "../src/view.js";
+
+/** Attention kinds as the view carries them: each with its own clock. */
+function at(kinds: AttentionKind[], requested_at = 1_000): PaneAttention[] {
+  return kinds.map((kind) => ({ kind, requested_at }));
+}
 
 const base: PaneView = {
   host_id: "H",
@@ -25,7 +31,7 @@ const base: PaneView = {
   session_name: "dev",
   window_name: "editor",
   activity: "running",
-  attention: ["blocked"],
+  attention: [{ kind: "blocked", requested_at: 1_000 }],
   freshness: "fresh",
   agent_id: "agent-1",
   agent_name: null,
@@ -222,18 +228,21 @@ test("crew agents are hidden unless they need a human", () => {
   const human = (attention: PaneView["attention"]) =>
     isVisible({ ...base, driver: "human", attention });
 
-  expect(crew(["blocked"])).toBe(true);
-  expect(crew(["crashed"])).toBe(true);
-  expect(crew(["done"])).toBe(false);
+  expect(crew(at(["blocked"]))).toBe(true);
+  expect(crew(at(["crashed"]))).toBe(true);
+  expect(crew(at(["done"]))).toBe(false);
   expect(crew([])).toBe(false);
   // Busy and blocked at once: one fact does not hide the other.
   expect(
-    isVisible({ ...base, driver: "orchestrated", activity: "running", attention: ["blocked"] }),
+    isVisible({ ...base, driver: "orchestrated", activity: "running", attention: at(["blocked"]) }),
   ).toBe(true);
+  // A crew pane that crashed AND is blocked answers to either kind, so the
+  // widened `attention` cannot hide a row behind whichever word it renders as.
+  expect(crew(at(["crashed", "blocked"]))).toBe(true);
 
   // A human-driven pane is always visible, whatever it is doing.
-  for (const attention of [["blocked"], ["crashed"], ["done"], []] as PaneView["attention"][]) {
-    expect(human(attention)).toBe(true);
+  for (const kinds of [["blocked"], ["crashed"], ["done"], []] as AttentionKind[][]) {
+    expect(human(at(kinds))).toBe(true);
   }
 });
 
