@@ -97,3 +97,57 @@ test("stdin redirected from a file does not crash the hook", async () => {
   expect(stderr).not.toContain("unref is not a function");
   expect(code).toBe(0);
 }, 10000);
+
+/**
+ * The payload as a trailing ARGV token, through the real CLI.
+ *
+ * This has to be a subprocess test, and that is the whole point of it. Codex
+ * appends the event JSON as one more argument, and commander REFUSES an operand
+ * no command declared: the shipped hook line exited 1 with `too many arguments
+ * for 'notify'` and wrote nothing. `runNotify` never saw the call, so every unit
+ * test passed while the documented configuration was broken -- and a notify
+ * hook's output goes nowhere, so it failed silently and looked like murmur
+ * ignoring codex.
+ *
+ * Asserts the exit code and the stderr text, not the recorded row: outside tmux
+ * there is no pane to record for, and `notify` exits 0 saying nothing by design.
+ * The failure mode being pinned is the argument parse, which happens first.
+ */
+test("a payload on argv is accepted rather than rejected as an extra argument", async () => {
+  const payload = JSON.stringify({
+    type: "agent-turn-complete",
+    "last-assistant-message": "Rename complete.",
+  });
+  const child = spawn(
+    process.execPath,
+    [
+      join(process.cwd(), "dist", "cli.js"),
+      "notify",
+      "--source",
+      "codex",
+      // The documented flags, so this pins the configuration people already have.
+      "--event-type",
+      "notify",
+      "--title",
+      "Codex",
+      payload,
+    ],
+    { stdio: [openSync("/dev/null", "r"), "ignore", "pipe"] },
+  );
+  let stderr = "";
+  child.stderr?.on("data", (chunk: Buffer) => {
+    stderr += chunk.toString("utf8");
+  });
+  const code = await new Promise<number>((resolve) => {
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      resolve(-1);
+    }, 4000);
+    child.on("exit", (status) => {
+      clearTimeout(timer);
+      resolve(status ?? -1);
+    });
+  });
+  expect(stderr).not.toContain("too many arguments");
+  expect(code).toBe(0);
+}, 10000);

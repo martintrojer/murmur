@@ -2,7 +2,7 @@ import type { Command } from "commander";
 import { asPaneId } from "../ids.js";
 import { type Mux, tmux } from "../mux.js";
 import { openStore, type Store } from "../store.js";
-import type { Location } from "../types.js";
+import type { AttentionKind, Location } from "../types.js";
 
 /**
  * The fields a harness may send, as flags or as a JSON object on stdin.
@@ -23,13 +23,82 @@ type NotifyInput = {
 type NotifyPayload = Record<string, unknown>;
 
 /**
+ * Which attention kind an event type means.
+ *
+ * `blocked` was hard-coded here, and for codex -- the harness this command
+ * exists for -- it was wrong on EVERY call. Codex's notify hook fires on
+ * exactly one event, `agent-turn-complete`: the turn ended and the agent is
+ * waiting for you. That is `done`, the same fact pi's extension reports through
+ * `settledState`. So one harness reported a finished turn as `done` and the
+ * other reported it as `blocked`, and a codex agent that had simply finished
+ * was indistinguishable from one waiting on an answer -- on every turn, not
+ * rarely. It got louder once `blocked` began sorting oldest-first, which pinned
+ * a stale turn-complete to the top of the picker.
+ *
+ * A TABLE keyed on the payload's own `type`, rather than a `--kind` flag: the
+ * harness already says which event this is, and a flag would have to be right
+ * in a config file nobody re-reads. An unknown type is not in the table and
+ * falls back below.
+ *
+ * Only `done` and `blocked` appear, and adding `crashed` here would be a
+ * mistake rather than a feature: an external notifier cannot know a process
+ * died. That stays reconciliation's, which is the only thing holding the pid.
+ */
+const EVENT_KINDS: Record<string, AttentionKind> = {
+  // codex, its single notify event.
+  "agent-turn-complete": "done",
+  // opencode's idle event, the same fact under another name.
+  "session.idle": "done",
+};
+
+/**
+ * What an unrecognised event means.
+ *
+ * `blocked`, deliberately, because it is the answer that cannot lose
+ * information. A harness bothered to tell us something and we do not know what:
+ * calling that `done` files it as handled and it vanishes from the default
+ * picker, while calling it `blocked` puts a row in front of a human who can
+ * look. Over-asking is recoverable by focusing the pane; under-asking is a
+ * missed request nobody sees.
+ *
+ * It also keeps every existing caller working: a notifier passing only
+ * `--source` still lands where it always did.
+ */
+const UNKNOWN_KIND: AttentionKind = "blocked";
+
+/**
+ * The attention kind for one notification, from the event type either half of
+ * the input names.
+ *
+ * The flag is consulted first for the same reason it wins in `notifyFields`:
+ * flags beat the payload, so a hook line can pin the meaning of an event murmur
+ * does not know about.
+ */
+export function notifyKind(input: NotifyInput, payload: NotifyPayload = {}): AttentionKind {
+  const flag = input.eventType?.trim();
+  const field = typeof payload.type === "string" ? payload.type.trim() : "";
+  for (const value of [flag, field]) {
+    if (value && value in EVENT_KINDS) return EVENT_KINDS[value] ?? UNKNOWN_KIND;
+  }
+  return UNKNOWN_KIND;
+}
+
+/**
  * Resolve the four fields, flags beating the stdin payload.
  *
  * Flags win so the codex hook line behaves identically whether or not something
  * also arrives on stdin.
  *
- * `message` falls back through title then event type before a generic
- * "attention": a bare placeholder is worse than whatever the harness did say.
+ * `message` falls back through the harness's own summary, then title, then
+ * event type, before a generic "attention": a bare placeholder is worse than
+ * whatever the harness did say.
+ *
+ * `last-assistant-message` is in that chain because it is the only field in a
+ * codex payload that says what actually happened. The documented hook line
+ * passes `--title Codex`, so before argv was read every codex row in the picker
+ * said the word "Codex" -- the harness name, which the `source` column already
+ * carries. It sits BELOW an explicit `message` and above `title`, so a notifier
+ * that names its own text still wins.
  */
 export function notifyFields(
   input: NotifyInput,
@@ -44,7 +113,11 @@ export function notifyFields(
   const source = field("source", input.source) || "agent";
   const title = field("title", input.title);
   const eventType = field("type", input.eventType);
-  const message = field("message", input.message) || title || eventType || "attention";
+  // Hyphens, not camelCase or underscores: this is codex's own spelling, and it
+  // is not ours to normalise -- the same reason `type` and `--event-type`
+  // disagree two lines up.
+  const summary = field("last-assistant-message", undefined);
+  const message = field("message", input.message) || summary || title || eventType || "attention";
   return { source, message };
 }
 
@@ -69,6 +142,36 @@ function clean(value: string): string {
     })
     .join("");
   return flattened.replace(/\s+/g, " ").trim();
+}
+
+/**
+ * The payload from a trailing argv token, or nothing.
+ *
+ * Codex appends the event JSON as ONE MORE ARGUMENT after the tokens you
+ * configured, with stdin set to null. murmur only ever read stdin, so for the
+ * documented codex hook the payload was silently discarded: every row's message
+ * was whatever `--title` said, and the `type` field that names the event -- the
+ * one field `notifyKind` needs -- never arrived.
+ *
+ * Scans for the FIRST argument that parses as a JSON object rather than taking
+ * the last one, because position cannot be relied on. `sh -lc '<script>' <arg>`
+ * assigns that argument to `$0`, not `$1`, so a payload appended to the shipped
+ * hook line is consumed by the shell and never reaches murmur at all -- which is
+ * why the README now passes a placeholder token. A scan means murmur works
+ * whether the payload lands before or after the flags.
+ *
+ * commander leaves unrecognised operands in `program.args`, so this needs no
+ * new option and cannot collide with one.
+ */
+export function payloadFromArgs(args: readonly string[]): NotifyPayload {
+  for (const arg of args) {
+    // Cheap guard before the parse: every payload is an object, and this keeps
+    // an ordinary word from entering a try/catch on every call.
+    if (!arg.trimStart().startsWith("{")) continue;
+    const parsed = parsePayload(arg);
+    if (Object.keys(parsed).length > 0) return parsed;
+  }
+  return {};
 }
 
 /** Read a JSON object from stdin, or nothing. */
@@ -101,8 +204,14 @@ export function parsePayload(raw: string): NotifyPayload {
  * touches the agents table, so a notifier corrupting a live agent's row is
  * unsayable rather than merely guarded against.
  *
- * `blocked` only, hard-coded, because an external process cannot know that an
- * agent started, finished or crashed. Those stay the owner's alone.
+ * `done` or `blocked`, per `EVENT_KINDS`, and never `crashed` or an activity.
+ * The bound that matters is unchanged and is the structural one above: this path
+ * cannot say a process is alive, dead, or running. Which of the two
+ * human-answerable requests an event means is a different question, and
+ * hard-coding it to `blocked` answered it wrongly for every codex turn.
+ *
+ * `crashed` stays out of the table by intent: an external process cannot know a
+ * process died, and only reconciliation holds the pid that could tell.
  *
  * Needs no identity, which follows from the model rather than being an
  * exemption: attention is addressed by pane, and a pane needs no host_id. So
@@ -125,8 +234,9 @@ export function runNotify(
   if (!location) return false;
 
   const { source, message } = notifyFields(input, payload);
+  const kind = notifyKind(input, payload);
   store.requestAttention({
-    kind: "blocked",
+    kind,
     location,
     message,
     // The harness name, not `driver`. `driver` answers "who is waiting on this
@@ -137,7 +247,9 @@ export function runNotify(
   });
 
   // The badge, so the status bar reflects it without waiting for a collect.
-  mux.setWindowBadge(location.window, "blocked");
+  // Carries the kind actually recorded: badging `blocked` while storing `done`
+  // put two different words for one pane on two surfaces.
+  mux.setWindowBadge(location.window, kind);
   return true;
 }
 
@@ -178,20 +290,39 @@ export function registerNotify(program: Command): void {
   program
     .command("notify")
     .description("Record an attention request for a harness that cannot report itself")
+    // DECLARED, because commander refuses an undeclared operand: codex appends
+    // the event JSON as one more argument, so the shipped hook line exited 1
+    // with `too many arguments for 'notify'` and wrote nothing. A notify hook is
+    // a child of the agent process and its output goes nowhere, so that failed
+    // silently and looked like murmur ignoring the harness.
+    //
+    // Variadic and optional: every existing caller passes none, codex passes
+    // one, and a shell wrapper can forward several. Nothing downstream cares how
+    // many -- `payloadFromArgs` scans for the first that is a JSON object.
+    .argument("[payload...]", "event JSON, as passed by codex on argv")
     .option("--source <name>", "harness name, e.g. codex or opencode")
     .option("--event-type <type>", "why attention is wanted")
     .option("--title <title>", "harness display title")
     .option("--message <message>", "the text to show")
     .option("--pane <pane>", "pane to notify about (default: $TMUX_PANE)")
     .action(
-      async (options: {
-        source?: string;
-        eventType?: string;
-        title?: string;
-        message?: string;
-        pane?: string;
-      }) => {
-        const payload = parsePayload(await readStdin());
+      async (
+        operands: string[] = [],
+        options: {
+          source?: string;
+          eventType?: string;
+          title?: string;
+          message?: string;
+          pane?: string;
+        },
+      ) => {
+        // argv FIRST, and only read stdin if it carried nothing: codex sets
+        // stdin to null, so waiting on it is pure latency on the one path that
+        // has a payload in hand. `readStdin` is bounded anyway, but a hook that
+        // returns immediately is better than one that idles 250ms per turn.
+        const fromArgs = payloadFromArgs(operands);
+        const payload =
+          Object.keys(fromArgs).length > 0 ? fromArgs : parsePayload(await readStdin());
         const store = openStore();
         try {
           runNotify(store, options, payload);

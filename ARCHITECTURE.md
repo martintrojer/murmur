@@ -43,7 +43,7 @@ Three facts, independent, each with exactly one writer:
 | Fact | Meaning | Stored as | Written by |
 | --- | --- | --- | --- |
 | **activity** | is a process working in this pane | `agents.activity` = `running` \| `stopped` | the pane's owning process only |
-| **attention** | does someone need to look at this pane | rows in `attention`, kind `done` \| `blocked` \| `crashed` | owner (`done`), external notifier (`blocked`), local reconciliation (`crashed`) |
+| **attention** | does someone need to look at this pane | rows in `attention`, kind `done` \| `blocked` \| `crashed` | owner (`done`), external notifier (`done`/`blocked`, per event type), local reconciliation (`crashed`) |
 | **freshness** | how recently we reached the node that reported | `peers.fetched_at` | the collector |
 
 They are never folded into one enum, and no stored value spans two of them.
@@ -101,9 +101,19 @@ Three consequences worth stating, because each is easy to violate by accident:
 - **`murmur notify` is the one deliberate exception, and it is narrow by
   construction.** Its whole request type is `{kind, location, message, source}`
   — there is no `agent_id`, no pid, no activity and no metadata field, so it
-  cannot say anything about a process being alive even by accident. It is also
-  restricted to `blocked` by the callers that use it; `running`, `done` and
-  `crashed` remain the owner's and reconciliation's.
+  cannot say anything about a process being alive even by accident. Its range is
+  `done` and `blocked`, the two kinds a human can answer, chosen from the event
+  type the harness itself reports; `crashed` and both activities remain
+  reconciliation's and the owner's.
+
+  It was hard-coded to `blocked`, and that was wrong on every call for the
+  harness it exists to serve. codex's notify hook fires exactly one event,
+  `agent-turn-complete` — the turn ended and the agent is waiting for you — so a
+  finished codex turn was recorded as *blocked* while pi's extension recorded
+  the same fact as `done`. One harness's completed work was indistinguishable
+  from another's request for help, on every turn. An unrecognised event still
+  becomes `blocked`, which is the direction that cannot lose information: it
+  puts a row in front of a human, and focusing the pane takes it back.
 
 ## A tmux pane is the agent's address
 
@@ -294,7 +304,8 @@ three surfaces carried machinery for it:
 | `activity = running` | pi extension | `agent_start` |
 | `activity = stopped` | pi extension | `agent_end` |
 | attention `done` | pi extension | `agent_settled`, pane unfocused, `driver = human` |
-| attention `blocked` | `murmur notify` | an outside-in call from another harness |
+| attention `done` | `murmur notify` | a harness event meaning "turn over, waiting" (`agent-turn-complete`, `session.idle`) |
+| attention `blocked` | `murmur notify` | any other outside-in call, including an event murmur does not recognise |
 | attention `crashed` | `reconcileLocal` | pane alive, owner pid gone, activity was `running` |
 | (row removed) | `releaseAgent` | `session_shutdown` |
 | (attention removed) | `acknowledgePane` | `murmur clear`, i.e. tmux focus |

@@ -116,12 +116,34 @@ such hook -- they can only run a command when something happens -- so they use
 
 ```toml
 # ~/.codex/config.toml
-notify = ["/bin/sh", "-lc", "murmur notify --source codex --event-type notify --title Codex"]
+notify = ["murmur", "notify", "--source", "codex"]
 ```
 
-The same four fields may arrive as a JSON object on stdin instead, which is
-opencode's plugin form; flags win over the payload, so the line above behaves
-identically either way.
+**No `sh -lc` wrapper, and that is load-bearing.** Codex appends the event JSON
+as one more argument, and `sh -lc '<script>' <arg>` assigns that argument to
+`$0` rather than `$1` — so a wrapped hook swallows the payload and murmur never
+sees which event fired. Exec murmur directly, or if you need a shell, give it a
+placeholder and forward explicitly:
+
+```toml
+notify = ["/bin/sh", "-lc", "exec murmur notify --source codex \"$@\"", "codex-notify"]
+```
+
+The payload is what decides the kind. Codex fires exactly one event,
+`agent-turn-complete` — the turn ended and the agent is waiting for you — which
+murmur records as `done`, the same fact pi's extension reports. opencode's
+`session.idle` means the same thing. **An event murmur does not recognise is
+recorded as `blocked`**, so a harness murmur has never heard of still puts a row
+in front of you rather than filing it as handled.
+
+Drop `--title Codex` if you have it. The message now falls back to the payload's
+`last-assistant-message`, so a row says what the agent actually did; a title
+pins every row to the harness name, which the `source` column already carries.
+
+The same fields may arrive as a JSON object on stdin instead, which is
+opencode's plugin form. argv is preferred when both are present, and flags still
+beat the payload, so `--event-type` can pin the meaning of an event murmur does
+not know.
 
 **A hook is not an interactive shell, so check that `murmur` resolves in it.**
 A notify hook inherits the PATH of whatever launched the harness, and `sh -l`
@@ -137,10 +159,10 @@ murmur notify --source probe --message reachable && murmur status
 murmur clear --pane "$TMUX_PANE"
 ```
 
-The probe is a real attention request: it records `blocked` and badges the
-window, which is what makes it a genuine test of the path. `murmur clear` is
-what takes it back, and focusing the pane does the same if you have the hooks
-above installed.
+The probe is a real attention request: it names no event, so it records
+`blocked` and badges the window, which is what makes it a genuine test of the
+path. `murmur clear` is what takes it back, and focusing the pane does the same
+if you have the hooks above installed.
 
 If `murmur` is not reachable there, give the hook the absolute path
 (`command -v murmur` from your shell) rather than relying on PATH.
@@ -149,9 +171,9 @@ If `murmur` is not reachable there, give the hook the absolute path
 about it, and it is narrow by construction rather than by convention: an
 attention request has no field for an agent id, a pid, an activity or any owner
 metadata, so it cannot make a claim about a process even by mistake. It says
-`blocked` and nothing else; running, done and crashed stay the pane owner's and
-murmur's own reconciliation's. Outside tmux it records nothing and exits 0, so it
-cannot break the caller's own exit code.
+`done` or `blocked` and nothing else — never `crashed`, which needs the pid only
+reconciliation holds, and never an activity. Outside tmux it records nothing and
+exits 0, so it cannot break the caller's own exit code.
 
 A pane reached only this way — a codex agent murmur never instrumented — is a
 full row in the list: it shows up, it is filterable, and enter jumps to it.

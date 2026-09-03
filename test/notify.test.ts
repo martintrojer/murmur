@@ -2,7 +2,13 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, test } from "vitest";
-import { notifyFields, parsePayload, runNotify } from "../src/cli/notify.js";
+import {
+  notifyFields,
+  notifyKind,
+  parsePayload,
+  payloadFromArgs,
+  runNotify,
+} from "../src/cli/notify.js";
 import type { NodeIdentity } from "../src/identity.js";
 import { createIdentity } from "../src/identity.js";
 import type { WindowId } from "../src/ids.js";
@@ -39,12 +45,10 @@ function inPane(panes: string[] = ["%1"]) {
   });
 }
 
-test("a codex notification records blocked for the pane the hook ran in", () => {
-  // The live consumer, verbatim. The shipped codex hook line is
-  //   notify = [..., 'agent-attention notify --source codex --event-type notify
-  //             --title Codex']
-  // so these are the exact three flags that must work, and the pane comes from
-  // $TMUX_PANE because the hook runs as a child of the agent process.
+test("a notification with no recognised event records blocked for the caller's pane", () => {
+  // Flags only, no payload: the shape every notifier that predates the payload
+  // reader still uses. An unrecognised event stays `blocked`, which is the
+  // answer that cannot lose information -- see `UNKNOWN_KIND`.
   const ok = runNotify(
     store,
     { source: "codex", eventType: "notify", title: "Codex" },
@@ -65,7 +69,110 @@ test("a codex notification records blocked for the pane the hook ran in", () => 
   ]);
 });
 
-test("a notifier cannot say anything except blocked, and cannot name a process", () => {
+test("a codex turn-complete records DONE, not blocked", () => {
+  // The bug this table exists to fix, and it fired on every single codex turn.
+  // `runNotify` hard-coded `blocked`, while codex's notify hook fires exactly
+  // one event -- `agent-turn-complete`, meaning the turn ended and the agent is
+  // waiting for you. That is the same fact pi's extension reports as `done`, so
+  // one harness called a finished turn `done` and the other called it `blocked`:
+  // a codex agent that had simply finished was indistinguishable from one
+  // waiting on an answer, and after `blocked` began sorting oldest-first it sat
+  // at the top of the picker.
+  const ok = runNotify(
+    store,
+    // The documented hook line's flags, unchanged, so this pins the behaviour of
+    // a config already in people's files.
+    { source: "codex", eventType: "notify", title: "Codex" },
+    { type: "agent-turn-complete", "last-assistant-message": "Rename complete." },
+    inPane(),
+  );
+
+  expect(ok).toBe(true);
+  expect(store.localPanes()[0]?.attention).toEqual([
+    {
+      kind: "done",
+      // The assistant's own summary, not the `--title Codex` the hook line
+      // passes: before argv was read, every codex row in the picker said the
+      // word "Codex", which the `source` column already carries.
+      message: "Rename complete.",
+      source: "codex",
+      requested_at: expect.any(Number),
+    },
+  ]);
+});
+
+test("the badge shows the kind actually recorded, not a fixed word", () => {
+  // Two surfaces, one pane, one word. The badge was hard-coded `blocked`
+  // alongside the store write, so fixing only the write would have put `done` in
+  // the store and `blocked` on the status bar for the same pane.
+  const badges: [WindowId, RenderState | null][] = [];
+  const mux = fakeMux({
+    currentWindow: () => ({
+      session: asSessionId("$0"),
+      window: asWindowId("@1"),
+      pane: asPaneId("%1"),
+      session_name: "dev",
+      window_name: "codex",
+    }),
+    setWindowBadge: (window, state) => void badges.push([window, state]),
+  });
+
+  runNotify(store, { source: "codex" }, { type: "agent-turn-complete" }, mux);
+
+  expect(badges).toEqual([["@1", "done"]]);
+});
+
+test("an event type maps to a kind, and an unknown one fails safe to blocked", () => {
+  // codex's single event, and opencode's name for the same fact.
+  expect(notifyKind({}, { type: "agent-turn-complete" })).toBe("done");
+  expect(notifyKind({}, { type: "session.idle" })).toBe("done");
+
+  // `blocked` for anything unrecognised, because it is the answer that cannot
+  // lose information: a harness told us something and we do not know what.
+  // `done` would file it as handled and hide it from the default picker;
+  // `blocked` puts a row in front of a human, and focusing the pane takes it
+  // back.
+  expect(notifyKind({}, { type: "mystery.event" })).toBe("blocked");
+  expect(notifyKind({}, {})).toBe("blocked");
+  expect(notifyKind({ source: "codex" })).toBe("blocked");
+
+  // The flag can pin an event murmur does not know, for the same reason flags
+  // beat the payload everywhere else on this path.
+  expect(notifyKind({ eventType: "agent-turn-complete" }, {})).toBe("done");
+  // And the payload is consulted when the flag names nothing recognised, so the
+  // documented `--event-type notify` does not mask a real event beside it.
+  expect(notifyKind({ eventType: "notify" }, { type: "agent-turn-complete" })).toBe("done");
+
+  // Never `crashed`, whatever either half says: an external notifier cannot know
+  // a process died, and only reconciliation holds the pid that could tell.
+  for (const type of ["crashed", "crash", "agent-crashed"]) {
+    expect(notifyKind({ eventType: type }, { type })).toBe("blocked");
+  }
+});
+
+test("the payload is read from a trailing argv token, which is how codex sends it", () => {
+  // The second half of the bug. Codex appends the event JSON as ONE MORE
+  // ARGUMENT and sets stdin to null; murmur only read stdin, so for the
+  // documented hook the payload was silently discarded -- every message was the
+  // `--title`, and the `type` field that names the event never arrived.
+  const payload = { type: "agent-turn-complete", "last-assistant-message": "Done." };
+  expect(payloadFromArgs([JSON.stringify(payload)])).toEqual(payload);
+
+  // SCANNED, not taken by position, because position cannot be relied on: a
+  // wrapper may forward the payload before or after its own tokens.
+  expect(payloadFromArgs(["codex-notify", JSON.stringify(payload)])).toEqual(payload);
+  expect(payloadFromArgs([JSON.stringify(payload), "trailing"])).toEqual(payload);
+
+  // Nothing that is not a JSON object, and no throw on a token that merely
+  // starts like one -- this runs on every notification.
+  expect(payloadFromArgs([])).toEqual({});
+  expect(payloadFromArgs(["codex-notify", "--source", "codex"])).toEqual({});
+  expect(payloadFromArgs(["{not json"])).toEqual({});
+  expect(payloadFromArgs(["[1,2,3]"])).toEqual({});
+  expect(payloadFromArgs(["{}"])).toEqual({});
+});
+
+test("a notifier cannot name a process, whatever its payload claims", () => {
   // Narrow by CONSTRUCTION rather than by care at the call site:
   // `AttentionRequest` has no state field, no pid field and no owner metadata
   // field, so a payload naming a state and a pid cannot reach either.
@@ -76,6 +183,9 @@ test("a notifier cannot say anything except blocked, and cannot name a process",
   ]) {
     runNotify(store, attempt, { state: "working", pid: 4242, activity: "running" }, inPane());
     const pane = store.localPanes()[0];
+    // The kind is now chosen by event type, but the RANGE is still the two a
+    // human can answer: a payload naming a state cannot promote itself past
+    // them, and `crashed` is unreachable from here by construction.
     expect(pane?.attention.map((entry) => entry.kind)).toEqual(["blocked"]);
     expect(pane?.agent).toBeNull();
     // A closed key set, not a substring search for the pid: `requested_at` is a
@@ -155,6 +265,8 @@ test("outside tmux it records nothing and does not fail the caller", () => {
 
 test("the window badge is set, so the status bar does not wait for a collect", () => {
   const badges: [WindowId, RenderState | null][] = [];
+  // No payload, so this stays the `blocked` path -- the kind-tracking case is
+  // its own test above.
   const mux = fakeMux({
     currentWindow: () => ({
       session: asSessionId("$0"),

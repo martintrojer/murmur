@@ -5,6 +5,28 @@ so it says what changed for a user rather than listing every commit.
 
 ## Unreleased
 
+**A finished codex turn is `done`, not `blocked`.** `murmur notify` recorded
+`blocked` on every call, and codex's notify hook fires exactly one event —
+`agent-turn-complete`, meaning the turn ended and the agent is waiting for you.
+So every completed codex turn asked for help: indistinguishable from an agent
+genuinely stuck, and pinned to the top of the picker once `blocked` began
+sorting oldest-first. The kind now comes from the event type the harness
+reports. An event murmur does not recognise is still `blocked`, which is the
+direction that cannot lose information.
+
+**The codex payload is no longer discarded.** Codex appends the event JSON as a
+trailing argv token with stdin set to null; murmur only read stdin. Two
+consequences, both fixed: the event type never arrived, and every row's message
+was whatever `--title` said instead of what the agent did. Rows now carry
+`last-assistant-message`.
+
+**Update your codex hook line** — the one this README used to document swallows
+the payload. `notify = ["murmur", "notify", "--source", "codex"]`, with no
+`sh -lc` wrapper: `sh -lc '<script>' <arg>` assigns that argument to `$0`, not
+`$1`, so the wrapper ate the JSON. Drop `--title Codex` if you have it. The old
+line still works, it just cannot see the event. See the README for the wrapped
+form if you need a shell.
+
 **The longest wait now leads the list.** A request for a human starves: an
 agent blocked forty minutes ago has been waiting forty minutes. One age rule
 served every state, and it was newest-first, so that agent sat below one blocked
