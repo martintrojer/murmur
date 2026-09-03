@@ -291,10 +291,15 @@ exists.
 Open one and leave it running:
 
 ```sh
-ssh -M -S '~/.ssh/control/%r@%h:%p' dev    # answer the second factor once
+ssh -MNf -S '~/.ssh/control/%r@%h:%p' dev   # answer the second factor once
 ```
 
-Both flags are about *where the socket lives*, not about authentication.
+`-N -f` matter as much as `-M -S`: without `-N` the command opens an interactive
+shell, and on a host capping sessions per connection that shell holds the only
+slot — so the remedy would block every collect for as long as the terminal
+stayed open. `-N` asks for no remote command, `-f` backgrounds it after auth.
+
+The other two flags are about *where the socket lives*, not about authentication.
 OpenSSH defaults to `ControlMaster no` and `ControlPath none`, so on a machine
 with no ssh_config of its own a bare `ssh dev` multiplexes nothing and leaves no
 socket for murmur to find. `-M` creates the master, `-S` puts it on the path
@@ -307,7 +312,7 @@ skipped rather than dialled on every tick, its cached rows still list with their
 real age, and the picker header names it with the command:
 
 ```
-! dev: re-auth needed (last seen 2h) — ssh -M -S ~/.ssh/control/%r@%h:%p dev
+! dev: re-auth needed (last seen 2h) — ssh -MNf -S ~/.ssh/control/%r@%h:%p dev
 ```
 
 `murmur doctor` carries the full list where the header trims.
@@ -328,6 +333,19 @@ so the capped slot stays free for murmur. Verified on a `MaxSessions 1` devvm,
 where an interactive `ssh` starved every collect for as long as it stayed open
 and an ET session on the same host did not. Run ET for yourself and one
 `ssh -MNf` master for murmur, and the two do not compete.
+
+If a peer stays stuck after all that, the master is usually wedged rather than
+missing — `ssh -O check` reports `Master running` while every command over it
+fails. Rebuild it, and kill the proxy too: a `ProxyCommand` child outlives the
+master that spawned it and will poison the replacement.
+
+```sh
+pkill -f 'ssh -MNf dev'                     # the master
+pkill -f 'x2ssh .*dev'                      # its ProxyCommand child, if any
+rm -f ~/.ssh/control/'<user>@<host>:22'     # the stale socket
+ssh -MNf -S '~/.ssh/control/%r@%h:%p' dev   # rebuild, answer the second factor
+ssh -O check dev                            # expect: Master running (pid=...)
+```
 
 **All nodes must speak the same snapshot format.** The format is versioned and a
 mismatch is rejected rather than guessed at, so a node on a different snapshot

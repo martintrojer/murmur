@@ -73,6 +73,15 @@ const EXEC_TIMEOUT_MS = 3_000;
 // peer collects fine on key auth, just slower (~170ms against ~10ms on a LAN),
 // and fleet visibility should not depend on having ssh'd somewhere today.
 //
+// `no` does NOT mean "attach or fail". It governs master CREATION only, and the
+// fallback fires for a socket that exists and REFUSES as readily as for one
+// that is absent -- so on a session-capped host a refused channel silently
+// becomes a fresh connection, which then fails at whatever auth the host
+// demands. That is why a busy slot surfaces as `Permission denied` rather than
+// as contention, and why `sessionChannelBusy` has to exist: no ssh option
+// available here prevents the fallback or makes it announce itself. Measured
+// with `no` set: three of four concurrent calls produced the misleading error.
+//
 // BatchMode=yes bounds that fallback by disabling every prompt -- password,
 // passphrase, host key -- so a cold peer that cannot authenticate fails at once
 // rather than blocking a background collect on a human. "Never prompt", not

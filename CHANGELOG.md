@@ -18,8 +18,8 @@ This also corrects the reasoning published in 0.2.3, which claimed `-M` was the
 remedy for `Session open refused by peer` because a plain `ssh` leaves a socket
 that forwards but has never authenticated a session. That was wrong: the error
 reproduces against a fully authenticated master built by the recommended
-command. `ssh -M -S <ControlPath> <host>` is still the right thing to run, for a
-different reason — OpenSSH defaults to `ControlMaster no` and `ControlPath
+command. `ssh -MNf -S <ControlPath> <host>` is still the right thing to run, for
+a different reason — OpenSSH defaults to `ControlMaster no` and `ControlPath
 none`, so on a machine with no ssh_config of its own a bare `ssh` leaves no
 socket where murmur looks.
 

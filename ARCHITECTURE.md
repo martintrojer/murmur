@@ -967,9 +967,10 @@ each was cheaper to accept than to solve:
    ("never prompt", not "never authenticate") and the reason `hasWarmSocket`
    exists. Such a peer is skipped by ambient collects rather than dialled and
    failed on every tick, keeps its cached snapshot, and is named in the picker
-   header with the command that fixes it. That command is `ssh -M -S
-   <ControlPath> <host>`, and both flags are about socket LOCATION rather than
-   auth: OpenSSH defaults to `ControlMaster no` and `ControlPath none` (verified
+   header with the command that fixes it. That command is `ssh -MNf -S
+   <ControlPath> <host>`. `-N` keeps it from opening a shell that would hold a
+   capped host's only session slot, `-f` backgrounds it, and the other two are
+   about socket LOCATION rather than auth: OpenSSH defaults to `ControlMaster no` and `ControlPath none` (verified
    with `ssh -F /dev/null -G`), so on a machine whose ssh_config murmur does not
    control a bare `ssh` leaves no socket on the path `SSH_OPTIONS` reads. Where
    the reader's own config sets `ControlMaster auto` and a matching
