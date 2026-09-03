@@ -970,8 +970,9 @@ each was cheaper to accept than to solve:
    header with the command that fixes it. That command is `ssh -MNf -S
    <ControlPath> <host>`. `-N` keeps it from opening a shell that would hold a
    capped host's only session slot, `-f` backgrounds it, and the other two are
-   about socket LOCATION rather than auth: OpenSSH defaults to `ControlMaster no` and `ControlPath none` (verified
-   with `ssh -F /dev/null -G`), so on a machine whose ssh_config murmur does not
+   about socket LOCATION rather than auth: OpenSSH defaults to `ControlMaster
+   no` and `ControlPath none` (verified with `ssh -F /dev/null -G`), so on a
+   machine whose ssh_config murmur does not
    control a bare `ssh` leaves no socket on the path `SSH_OPTIONS` reads. Where
    the reader's own config sets `ControlMaster auto` and a matching
    `ControlPath`, a plain `ssh` does produce a master murmur can ride; the flags
@@ -979,7 +980,8 @@ each was cheaper to accept than to solve:
    substitute, since it bootstraps over ssh and leaves no socket to attach to —
    but on a session-capped host it is the right place for an operator's own
    work, precisely because it holds no ssh session and so leaves the capped slot
-   to murmur.
+   to murmur. The operator-facing version of all this is [SSH.md](SSH.md); what
+   follows is why the design accepts it.
 
    An earlier version of this entry claimed `-M` was the cure for `Session open
    refused by peer`, on the theory that a `ProxyCommand` can leave a socket that
@@ -997,6 +999,16 @@ each was cheaper to accept than to solve:
    gate and the collect then fails once — self-correcting on the next pass, now
    that the failure is classified retryable rather than auth-class, but a real
    gap between the check and the question.
+
+   The JUMP competes for the same slot, which the collector's design does not
+   account for. `jumpToAgent` runs `ssh -t <host> tmux attach`, a session channel
+   held for the whole visit — so on a capped host an attached operator starves
+   that peer's collects until they detach, and a jump attempted while the slot is
+   busy fails with the same misleading `Permission denied`. Both measured. The
+   collector recovers on its own; the failed jump does not, and presents as a
+   keypress that did nothing. Not fixed, because the fix is either a queue in
+   front of every ssh or a second connection per peer, and both cost every host
+   to serve the rare one. Documented as "peek, then back out" in SSH.md instead.
 
 ## Known gaps
 

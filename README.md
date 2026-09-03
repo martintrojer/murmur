@@ -260,6 +260,11 @@ Both are per-session, so your other sessions are unaffected. Leaving the remote
 you jumped from and destroys the wrapper. Jumping to the same host twice reuses
 one session.
 
+On a host that caps sessions per connection, a jump holds the one slot for as
+long as you stay — so that peer stops collecting until you detach, and a jump
+attempted while the slot is busy fails outright. Peek and back out; see
+[SSH.md](SSH.md).
+
 The tradeoff: inside the wrapper the local tmux has no prefix, so you cannot
 reach it. For an escape hatch, bind one key in the root table:
 
@@ -281,71 +286,23 @@ over real ssh, including a host that demands a second factor per connection. It
 is new and not battle-tested. The known gaps and the accepted limitations are
 listed at the end of [ARCHITECTURE.md](ARCHITECTURE.md#known-gaps).
 
-**A host that demands interactive auth needs a master session open.** Some
-machines refuse an unattended login — a second factor per connection, a
-hardware token, a password. murmur never prompts (every ssh it runs sets
-`BatchMode=yes`, so a background collect cannot block on a human), which means
-such a peer is only collectable while an authenticated connection already
-exists.
-
-Open one and leave it running:
+**A host that demands interactive auth needs a master session open.** murmur
+never prompts — every ssh it runs sets `BatchMode=yes` — so a machine that
+refuses an unattended login is only collectable while an authenticated
+connection already exists for murmur to ride:
 
 ```sh
 ssh -MNf -S '~/.ssh/control/%r@%h:%p' dev   # answer the second factor once
 ```
 
-`-N -f` matter as much as `-M -S`: without `-N` the command opens an interactive
-shell, and on a host capping sessions per connection that shell holds the only
-slot — so the remedy would block every collect for as long as the terminal
-stayed open. `-N` asks for no remote command, `-f` backgrounds it after auth.
-
-The other two flags are about *where the socket lives*, not about authentication.
-OpenSSH defaults to `ControlMaster no` and `ControlPath none`, so on a machine
-with no ssh_config of its own a bare `ssh dev` multiplexes nothing and leaves no
-socket for murmur to find. `-M` creates the master, `-S` puts it on the path
-murmur looks at. If your own ssh_config already sets `ControlMaster auto` and a
-matching `ControlPath`, a plain `ssh dev` gives murmur a master it can use — the
-flags just make one instruction correct on every machine.
-
 While that master lives, collects cost ~10ms. While it does not, the peer is
 skipped rather than dialled on every tick, its cached rows still list with their
-real age, and the picker header names it with the command:
+real age, and the picker header names it with the command that fixes it.
 
-```
-! dev: re-auth needed (last seen 2h) — ssh -MNf -S ~/.ssh/control/%r@%h:%p dev
-```
-
-`murmur doctor` carries the full list where the header trims.
-
-If a collect fails with `Session open refused by peer` while a master *is*
-running, that is not an auth problem and no flag above prevents it: some hosts
-cap session channels per connection (`MaxSessions 1`), so a collect that
-overlaps another command on the same socket is refused. ssh then retries on a
-fresh connection and dies at the auth wall, which makes the error text end in
-`Permission denied` and read like a login failure. murmur classifies that case
-separately and retries rather than asking you to re-authenticate.
-
-On such a host, an **Eternal Terminal** session is the best thing to do your own
-work in. ET cannot serve murmur — it bootstraps over ssh, so opening one hits
-the same auth wall, and it exposes no multiplexing socket to attach to — but
-that is exactly why the pairing works: once connected it holds no ssh session,
-so the capped slot stays free for murmur. Verified on a `MaxSessions 1` devvm,
-where an interactive `ssh` starved every collect for as long as it stayed open
-and an ET session on the same host did not. Run ET for yourself and one
-`ssh -MNf` master for murmur, and the two do not compete.
-
-If a peer stays stuck after all that, the master is usually wedged rather than
-missing — `ssh -O check` reports `Master running` while every command over it
-fails. Rebuild it, and kill the proxy too: a `ProxyCommand` child outlives the
-master that spawned it and will poison the replacement.
-
-```sh
-pkill -f 'ssh -MNf dev'                     # the master
-pkill -f 'x2ssh .*dev'                      # its ProxyCommand child, if any
-rm -f ~/.ssh/control/'<user>@<host>:22'     # the stale socket
-ssh -MNf -S '~/.ssh/control/%r@%h:%p' dev   # rebuild, answer the second factor
-ssh -O check dev                            # expect: Master running (pid=...)
-```
+[SSH.md](SSH.md) covers the rest: why each flag is there, what to do on a host
+that caps sessions per connection (`MaxSessions 1`, where the error reads like a
+credentials failure and is not), why Eternal Terminal pairs well with murmur,
+and how to recover a wedged master.
 
 **All nodes must speak the same snapshot format.** The format is versioned and a
 mismatch is rejected rather than guessed at, so a node on a different snapshot
@@ -360,6 +317,10 @@ of it.
 [ARCHITECTURE.md](ARCHITECTURE.md): the three independent facts the model rests
 on, the design choices and what they cost, what murmur deliberately cannot do,
 and what is unfinished.
+
+[SSH.md](SSH.md): reaching a peer when plain ssh is not enough — master
+sessions, hosts that cap sessions per connection, Eternal Terminal, and
+recovering a wedged control socket.
 
 ---
 
