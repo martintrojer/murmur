@@ -1,6 +1,6 @@
 {
   "name": "@martintrojer/murmur",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Agent state across every machine you work on, in one view.",
   "publishConfig": {
     "access": "public"
@@ -40,7 +40,8 @@
     "dist",
     "README.md",
     "ARCHITECTURE.md",
-    "CHANGELOG.md"
+    "CHANGELOG.md",
+    "SSH.md"
   ],
   "scripts": {
     "build": "tsup",

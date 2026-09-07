@@ -3,7 +3,28 @@
 Notable changes per release. Written for someone deciding whether to upgrade,
 so it says what changed for a user rather than listing every commit.
 
-## Unreleased
+## 0.2.4
+
+Wire-compatible with 0.2.x: the snapshot format is unchanged at version 1, so a
+0.2.4 node federates with 0.2.0 upward and no coordinated upgrade is needed.
+
+The theme is what the picker tells you to look at first. Two of the three items
+below are the same bug from opposite ends — murmur knew which agents wanted a
+human and ordered them by the wrong clock, and for codex it had the wrong verb
+entirely.
+
+**If you use codex, update your notify hook.** The line this README documented
+until now wraps murmur in `sh -lc`, which swallows the event payload, so murmur
+cannot see which event fired:
+
+```toml
+# ~/.codex/config.toml
+notify = ["murmur", "notify", "--source", "codex"]
+```
+
+Use an absolute path if `murmur` is not on the PATH your launcher gives the
+hook, and drop `--title Codex` if you have it. The old line still records rows;
+it just cannot tell a finished turn from a stuck one.
 
 **A finished codex turn is `done`, not `blocked`.** `murmur notify` recorded
 `blocked` on every call, and codex's notify hook fires exactly one event —
@@ -20,12 +41,10 @@ consequences, both fixed: the event type never arrived, and every row's message
 was whatever `--title` said instead of what the agent did. Rows now carry
 `last-assistant-message`.
 
-**Update your codex hook line** — the one this README used to document swallows
-the payload. `notify = ["murmur", "notify", "--source", "codex"]`, with no
-`sh -lc` wrapper: `sh -lc '<script>' <arg>` assigns that argument to `$0`, not
-`$1`, so the wrapper ate the JSON. Drop `--title Codex` if you have it. The old
-line still works, it just cannot see the event. See the README for the wrapped
-form if you need a shell.
+Why the wrapper matters, since it is the part that looks like it should be
+harmless: `sh -lc '<script>' <arg>` assigns that argument to `$0`, not `$1`, so
+the shell consumed the JSON and murmur was never passed it. The README has both
+the direct form and a correct wrapped one if you need a login shell for PATH.
 
 **The longest wait now leads the list.** A request for a human starves: an
 agent blocked forty minutes ago has been waiting forty minutes. One age rule

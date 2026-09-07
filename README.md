@@ -303,7 +303,7 @@ already full-screen, and you land back at your shell prompt on exit.
 
 ## Status
 
-**0.2.3.** In daily use on one machine and verified across a five-peer fleet
+**0.2.4.** In daily use on one machine and verified across a five-peer fleet
 over real ssh, including a host that demands a second factor per connection. It
 is new and not battle-tested. The known gaps and the accepted limitations are
 listed at the end of [ARCHITECTURE.md](ARCHITECTURE.md#known-gaps).
@@ -329,7 +329,7 @@ and how to recover a wedged master.
 **All nodes must speak the same snapshot format.** The format is versioned and a
 mismatch is rejected rather than guessed at, so a node on a different snapshot
 version is reported as reachable-but-broken with the reason on it. Patch versions
-interoperate freely — 0.2.0 and 0.2.3 both speak snapshot 1 — and `murmur peer
+interoperate freely — 0.2.0 and 0.2.4 both speak snapshot 1 — and `murmur peer
 list` shows each peer's version, so a bad pairing is visible before you start
 debugging it. Upgrading the fleet together is still the simplest way to stay out
 of it.
