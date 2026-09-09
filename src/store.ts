@@ -24,8 +24,8 @@ import type {
   SnapshotAttention,
   SnapshotPane,
 } from "./types.js";
+import { ATTENTION_PRIORITY } from "./types.js";
 import { MURMUR_VERSION } from "./version.js";
-import { RENDER_PRIORITY } from "./view.js";
 
 /**
  * The storage version. Any change to any table bumps it.
@@ -318,10 +318,22 @@ function toAgent(row: AgentDbRow): SnapshotAgent {
   };
 }
 
-const PRIORITY = new Map<string, number>(RENDER_PRIORITY.map((kind, index) => [kind, index]));
+const PRIORITY = new Map<AttentionKind, number>(
+  ATTENTION_PRIORITY.map((kind, index): [AttentionKind, number] => [kind, index]),
+);
+
+/**
+ * A kind's rank. `ATTENTION_PRIORITY` is exhaustive over `AttentionKind`, so
+ * every value is present -- but a Map lookup is `T | undefined` regardless, and
+ * the honest way to say "cannot miss" is a default rather than a `!`. Any kind
+ * added to the type without being ranked sorts last instead of throwing.
+ */
+function rank(kind: AttentionKind): number {
+  return PRIORITY.get(kind) ?? ATTENTION_PRIORITY.length;
+}
 
 function attentionOrder(left: SnapshotAttention, right: SnapshotAttention): number {
-  return (PRIORITY.get(left.kind) ?? 99) - (PRIORITY.get(right.kind) ?? 99);
+  return rank(left.kind) - rank(right.kind);
 }
 
 /**

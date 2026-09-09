@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 import { asPaneId, asSessionId, asWindowId } from "../src/ids.js";
-import type { AttentionKind } from "../src/types.js";
+import { ATTENTION_PRIORITY, type AttentionKind } from "../src/types.js";
 import {
   age,
   freshness,
@@ -477,4 +477,21 @@ test("age is the shortest thing worth reading, and sub-minute is silence", () =>
   // A negative duration is a clock disagreement, not an age, and it must not
   // print "-1m" into a status bar.
   expect(age(-1_000)).toBe("");
+});
+
+// The two tables must not disagree about relative order. Asserted rather than
+// derived, so neither module has to import the other: store.ts sorts attention
+// by ATTENTION_PRIORITY and every render surface bands by RENDER_PRIORITY, and a
+// row that sorted one way then rendered another would be unexplainable.
+test("attention priority is an order-consistent subset of render priority", () => {
+  for (const kind of ATTENTION_PRIORITY) {
+    expect(RENDER_PRIORITY).toContain(kind);
+  }
+  const inRenderOrder = RENDER_PRIORITY.filter((state): state is AttentionKind =>
+    (ATTENTION_PRIORITY as readonly string[]).includes(state),
+  );
+  expect([...ATTENTION_PRIORITY]).toEqual(inRenderOrder);
+  // Exhaustive over the type, which is what lets the rank lookup have no
+  // meaningful fallback.
+  expect(new Set(ATTENTION_PRIORITY).size).toBe(3);
 });

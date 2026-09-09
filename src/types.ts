@@ -13,6 +13,24 @@ export type Activity = "running" | "stopped";
 export type AttentionKind = "done" | "blocked" | "crashed";
 
 /**
+ * Attention kinds, most urgent first. Beside the type they order.
+ *
+ * Typed as `AttentionKind` rather than reusing `RENDER_PRIORITY`, which is a
+ * list of five `RenderState`s of which these are three. Sorting attention
+ * through that table built an index map over two entries that could never be
+ * looked up, forced the map to `Map<string, number>` to typecheck, and so
+ * required a `?? 99` fallback -- a fallback branch in a sort path, in a repo
+ * whose reason for CHECK-constraining this column is that "no sort, count or
+ * render path needs a fallback branch". Typed correctly, the fallback deletes
+ * itself.
+ *
+ * The two tables must not disagree about relative order; a test asserts this is
+ * an order-consistent subset of `RENDER_PRIORITY` rather than importing one into
+ * the other.
+ */
+export const ATTENTION_PRIORITY: readonly AttentionKind[] = ["crashed", "blocked", "done"];
+
+/**
  * Who is waiting on this agent -- a human, or a supervisor that consumes the
  * result. Not "which harness"; that is `cli`.
  */
