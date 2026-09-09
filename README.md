@@ -35,8 +35,8 @@ on me" from "still thinking" without going there.
   and absence means absence.
 - **No daemon, no socket, no master.** Peers are pulled over ssh when you run a
   command. Every node aggregates; none is special.
-- **Fast with one machine.** ~50 ms to first paint. Zero peers is the common
-  case and nothing about it is degraded.
+- **Fast with one machine.** The picker paints from cache and never waits for a
+  network fetch. Zero peers is the common case and nothing about it is degraded.
 
 ## What it is not
 

@@ -623,11 +623,27 @@ therefore the common case:
 - the extension claims its pane and reports activity
 - the status bar and picker read `localPanes()` through the same mapping a peer
   snapshot goes through
-- the collector iterates the peer list, finds nothing, and reconciles once
+- the collector, whenever it runs, iterates the peer list, finds nothing, and
+  reconciles once
+
+The two surfaces differ in *when* that collect happens, and only one of them is
+on a paint:
+
+- **the picker never waits for one.** It paints from the cached read
+  (`status(store, identity)`) and starts a collect in a DETACHED child
+  afterwards, for the next invocation. See `spawnCollect` in `src/cli/pick.ts`
+  and the commit that made it so, "paint the picker from cache, collect behind
+  it, not before it".
+- **the status bar collects inline**, under `COLLECT_FLOOR_MS`, before it reads.
+  It is the one surface that passes a floor, because tmux re-runs it every
+  `status-interval` per attached client and a repaint is not a reason to reach a
+  machine.
 
 No network, no ssh, no daemon, no added latency. Federation is strictly
-additive: a loop over an empty array. Measured first paint with zero peers:
-~50 ms, against 250 ms for the picker it replaces.
+additive: a loop over an empty array. First paint with zero peers measured at
+~50 ms against 250 ms for the picker it replaces -- and that number predates the
+move to a cached paint, so it is now conservative rather than exact. Re-measure
+before quoting it, and say which command produced it.
 
 This is a constraint, not an observation. A tool that only pays for itself at
 three nodes charges rent daily for capability used occasionally — one of the
