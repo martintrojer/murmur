@@ -288,6 +288,37 @@ whatever the peers are doing. `murmur peer list` has a LAST SEEN column, and
 `murmur collect` -- which you run deliberately -- prints one line per peer it
 could not reach.
 
+## Jumping to a host that caps ssh sessions
+
+A peer carries two ways to reach it. `target` is for a *command* and is always
+ssh: it is what the collector uses. The **jump command** is for a *human*, and
+need not be ssh at all.
+
+```bash
+murmur peer set dev --jump-command 'et dev -c "tmux attach -t {pane}"'
+```
+
+murmur substitutes `{pane}` and runs the rest unparsed, so the value can be a
+site wrapper with its own flags. The default reproduces
+`ssh -t <target> tmux attach`, so a peer you never configure behaves as before.
+
+This matters where an sshd sets `MaxSessions 1`. There, an interactive `ssh`
+holds the host's only session channel for as long as you sit in it, so your own
+jump blocks the collector that would have shown you the agent -- and ssh reports
+it as `Permission denied (keyboard-interactive)`, which reads as a credentials
+problem. Eternal Terminal holds no ssh session at all, so a jump through it
+costs the capped slot nothing. Measured on such a host: with a nested `tmux
+attach` live over ET, `ssh <host> true` and a concurrent `murmur collect` both
+succeeded throughout.
+
+When a collect does hit that wall, murmur now names the cause rather than
+repeating ssh's guess:
+
+```
+murmur: dev: ssh session limit reached -- pane %210 is your own attachment to
+this peer. Close it, then collect.
+```
+
 ```tmux
 bind -N "agent state picker" a display-popup -E -w 80% -h 60% "murmur pick"
 ```

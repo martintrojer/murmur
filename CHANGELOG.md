@@ -3,6 +3,70 @@
 Notable changes per release. Written for someone deciding whether to upgrade,
 so it says what changed for a user rather than listing every commit.
 
+## 0.2.5
+
+Wire-compatible with 0.2.x: the snapshot format is unchanged at version 1, so a
+0.2.5 node federates with 0.2.0 upward and no coordinated upgrade is needed.
+
+**Your local agent rows are discarded on first run, and murmur now tells you.**
+The schema version moved 3 → 4, which rebuilds `state.db` keeping only peers —
+documented behaviour, but previously silent, and silence made a routine upgrade
+look like data loss. Agents already running claimed into the old file and cannot
+re-claim until their extension reloads, so they stay invisible until you press
+`/new` in each pane. Nothing else is affected: peers, their targets and their
+identities survive, and the next collect refills everything remote.
+
+The theme is the remote worker — seeing one, reaching one, and not being lied to
+about either.
+
+**Cursor CLI can notify on turn end.** A `stop` hook that pipes its stdin to
+`murmur notify --source cursor` records `done` when `status` is `completed` and
+`blocked` for `aborted`/`error` — attention only, same tier as codex.
+
+**Reaching a host that caps ssh sessions.** A peer now carries a jump command
+alongside its target: `murmur peer set dev --jump-command 'et dev -c "tmux
+attach -t {pane}"'`. murmur substitutes `{pane}` and runs the rest unparsed, so
+the value can be a site wrapper with its own flags; the default reproduces
+today's `ssh -t <target> tmux attach`. On a host with `MaxSessions 1` this is the
+difference between a jump that blocks your own collector and one that costs
+nothing.
+
+**"Permission denied (keyboard-interactive)" now names the real cause.** On a
+capped host, an interactive attach holds the only session channel, so the collect
+that would show you the agent is blocked by the pane you opened to look at it —
+and ssh reports it as an auth failure. `collect` and `peer list` now say
+`ssh session limit reached -- pane %210 is your own attachment to this peer`,
+found by matching a local pane against that peer's own jump command.
+
+**A remote worker shows where it is already attached.** A row whose agent you
+have open locally reads `attached here %N`, and enter focuses that pane instead
+of opening a second connection — which on a capped host fails outright.
+
+**Peer names no longer collide or wedge.** A name containing `:` produced an
+unaddressable wrapper session, so the jump failed *and* left an orphan that every
+later jump reused and failed on identically — permanent until killed by hand. The
+whole name is now sanitised, and the wrapper is identified by the host it reaches
+rather than the label you typed, so two peers whose names differ only in
+punctuation no longer share one.
+
+**A reused wrapper goes to the pane you picked.** Jumping to a second agent on a
+host you already had open switched to the first one's pane and reported success.
+
+**A peer that answers with nonsense says so.** `peer add` reported "identity
+pending" — the right words for a sleeping laptop, a lie for a reachable host
+serving a document murmur rejected. The reason is now printed and recorded, so
+`peer list` and `doctor` agree without a second probe.
+
+**A cached snapshot is validated, not just parsed.** A stored document that was
+valid JSON of the wrong shape reached readers and could crash them mid-render.
+
+Smaller: the window badge is recomputed rather than asserted, so a notification
+on one pane can no longer erase a crashed agent's glyph in the same window, and
+acknowledging a pane no longer clears a badge when the store cannot be read;
+`@pane_agent` is retracted with the badge that set it; a whole-run collect
+failure no longer prints `murmur: : ...`; and attachment detection reads process
+arguments without the environment, which it had been pulling in wholesale.
+
 ## 0.2.4
 
 Wire-compatible with 0.2.x: the snapshot format is unchanged at version 1, so a
