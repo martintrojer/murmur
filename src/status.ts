@@ -12,7 +12,6 @@ import {
   type RenderState,
   renderState,
   type SortContext,
-  sameWorker,
   viewSort,
 } from "./view.js";
 
@@ -27,10 +26,29 @@ function commandNames(command: string): string[] {
   });
 }
 
-function attachedWorker(command: string): { agent_name: string; workstream: string } | null {
-  const agentName = command.match(/(?:^|\s)MU_AGENT_NAME=([^\s'";]+)/)?.[1] ?? null;
-  const workstream = command.match(/(?:^|\s)MU_WORKSTREAM=([^\s'";]+)/)?.[1] ?? null;
-  return agentName && workstream ? { agent_name: agentName, workstream } : null;
+/**
+ * Whether a local pane's command line is an attachment to `agentName`.
+ *
+ * Matches the agent NAME as a word in the argv, and nothing else. It used to
+ * read `MU_AGENT_NAME=` / `MU_WORKSTREAM=` out of the same string, which cannot
+ * work: `ps eww -p <pid> -o command=` returns ARGV ONLY on macOS -- measured
+ * against a live attach pane, the whole output was
+ * `ssh dev -t tmux attach -t mu-remote-1`, 38 characters, no environment at all.
+ * `ps -E` behaves the same and there is no /proc, so an env prefix
+ * (`MU_AGENT_NAME=x ssh ...`) is consumed by the shell and never observable.
+ * The `e` flag that appends the environment is a Linux ps extension.
+ *
+ * The agent name IS in the argv for both remote recipes, which is why this
+ * works where the env read could not: a direct spawn carries it in the remote
+ * command, and the detached-tmux shape carries it in the session name, since mu
+ * names the session after the agent. That is a convention rather than a
+ * guarantee -- so a miss costs the attachment hint and nothing else, and the
+ * word boundary keeps `worker-1` from matching `worker-10`.
+ */
+function attachesAgent(command: string, agentName: string): boolean {
+  if (agentName === "") return false;
+  const escaped = agentName.replaceAll(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`);
+  return new RegExp(String.raw`(?:^|[\s'"/=-])${escaped}(?=$|[\s'"/])`).test(command);
 }
 
 export type Status = {
@@ -122,16 +140,21 @@ export function status(
       .filter((peer): peer is typeof peer & { host_id: string } => peer.host_id !== null)
       .map((peer) => [peer.host_id, new Set(commandNames(peer.jump_command))]),
   );
-  for (const process of (options.mux ?? tmux).localPaneProcesses()) {
-    const worker = attachedWorker(process.arguments);
-    if (!worker) continue;
-    const remote = panes.find(
-      (pane) =>
-        !pane.local &&
-        commandsByPeer.get(pane.host_id)?.has(process.current_command) &&
-        sameWorker(pane, worker),
-    );
-    if (remote) remote.attached_pane = process.pane;
+  // Only remote rows can have a local attachment, and only ones naming an agent:
+  // the name is the sole thing the local argv can be matched against.
+  const attachable = panes.filter(
+    (pane): pane is typeof pane & { agent_name: string } =>
+      !pane.local && pane.agent_name !== null && pane.agent_name !== "",
+  );
+  if (attachable.length > 0) {
+    for (const process of (options.mux ?? tmux).localPaneProcesses()) {
+      const remote = attachable.find(
+        (pane) =>
+          commandsByPeer.get(pane.host_id)?.has(process.current_command) &&
+          attachesAgent(process.arguments, pane.agent_name),
+      );
+      if (remote) remote.attached_pane = process.pane;
+    }
   }
   const sortedPanes = viewSort(panes, { ...context, now });
   for (const pane of sortedPanes) {

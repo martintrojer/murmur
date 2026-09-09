@@ -177,7 +177,9 @@ test("a remote worker points back to its matching local attachment", () => {
         {
           pane: asPaneId("%7"),
           current_command: "et",
-          arguments: "x2ssh -et dev MU_AGENT_NAME=worker-1 MU_WORKSTREAM=murmur",
+          // Real `ps eww -o command=` argv, captured from a live attach pane.
+          // It carries NO environment -- see attachesAgent in src/status.ts.
+          arguments: "x2ssh -et dev -c tmux attach -t mu-worker-1",
         },
       ],
     }),
@@ -219,13 +221,74 @@ test("a remote worker has no back-reference when no local pane matches", () => {
         {
           pane: asPaneId("%7"),
           current_command: "ssh",
-          arguments: "ssh dev MU_AGENT_NAME=worker-2 MU_WORKSTREAM=murmur",
+          arguments: "ssh dev -t tmux attach -t mu-worker-2",
         },
       ],
     }),
   });
 
   expect(result.panes.find((pane) => pane.pane === "%50")?.attached_pane).toBeNull();
+});
+
+function remoteWorkerStore(name: string) {
+  store.addPeer("dev", "dev", "ssh -t dev tmux attach -t {pane}");
+  store.replacePeerSnapshot("dev", {
+    ok: true,
+    at: 1_000,
+    snapshot: remoteSnapshot([
+      remotePane("%50", {
+        agent: {
+          agent_id: "remote-worker",
+          activity: "running",
+          agent_name: name,
+          pi_session: null,
+          workstream: "murmur",
+          role: null,
+          cli: "pi",
+          driver: "orchestrated",
+          claimed_at: 1,
+          updated_at: 1,
+        },
+      }),
+    ]),
+  });
+}
+
+function attachedPaneFor(name: string, argv: string) {
+  remoteWorkerStore(name);
+  const result = status(store, IDENTITY, 1_000, () => false, undefined, {
+    mux: fakeMux({
+      localPaneProcesses: () => [{ pane: asPaneId("%7"), current_command: "ssh", arguments: argv }],
+    }),
+  });
+  return result.panes.find((pane) => pane.pane === "%50")?.attached_pane ?? null;
+}
+
+// Dogfooded 2026-09-09 against a real worker on a remote host. The detached
+// recipe is the one mu recommends for a session-capped host, and it was the one
+// that could never match while detection read the environment.
+test("the detached-tmux recipe is detected, since mu names the session for the agent", () => {
+  expect(attachedPaneFor("remote-1", "ssh dev -t tmux attach -t mu-remote-1")).toBe("%7");
+});
+
+test("the direct recipe is detected, where the name is in the remote command", () => {
+  expect(
+    attachedPaneFor(
+      "remote-1",
+      "ssh dev -t cd ~/ws/remote-1 && MU_MANAGED_AGENT=1 MU_AGENT_NAME=remote-1 pi --approve",
+    ),
+  ).toBe("%7");
+});
+
+// An env-var PREFIX is consumed by the shell, so it never reaches argv. The
+// skill documented repeating the vars on the attach command as a workaround;
+// this is the test proving that advice was wrong.
+test("an environment prefix is not what makes a match, because ps never returns it", () => {
+  expect(attachedPaneFor("remote-1", "ssh dev -t tmux attach -t some-other-session")).toBeNull();
+});
+
+test("a longer agent name is not matched by a shorter one's prefix", () => {
+  expect(attachedPaneFor("worker-1", "ssh dev -t tmux attach -t mu-worker-10")).toBeNull();
 });
 
 test("a remote pane keeps its own node's fields and takes its node's freshness", () => {
