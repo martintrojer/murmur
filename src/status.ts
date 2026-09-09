@@ -45,10 +45,33 @@ function commandNames(command: string): string[] {
  * guarantee -- so a miss costs the attachment hint and nothing else, and the
  * word boundary keeps `worker-1` from matching `worker-10`.
  */
-function attachesAgent(command: string, agentName: string): boolean {
-  if (agentName === "") return false;
-  const escaped = agentName.replaceAll(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`);
+function namesTarget(command: string, target: string): boolean {
+  if (target === "") return false;
+  const escaped = target.replaceAll(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`);
   return new RegExp(String.raw`(?:^|[\s'"/=-])${escaped}(?=$|[\s'"/])`).test(command);
+}
+
+/**
+ * Whether a local pane's argv is an attachment to this remote pane.
+ *
+ * TWO handles, because the two ways an attachment gets started leave different
+ * traces and only one is a name:
+ *
+ * - the AGENT NAME catches a hand-rolled attach, where mu's recipes put it in
+ *   the remote command or in the session name (mu names the session
+ *   `mu-<agent>`).
+ * - the PANE ID catches a jump through the peer's configured jump command,
+ *   which renders `{pane}` and so names the pane and nothing else. Measured with
+ *   a real ET jump: argv was `x2ssh -et dev -c tmux attach -t %45`, in which the
+ *   agent name appears nowhere -- so the name matcher alone missed exactly the
+ *   case the back-reference exists for, since a second attach through the
+ *   DEFAULT ssh jump command is what fails on a session-capped host.
+ *
+ * Either is sufficient. The word boundary is what keeps `%45` from matching
+ * `%450` and `worker-1` from matching `worker-10`.
+ */
+function attachesPane(command: string, agentName: string, pane: string): boolean {
+  return namesTarget(command, agentName) || namesTarget(command, pane);
 }
 
 export type Status = {
@@ -151,7 +174,7 @@ export function status(
       const remote = attachable.find(
         (pane) =>
           commandsByPeer.get(pane.host_id)?.has(process.current_command) &&
-          attachesAgent(process.arguments, pane.agent_name),
+          attachesPane(process.arguments, pane.agent_name, pane.pane),
       );
       if (remote) remote.attached_pane = process.pane;
     }

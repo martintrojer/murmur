@@ -287,6 +287,20 @@ test("an environment prefix is not what makes a match, because ps never returns 
   expect(attachedPaneFor("remote-1", "ssh dev -t tmux attach -t some-other-session")).toBeNull();
 });
 
+// Dogfooded with a real ET jump command configured on a peer:
+//   murmur peer set dev --jump-command "x2ssh -et dev -c 'tmux attach -t {pane}'"
+// The rendered argv names the PANE and never the agent, so a name-only matcher
+// missed the case the back-reference exists for -- a second attach through the
+// default ssh jump command is what fails on a session-capped host.
+test("a jump through the peer's configured command is detected by its pane id", () => {
+  expect(attachedPaneFor("remote-1", "x2ssh -et dev -c tmux attach -t %50")).toBe("%7");
+});
+
+test("a pane id is matched whole, not as a prefix", () => {
+  // %50 must not be found inside %500.
+  expect(attachedPaneFor("remote-1", "x2ssh -et dev -c tmux attach -t %500")).toBeNull();
+});
+
 test("a longer agent name is not matched by a shorter one's prefix", () => {
   expect(attachedPaneFor("worker-1", "ssh dev -t tmux attach -t mu-worker-10")).toBeNull();
 });

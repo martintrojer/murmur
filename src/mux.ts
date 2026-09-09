@@ -167,19 +167,50 @@ export const tmux: Mux = {
       "#{pane_id}\t#{pane_current_command}\t#{pane_pid}",
     ]);
     if (!out) return [];
-    return out.split("\n").flatMap((line) => {
+    const rows = out.split("\n").flatMap((line) => {
       const [pane, currentCommand, pid] = line.split("\t");
-      if (!pane || !currentCommand || !pid) return [];
-      try {
-        const arguments_ = execFileSync("ps", ["eww", "-p", pid, "-o", "command="], {
-          encoding: "utf8",
-          timeout: 3000,
-          stdio: ["ignore", "pipe", "ignore"],
-        }).trim();
-        return [{ pane: asPaneId(pane), current_command: currentCommand, arguments: arguments_ }];
-      } catch {
-        return [];
-      }
+      // A pid is all digits, and it is interpolated into a `ps` argument list --
+      // so this is the argv boundary, checked rather than trusted.
+      if (!pane || !currentCommand || !pid || !/^\d+$/.test(pid)) return [];
+      return [{ pane: asPaneId(pane), current_command: currentCommand, pid }];
+    });
+    if (rows.length === 0) return [];
+
+    // ONE `ps` for every pane, not one per pane. This runs on every status tick,
+    // so a fork per pane was a dozen forks a second on a busy machine to find a
+    // substring.
+    //
+    // `ww` and NOT `eww`. The `e` flag appends the process ENVIRONMENT, which
+    // murmur has no business reading: measured at 3452 bytes for one pane,
+    // including `BRAVE_SEARCH_API_KEY` and `MODELBRIDGE_API_KEY`. It was added
+    // on the theory that macOS `ps` might expose MU_AGENT_NAME that way -- it
+    // does not, which was the finding of the commit that added it -- so it
+    // leaked every secret in every pane's environment into a string for no
+    // consumer at all. argv is what the matcher reads and all it needs.
+    let listing: string;
+    try {
+      listing = execFileSync("ps", ["ww", "-o", "pid=,command=", ...rows.map((row) => row.pid)], {
+        encoding: "utf8",
+        timeout: 3000,
+        stdio: ["ignore", "pipe", "ignore"],
+      });
+    } catch {
+      // ps refuses the whole call if ANY pid is gone, which is ordinary: a pane
+      // can die between the tmux read and this one. No attachment hint is the
+      // harmless answer, same as every other failure on this path.
+      return [];
+    }
+
+    const argvByPid = new Map<string, string>();
+    for (const line of listing.split("\n")) {
+      const match = /^\s*(\d+)\s+(.*)$/.exec(line);
+      if (match?.[1] && match[2]) argvByPid.set(match[1], match[2].trim());
+    }
+    return rows.flatMap((row) => {
+      const arguments_ = argvByPid.get(row.pid);
+      return arguments_
+        ? [{ pane: row.pane, current_command: row.current_command, arguments: arguments_ }]
+        : [];
     });
   },
 
