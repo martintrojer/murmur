@@ -192,6 +192,29 @@ test("an event type maps to a kind, and an unknown one fails safe to blocked", (
   }
 });
 
+test("a Cursor stop payload maps completed to done, and anything else to blocked", () => {
+  // Cursor's hooks write JSON on stdin with no `type` field. The outcome lives
+  // in `status`; without this mapping every stop would fall through to the
+  // unknown-event default and a finished turn would look blocked forever.
+  expect(notifyKind({}, { hook_event_name: "stop", status: "completed" })).toBe("done");
+  expect(notifyKind({}, { hook_event_name: "stop", status: "aborted" })).toBe("blocked");
+  expect(notifyKind({}, { hook_event_name: "stop", status: "error" })).toBe("blocked");
+  expect(notifyKind({}, { hook_event_name: "stop" })).toBe("blocked");
+
+  // A known `type` still wins when both are present: flags/table first, Cursor
+  // shape only on a miss.
+  expect(
+    notifyKind({}, { type: "agent-turn-complete", hook_event_name: "stop", status: "error" }),
+  ).toBe("done");
+});
+
+test("a Cursor stop with no message text uses status as the row text", () => {
+  expect(notifyFields({ source: "cursor" }, { hook_event_name: "stop", status: "error" })).toEqual({
+    source: "cursor",
+    message: "error",
+  });
+});
+
 test("the payload is read from a trailing argv token, which is how codex sends it", () => {
   // The second half of the bug. Codex appends the event JSON as ONE MORE
   // ARGUMENT and sets stdin to null; murmur only read stdin, so for the

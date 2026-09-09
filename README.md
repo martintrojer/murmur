@@ -110,9 +110,15 @@ shell clears when you focus the shell.
 
 ### Harnesses other than pi
 
-pi reports from inside itself, through the extension. codex and opencode have no
-such hook -- they can only run a command when something happens -- so they use
-`murmur notify`, which records an attention request for the pane it runs in:
+pi reports from inside itself, through the extension. codex, opencode, and the
+Cursor CLI have no such hook -- they can only run a command when something
+happens -- so they use `murmur notify`, which records an attention request for
+the pane it runs in.
+
+This path is attention only: no ownership, no `running`/`idle`, no crash
+detection. For those you need an in-process reporter, which only pi has today.
+
+#### Codex
 
 ```toml
 # ~/.codex/config.toml
@@ -145,6 +151,34 @@ opencode's plugin form. argv is preferred when both are present, and flags still
 beat the payload, so `--event-type` can pin the meaning of an event murmur does
 not know.
 
+#### Cursor CLI
+
+Cursor runs hooks from `~/.cursor/hooks.json` (user) or `.cursor/hooks.json`
+(project). The `stop` hook fires when a turn ends and writes JSON on stdin —
+`hook_event_name` plus `status` (`completed`, `aborted`, or `error`). murmur
+reads that shape directly:
+
+```json
+{
+  "version": 1,
+  "hooks": {
+    "stop": [
+      {
+        "command": "murmur notify --source cursor"
+      }
+    ]
+  }
+}
+```
+
+`status: completed` becomes `done`; `aborted` or `error` becomes `blocked`. The
+agent must run inside tmux so `$TMUX_PANE` names the pane. Interactive `agent`
+sessions are the target; non-interactive `agent -p` has been observed to omit
+`stop`, so those runs stay invisible on this path.
+
+This is not the same depth as pi. Cursor only offers out-of-process hooks, so
+murmur cannot claim the pane or report activity from them.
+
 **A hook is not an interactive shell, so check that `murmur` resolves in it.**
 A notify hook inherits the PATH of whatever launched the harness, and `sh -l`
 does not fix that -- `/bin/sh` is not your login shell and does not read your
@@ -175,8 +209,9 @@ metadata, so it cannot make a claim about a process even by mistake. It says
 reconciliation holds, and never an activity. Outside tmux it records nothing and
 exits 0, so it cannot break the caller's own exit code.
 
-A pane reached only this way — a codex agent murmur never instrumented — is a
-full row in the list: it shows up, it is filterable, and enter jumps to it.
+A pane reached only this way — a codex or Cursor agent murmur never
+instrumented — is a full row in the list: it shows up, it is filterable, and
+enter jumps to it.
 
 Then, on whichever machine you want to watch from, add the peers and bind the
 picker to a key:

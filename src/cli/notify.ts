@@ -41,6 +41,10 @@ type NotifyPayload = Record<string, unknown>;
  * in a config file nobody re-reads. An unknown type is not in the table and
  * falls back below.
  *
+ * Cursor's stop hook is not in this table: it names the event
+ * `hook_event_name` and puts the outcome in `status`, so `cursorStopKind`
+ * reads those fields after the table miss.
+ *
  * Only `done` and `blocked` appear, and adding `crashed` here would be a
  * mistake rather than a feature: an external notifier cannot know a process
  * died. That stays reconciliation's, which is the only thing holding the pid.
@@ -73,7 +77,8 @@ const UNKNOWN_KIND: RequestableKind = "blocked";
  *
  * The flag is consulted first for the same reason it wins in `notifyFields`:
  * flags beat the payload, so a hook line can pin the meaning of an event murmur
- * does not know about.
+ * does not know about. Cursor's stop payload is next: it has no `type`, only
+ * `hook_event_name` + `status`.
  */
 export function notifyKind(input: NotifyInput, payload: NotifyPayload = {}): RequestableKind {
   const flag = input.eventType?.trim();
@@ -81,7 +86,27 @@ export function notifyKind(input: NotifyInput, payload: NotifyPayload = {}): Req
   for (const value of [flag, field]) {
     if (value && value in EVENT_KINDS) return EVENT_KINDS[value] ?? UNKNOWN_KIND;
   }
-  return UNKNOWN_KIND;
+  return cursorStopKind(payload) ?? UNKNOWN_KIND;
+}
+
+/**
+ * Cursor CLI/IDE stop hook → attention kind.
+ *
+ * Cursor writes JSON on stdin with `hook_event_name: "stop"` and
+ * `status: "completed" | "aborted" | "error"`. A completed turn is the same
+ * fact as codex's `agent-turn-complete` (`done`); aborted or errored still
+ * wants a human look (`blocked`). Anything else on a stop falls to `blocked`
+ * for the same reason unknown types do: under-asking loses the row.
+ *
+ * Returns null when the payload is not a Cursor stop event, so the caller can
+ * keep falling through.
+ */
+export function cursorStopKind(payload: NotifyPayload): RequestableKind | null {
+  const event = typeof payload.hook_event_name === "string" ? payload.hook_event_name.trim() : "";
+  if (event !== "stop" && event !== "Stop") return null;
+  const status = typeof payload.status === "string" ? payload.status.trim() : "";
+  if (status === "completed") return "done";
+  return "blocked";
 }
 
 /**
@@ -118,7 +143,11 @@ export function notifyFields(
   // is not ours to normalise -- the same reason `type` and `--event-type`
   // disagree two lines up.
   const summary = field("last-assistant-message", undefined);
-  const message = field("message", input.message) || summary || title || eventType || "attention";
+  // Cursor's stop payload has no message text; `status` is the only word it
+  // carries about why the loop ended, so it sits above the generic placeholder.
+  const status = field("status", undefined);
+  const message =
+    field("message", input.message) || summary || title || eventType || status || "attention";
   return { source, message };
 }
 
