@@ -306,6 +306,19 @@ test("nothing is coerced, defaulted or carried through", () => {
     agent: null,
     attention: [{ kind: "done", message: "", source: "pi", requested_at: 1 }],
   };
+  // One process instance, as two panes would report it if a document claimed it.
+  const owner = {
+    agent_id: "one-process",
+    activity: "running",
+    agent_name: null,
+    pi_session: null,
+    workstream: null,
+    role: null,
+    cli: "pi",
+    driver: "human",
+    claimed_at: 1,
+    updated_at: 1,
+  };
   // Each entry is a document a node could plausibly serve, and each names the
   // way a lenient parser would have let it through: a coerced number, a
   // defaulted null, an unknown key kept "just in case".
@@ -325,6 +338,19 @@ test("nothing is coerced, defaulted or carried through", () => {
     ["an unknown pane key", { ...base, panes: [{ ...pane, rank: 4 }] }],
     ["an empty pane id", { ...base, panes: [{ ...pane, pane: "" }] }],
     ["a duplicate pane", { ...base, panes: [pane, pane] }],
+    [
+      // An agent_id is minted per process instance, so the same id in two panes
+      // claims one process owns two addresses -- which the local store cannot
+      // produce, since `pane` is UNIQUE in `agents`.
+      "the same agent_id in two panes",
+      {
+        ...base,
+        panes: [
+          { ...pane, agent: owner },
+          { ...pane, pane: "%2", agent: owner },
+        ],
+      },
+    ],
     [
       "a duplicate kind in one pane",
       { ...base, panes: [{ ...pane, attention: [...pane.attention, ...pane.attention] }] },

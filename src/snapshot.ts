@@ -200,9 +200,25 @@ export function parseSnapshot(input: string): Snapshot {
 
   const panes = top.panes.map((entry, index) => parsePane(entry, `panes[${index}]`));
   const seen = new Set<string>();
+  const owners = new Set<string>();
   for (const pane of panes) {
     if (seen.has(pane.pane)) fail("panes", `duplicate pane ${pane.pane}`);
     seen.add(pane.pane);
+
+    // An agent_id is minted per PROCESS INSTANCE when it claims a pane, so the
+    // same id in two panes says one process owns two addresses -- a state the
+    // local store cannot produce, since `pane` is UNIQUE in `agents` and a
+    // claim writes exactly one row. A document asserting it is describing
+    // something that did not happen on the node that served it.
+    //
+    // Checked for the same reason duplicate panes are: the reader trusts this
+    // document to be a coherent picture of one node, and a late or replayed
+    // write is exactly how an incoherent one would arrive.
+    const owner = pane.agent?.agent_id;
+    if (owner !== undefined && owner !== null) {
+      if (owners.has(owner)) fail("panes", `duplicate agent_id ${owner}`);
+      owners.add(owner);
+    }
   }
 
   return {
