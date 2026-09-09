@@ -273,6 +273,32 @@ function salvagePeers(path: string): { name: string; target: string; jump_comman
  * A missing file is the one case that is NOT a reset: there is nothing to
  * delete, and `openStore` creates the schema anyway.
  */
+/**
+ * What a rebuild is about to discard, for the warning above.
+ *
+ * Separate from `salvagePeers` because it asks the opposite question: that reads
+ * what survives, this reads what does not. Returns null when the database cannot
+ * be read at all, which is the case where there is nothing to warn about anyway.
+ */
+function countDiscarded(path: string): { agents: number; attention: number } | null {
+  let existing: Database.Database;
+  try {
+    existing = new Database(path, { fileMustExist: true, readonly: true });
+  } catch {
+    return null;
+  }
+  try {
+    const count = (table: string): number =>
+      (existing.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n;
+    return { agents: count("agents"), attention: count("attention") };
+  } catch {
+    // A pre-rewrite or damaged file may have neither table. Nothing to say.
+    return null;
+  } finally {
+    existing.close();
+  }
+}
+
 function needsReset(path: string): boolean {
   let existing: Database.Database;
   try {
@@ -382,6 +408,28 @@ export function openStore(): Store {
   const database = withResetLock(path, () => {
     const salvaged = salvagePeers(path);
     if (needsReset(path)) {
+      // SAY WHAT IS BEING THROWN AWAY, on stderr, once.
+      //
+      // The rebuild is documented and correct -- ARCHITECTURE.md accepts that a
+      // store from a different `user_version` is rebuilt with only peers
+      // salvaged -- but it was silent, and silence is what made a documented
+      // upgrade look like data loss. Measured: a schema bump on a machine whose
+      // murmur is a symlinked dev checkout wiped every agent row while `doctor`
+      // stayed clean, `user_version` matched, and all peers survived. The picker
+      // simply went empty, and a live agent cannot re-claim until its extension
+      // reloads, so the rows do not come back on their own.
+      //
+      // Counted before the delete, since after it there is nothing to count.
+      // Best effort in the same spirit as the lock: an unreadable database
+      // reports nothing rather than failing the open.
+      const discarded = countDiscarded(path);
+      if (discarded !== null && discarded.agents > 0) {
+        process.stderr.write(
+          `murmur: rebuilding ${path} for a new schema version; ` +
+            `${discarded.agents} agent row(s) and ${discarded.attention} attention row(s) are discarded, ` +
+            `${salvaged.length} peer(s) kept. Running agents reappear when each reloads (\`/new\` in the pane).\n`,
+        );
+      }
       for (const suffix of ["", "-wal", "-shm"]) rmSync(`${path}${suffix}`, { force: true });
     }
 

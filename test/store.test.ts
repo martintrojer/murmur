@@ -704,7 +704,19 @@ test("an existing database upgrades without losing peers", () => {
   database.pragma("user_version = 3");
   database.close();
 
-  const reopened = store();
+  // This test claims an agent, so the rebuild legitimately reports discarding
+  // it. Swallowed here rather than left to print: a suite that writes expected
+  // warnings to its own output teaches people to stop reading them. The message
+  // itself has its own tests below.
+  const write = process.stderr.write.bind(process.stderr);
+  process.stderr.write = (() => true) as typeof process.stderr.write;
+  const reopened = (() => {
+    try {
+      return store();
+    } finally {
+      process.stderr.write = write;
+    }
+  })();
 
   // The fields a human typed survive; every observed column starts empty,
   // so a never-reached peer cannot render as fresh.
@@ -758,4 +770,67 @@ test("a corrupt database is rebuilt rather than crashing every command", () => {
   // And the rebuilt file is a working store, not merely an opened one.
   reopened.addPeer("bubba", "bubba.example");
   expect(reopened.peers().map((peer) => peer.name)).toEqual(["bubba"]);
+});
+
+// The rebuild is correct and documented; it was SILENT, and that is what made a
+// documented upgrade look like data loss. Measured in the field: a schema bump on
+// a machine whose murmur is a symlinked dev checkout wiped every agent row while
+// doctor stayed clean and all peers survived, so the picker just went empty.
+test("a rebuild says how many rows it discarded", () => {
+  const warnings: string[] = [];
+  const write = process.stderr.write.bind(process.stderr);
+  process.stderr.write = ((chunk: string) => {
+    warnings.push(String(chunk));
+    return true;
+  }) as typeof process.stderr.write;
+
+  try {
+    const s = store();
+    s.addPeer("dev", "dev.example");
+    s.claimAgent({ location: location(), owner_pid: 100, meta: meta() });
+    s.close();
+
+    const database = new Database(dbPath());
+    database.pragma("user_version = 1");
+    database.close();
+
+    store().close();
+  } finally {
+    process.stderr.write = write;
+  }
+
+  const said = warnings.join("");
+  expect(said).toContain("1 agent row(s)");
+  expect(said).toContain("1 peer(s) kept");
+  // The remedy, because the rows do not come back on their own: a live agent
+  // claimed into the old file and cannot re-claim until its extension reloads.
+  expect(said).toContain("/new");
+});
+
+test("a rebuild with nothing to lose stays quiet", () => {
+  const warnings: string[] = [];
+  const write = process.stderr.write.bind(process.stderr);
+  process.stderr.write = ((chunk: string) => {
+    warnings.push(String(chunk));
+    return true;
+  }) as typeof process.stderr.write;
+
+  try {
+    const s = store();
+    s.addPeer("dev", "dev.example");
+    s.close();
+
+    const database = new Database(dbPath());
+    database.pragma("user_version = 1");
+    database.close();
+
+    store().close();
+  } finally {
+    process.stderr.write = write;
+  }
+
+  // Peers are salvaged, so no agent was lost and there is nothing to report. A
+  // warning on every fresh upgrade would be noise that teaches people to ignore
+  // the one that matters.
+  expect(warnings.join("")).toBe("");
 });
