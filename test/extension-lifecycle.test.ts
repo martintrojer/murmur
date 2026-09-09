@@ -45,7 +45,7 @@ type Rig = {
  * a takeover is expressed: this process claimed successfully once and is
  * refused the next time it asks.
  */
-async function rig(claimAnswers: Claim[]): Promise<Rig> {
+async function rig(claimAnswers: Claim[], options: { setActivity?: boolean } = {}): Promise<Rig> {
   const claims: Rig["claims"] = [];
   const writes: Rig["writes"] = [];
   const releases: Rig["releases"] = [];
@@ -69,7 +69,7 @@ async function rig(claimAnswers: Claim[]): Promise<Rig> {
         },
         setActivity: (update: { activity: string; agent_id: string; owner_pid: number }) => {
           writes.push(update);
-          return true;
+          return options.setActivity ?? true;
         },
         requestAttention: () => {},
         releaseAgent: (release: { agent_id: string; owner_pid: number }) => {
@@ -223,6 +223,18 @@ test("a pane taken over mid-life silences this process instead of writing as the
   // One badge after the takeover at most: `agent_end`'s clear, which is honest
   // about the window this process is leaving. Nothing may re-light it.
   expect(r.badges.slice(badgesBefore).filter(([, badge]) => badge !== null)).toEqual([]);
+
+  unmock();
+});
+
+test("a replaced owner cannot light the window after its write is rejected", async () => {
+  const r = await rig([{ outcome: "claimed", agent_id: "a1" }], { setActivity: false });
+  await until(() => r.claims.length === 1);
+
+  await r.handlers.get("agent_start")?.();
+  await until(() => r.writes.length === 1);
+
+  expect(r.badges.filter(([, badge]) => badge !== null)).toEqual([]);
 
   unmock();
 });
