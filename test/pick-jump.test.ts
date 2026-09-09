@@ -5,6 +5,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { isVisible, runPick } from "../src/cli/pick.js";
 import { createIdentity, loadIdentity } from "../src/identity.js";
 import { asPaneId, asSessionId, asWindowId } from "../src/ids.js";
+import type { Mux } from "../src/mux.js";
 import { openStore, type Store } from "../src/store.js";
 import type { AgentMeta, Driver, Location } from "../src/types.js";
 import type { PaneView } from "../src/view.js";
@@ -38,9 +39,9 @@ function location(pane: string): Location {
   };
 }
 
-function meta(driver: Driver): AgentMeta {
+function meta(driver: Driver, agentName: string | null = null): AgentMeta {
   return {
-    agent_name: null,
+    agent_name: agentName,
     pi_session: null,
     workstream: "murmur",
     role: null,
@@ -50,11 +51,11 @@ function meta(driver: Driver): AgentMeta {
 }
 
 /** A local pane with a running agent. */
-function agent(pane: string, driver: Driver = "human"): void {
+function agent(pane: string, driver: Driver = "human", agentName: string | null = null): void {
   const claim = store.claimAgent({
     location: location(pane),
     owner_pid: process.pid,
-    meta: meta(driver),
+    meta: meta(driver, agentName),
   });
   store.setActivity({
     agent_id: "agent_id" in claim ? claim.agent_id : "",
@@ -62,6 +63,29 @@ function agent(pane: string, driver: Driver = "human"): void {
     activity: "running",
     location: location(pane),
   });
+}
+
+function remotePane(pane: string) {
+  return {
+    pane: asPaneId(pane),
+    session: asSessionId("$9"),
+    window: asWindowId("@9"),
+    session_name: "far",
+    window_name: "remote",
+    agent: {
+      agent_id: "remote-agent",
+      activity: "running" as const,
+      agent_name: "remote-worker",
+      pi_session: null,
+      workstream: null,
+      role: null,
+      cli: "pi",
+      driver: "human" as const,
+      claimed_at: 1,
+      updated_at: 1,
+    },
+    attention: [],
+  };
 }
 
 /**
@@ -93,6 +117,185 @@ async function pickReturning(selected: string): Promise<{ jumped: string[]; rows
   );
   return { jumped, rows };
 }
+
+test("enter focuses an attached local pane instead of opening another remote session", async () => {
+  agent("%1", "human", "worker-1");
+  store.addPeer("dev", "dev.example", "x2ssh -et dev -c 'tmux attach -t {pane}'");
+  store.replacePeerSnapshot("dev", {
+    ok: true,
+    at: Date.now(),
+    snapshot: {
+      murmur_snapshot: 1,
+      host_id: "REMOTE",
+      display_name: "dev",
+      murmur_version: "0.2.0",
+      generated_at: 1,
+      panes: [
+        {
+          pane: asPaneId("%9"),
+          session: asSessionId("$9"),
+          window: asWindowId("@9"),
+          session_name: "far",
+          window_name: "remote",
+          agent: {
+            agent_id: "remote-agent",
+            activity: "running",
+            agent_name: "worker-1",
+            pi_session: null,
+            workstream: "murmur",
+            role: null,
+            cli: "pi",
+            driver: "human",
+            claimed_at: 1,
+            updated_at: 1,
+          },
+          attention: [],
+        },
+      ],
+    },
+  });
+
+  const attached = asPaneId("%12");
+  const mux = {
+    localPaneProcesses: () => [
+      {
+        pane: attached,
+        current_command: "x2ssh",
+        arguments: "MU_AGENT_NAME=worker-1 MU_WORKSTREAM=murmur x2ssh -et dev",
+      },
+    ],
+    attach: vi.fn(() => true),
+  } as unknown as Mux;
+  let jumped = false;
+
+  await runPick(
+    store,
+    {},
+    {
+      fzf: () => "REMOTE\t%9\tlabel",
+      jump: () => {
+        jumped = true;
+        return { ok: true };
+      },
+      collect: () => {},
+      mux,
+    },
+  );
+
+  expect(mux.attach).toHaveBeenCalledWith(attached);
+  expect(jumped).toBe(false);
+
+  await runPick(
+    store,
+    {},
+    {
+      fzf: () => "alt-enter\nREMOTE\t%9\tlabel",
+      jump: () => {
+        jumped = true;
+        return { ok: true };
+      },
+      collect: () => {},
+      mux,
+    },
+  );
+
+  expect(mux.attach).toHaveBeenCalledTimes(1);
+  expect(jumped).toBe(true);
+});
+
+test("a cold remote jump warns and still proceeds when confirmed", async () => {
+  agent("%1");
+  store.addPeer("dev", "dev.example");
+  store.replacePeerSnapshot("dev", {
+    ok: true,
+    at: Date.now(),
+    snapshot: {
+      murmur_snapshot: 1,
+      host_id: "REMOTE",
+      display_name: "dev",
+      murmur_version: "0.2.0",
+      generated_at: 1,
+      panes: [remotePane("%9")],
+    },
+  });
+  store.replacePeerSnapshot("dev", {
+    ok: false,
+    at: Date.now(),
+    error: "Permission denied (keyboard-interactive).",
+  });
+  const warnings: string[] = [];
+  let jumped = false;
+
+  await runPick(
+    store,
+    {},
+    {
+      fzf: (args, _input) => {
+        if (args.some((arg) => arg.includes("hardware token"))) {
+          warnings.push(args.join("\n"));
+          return "jump";
+        }
+        return "REMOTE\t%9\tlabel";
+      },
+      jump: () => {
+        jumped = true;
+        return { ok: true };
+      },
+      collect: () => {},
+      warm: () => false,
+    },
+  );
+
+  expect(warnings).toHaveLength(1);
+  expect(jumped).toBe(true);
+});
+
+test("a cold remote jump can be cancelled after the warning", async () => {
+  agent("%1");
+  store.addPeer("dev", "dev.example");
+  store.replacePeerSnapshot("dev", {
+    ok: true,
+    at: Date.now(),
+    snapshot: {
+      murmur_snapshot: 1,
+      host_id: "REMOTE",
+      display_name: "dev",
+      murmur_version: "0.2.0",
+      generated_at: 1,
+      panes: [remotePane("%9")],
+    },
+  });
+  store.replacePeerSnapshot("dev", {
+    ok: false,
+    at: Date.now(),
+    error: "Permission denied (keyboard-interactive).",
+  });
+  let jumped = false;
+  let warned = false;
+
+  await runPick(
+    store,
+    {},
+    {
+      fzf: (args) => {
+        if (args.some((arg) => arg.includes("hardware token"))) {
+          warned = true;
+          return "";
+        }
+        return "REMOTE\t%9\tlabel";
+      },
+      jump: () => {
+        jumped = true;
+        return { ok: true };
+      },
+      collect: () => {},
+      warm: () => false,
+    },
+  );
+
+  expect(warned).toBe(true);
+  expect(jumped).toBe(false);
+});
 
 test("a crew row revealed by alt-a can actually be jumped to", async () => {
   // The bug: `runPick` built its list ONCE, filtered by isVisible, and resolved
@@ -205,6 +408,7 @@ test("a selection is resolved on host AND pane, not on the pane alone", async ()
         jumped.push(pane);
         return { ok: true };
       },
+      warm: () => true,
     },
   );
 

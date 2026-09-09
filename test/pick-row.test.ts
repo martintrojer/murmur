@@ -107,6 +107,12 @@ test("columns stay aligned when the name carries colour escapes", () => {
   expect(short.indexOf("bubba")).toBe(60);
 });
 
+test("a remote worker row shows its existing local attachment", () => {
+  const attached = { ...base, attached_pane: asPaneId("%12") };
+
+  expect(label(pickerRow(attached, true, false, false))).toContain("attached here %12");
+});
+
 test("local and remote rows are distinguishable without knowing your hostname", () => {
   // Both hosts used to render as a dim hostname in one column, so reading the
   // list required knowing which machine you were on. The difference is not

@@ -7,8 +7,10 @@ import {
   jumpToAgent,
   terminalText,
 } from "../agents.js";
-import { warmSocketCommand } from "../channel.js";
+import { hasWarmSocket, warmSocketCommand } from "../channel.js";
 import { type GlanceRunner, glance } from "../glance.js";
+import { renderJumpCommand } from "../jump-command.js";
+import { type Mux, tmux } from "../mux.js";
 import { type Status, status, statusWithCollect } from "../status.js";
 import { openStore, type Store } from "../store.js";
 import {
@@ -42,6 +44,8 @@ type PickDeps = {
    * production one is detached and deliberately reports nothing.
    */
   collect?: (self: string) => void;
+  mux?: Mux;
+  warm?: (target: string) => boolean;
 };
 
 const spawnFzf: NonNullable<PickDeps["fzf"]> = (args, input, env) =>
@@ -413,6 +417,7 @@ export function pickerRow(
     // Freshness belongs to the NODE, stated rather than inferred from an age: a
     // stale node keeps its last-known fields, and the reader must be told so.
     agent.freshness === "stale" ? "stale host" : "",
+    agent.attached_pane ? `attached here ${agent.attached_pane}` : "",
     ...extra,
     agent.activity === "running" && state !== "running" ? "running" : "",
     age(agent.updated_at === null ? null : Date.now() - agent.updated_at),
@@ -560,6 +565,8 @@ export async function runPick(
   const fzf = deps.fzf ?? spawnFzf;
   const jumpTo = deps.jump ?? jumpToAgent;
   const startCollect = deps.collect ?? spawnCollect;
+  const localMux = deps.mux ?? tmux;
+  const warm = deps.warm ?? hasWarmSocket;
   const identity = requireIdentity();
   if (!identity) return;
   // Cache only, and nothing on the launch path may wait for a collect: a peer
@@ -573,7 +580,7 @@ export async function runPick(
   // against `1/1` and the row with no start binding at all. So the binding that
   // was supposed to paint from cache blanked the list for the whole fetch and
   // moved the stall rather than removing it.
-  const view = status(store, identity);
+  const view = status(store, identity, Date.now(), warm, undefined, { mux: localMux });
   const agents = view.panes.filter((agent) => options.all || isVisible(agent));
   const hidden = view.panes.length - agents.length;
 
@@ -674,7 +681,7 @@ export async function runPick(
         // No delete key: a reader holds one snapshot per peer and the next fetch
         // replaces it whole, so it could only remove a row the next collect puts
         // straight back, while looking like it had done something.
-        `${DIM}enter jump   ^r refresh   ^p preview   ^u clear${RESET}`,
+        `${DIM}enter focus/jump   M-enter attach again   ^r refresh   ^p preview   ^u clear${RESET}`,
         // "toggle crew", not "show crew": the header is built once and the bind
         // flips per keypress, so a directional label would be wrong half the
         // time. The prompt's `crew` marker says which way it is set.
@@ -711,6 +718,8 @@ export async function runPick(
       "--bind",
       `alt-a:transform:[[ $FZF_PROMPT == "${CREW_MARK}"* ]] && echo "reload(${process.execPath} ${self} pick --rows)+change-prompt(${basePrompt})" || echo "reload(${process.execPath} ${self} pick --rows --all)+change-prompt(${CREW_MARK}${basePrompt})"`,
       ...filterBinds,
+      "--expect",
+      "alt-enter",
       "--no-select-1",
       "--no-exit-0",
     ],
@@ -722,7 +731,10 @@ export async function runPick(
     ),
   );
 
-  const [selectedHost, selected] = stdout.trim().split("\t");
+  const output = stdout.trim().split("\n");
+  const attachAgain = output[0] === "alt-enter";
+  const selection = attachAgain ? (output[1] ?? "") : (output.at(-1) ?? "");
+  const [selectedHost, selected] = selection.split("\t");
   if (!selected) return;
   // A fresh read of the FULL list, not `view` and not `agents`. The rows fzf
   // offered can have come from the `^r` or alt-a reload subprocesses, which
@@ -736,7 +748,8 @@ export async function runPick(
   // Matched on the WHOLE address. A pane id is unique per node and nothing more,
   // so two machines routinely hold a `%1`, and matching the pane alone jumped to
   // whichever the sort put first -- turning an ssh into a local window switch.
-  const agent = status(store, identity).panes.find(
+  const latest = status(store, identity, Date.now(), warm, undefined, { mux: localMux });
+  const agent = latest.panes.find(
     (candidate) => candidate.pane === selected && candidate.host_id === selectedHost,
   );
   // So a miss means the pane genuinely went away between the collect and the
@@ -747,6 +760,37 @@ export async function runPick(
     process.exitCode = 1;
     return;
   }
+  if (agent.attached_pane && !attachAgain) {
+    if (!localMux.attach(agent.attached_pane)) {
+      process.stderr.write(`could not focus local attachment ${agent.attached_pane}.\n`);
+      process.exitCode = 1;
+    }
+    return;
+  }
+
+  if (!agent.local) {
+    const peer = store.peers().find((candidate) => candidate.host_id === agent.host_id);
+    const needsTap = latest.peers.find((candidate) => candidate.name === agent.host)?.needs_session;
+    if (peer && needsTap) {
+      const command = renderJumpCommand(peer.jump_command, agent.pane);
+      const confirmed = fzf(
+        [
+          "--ansi",
+          "--layout",
+          "reverse",
+          "--prompt",
+          "tap required> ",
+          "--header",
+          `This jump may prompt for a hardware token tap.\n${command}\nenter jump   esc cancel`,
+          "--no-multi",
+        ],
+        "jump\tcontinue",
+        process.env,
+      );
+      if (confirmed.trim().split("\t")[0] !== "jump") return;
+    }
+  }
+
   const jump = jumpTo(store, agent);
   // A popup closes the moment this returns, so a bare failure looked exactly
   // like "enter did nothing". Say what happened and fail loudly.
