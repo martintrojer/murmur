@@ -131,6 +131,16 @@ test("a failed fetch keeps the last snapshot and leaves fetched_at alone", async
 
 // Dogfooded 2026-09-09: reproduced twice in one session, by the person who wrote
 // the warning against it. The tool now says what the operator could not see.
+// A whole-run failure carries no peer name. Prefixing regardless printed
+// `murmur: : peers table is broken` -- the same defect SnapshotInvalidError was
+// fixed for one file over, reintroduced here without its guard.
+test("a whole-run failure prints without an empty peer prefix", () => {
+  expect(describeFailure("", "peers table is broken")).toBe("peers table is broken");
+  // The invariant a surface cares about, asserted as the shape rather than the
+  // sentence: no printed line may start with the empty-name artefact.
+  expect(describeFailure("", "peers table is broken").startsWith(": ")).toBe(false);
+});
+
 test("a session-channel refusal names the attachment holding the slot", () => {
   const refusal =
     "mux_client_request_session: session request failed: Session open refused by peer " +

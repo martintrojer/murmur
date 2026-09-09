@@ -352,6 +352,13 @@ function normalizeFailure(message: string): string {
  */
 export function describeFailure(peer: string, message: string, culprit?: string | null): string {
   const collapsed = normalizeFailure(message);
+  // A WHOLE-RUN failure carries no peer -- a broken peer table, say -- and
+  // prefixing regardless printed `murmur: : peers table is broken`. The same
+  // shape was already fixed in `SnapshotInvalidError`, whose constructor
+  // special-cases an empty path because joining regardless produced
+  // `bubba: : not JSON (...)` against a real second node. Guard it here too
+  // rather than asking every caller to remember.
+  if (peer === "") return collapsed;
   if (isUnreachable(collapsed)) {
     const reason = /ssh: (?:connect to host \S+ port \d+: )?(.+?)(?: \(|$)/i.exec(collapsed);
     return `${peer}: unreachable (${(reason?.[1] ?? "ssh failed").trim()})`;
@@ -499,7 +506,11 @@ export async function collect(
       peer: "",
       ok: false,
       panes: 0,
-      error: error instanceof Error ? error.message : String(error),
+      // Normalised like every per-peer failure. This was the one path that was
+      // not, so it could print 140 characters of ssh invocation or a raw stack
+      // message -- and the comment on `normalizeFailure` says normalising at the
+      // source is what stops a surface having to remember to strip it.
+      error: normalizeFailure(error instanceof Error ? error.message : String(error)),
     });
   } finally {
     clearTimeout(timer);
