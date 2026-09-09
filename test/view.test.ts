@@ -10,6 +10,7 @@ import {
   RENDER_PRIORITY,
   renderState,
   STALENESS_MS,
+  sameWorker,
   viewSort,
   wants,
 } from "../src/view.js";
@@ -61,6 +62,36 @@ function view(over: Partial<PaneView> = {}): PaneView {
     ...over,
   };
 }
+
+test("rows with the same complete mu identity are one worker", () => {
+  const local = view({ workstream: "murmur", agent_name: "worker-1" });
+  const remote = view({
+    host_id: "REMOTE",
+    host: "dev",
+    local: false,
+    pane: asPaneId("%9"),
+    workstream: "murmur",
+    agent_name: "worker-1",
+  });
+
+  expect(sameWorker(local, remote)).toBe(true);
+});
+
+test("an incomplete mu identity never correlates, including two nulls", () => {
+  const complete = view({ workstream: "murmur", agent_name: "worker-1" });
+
+  expect(sameWorker(complete, view({ workstream: null, agent_name: "worker-1" }))).toBe(false);
+  expect(sameWorker(complete, view({ workstream: "murmur", agent_name: null }))).toBe(false);
+  expect(sameWorker(view({ workstream: null }), view({ workstream: null }))).toBe(false);
+  expect(sameWorker(view({ agent_name: null }), view({ agent_name: null }))).toBe(false);
+});
+
+test("two agents in one workstream remain distinct workers", () => {
+  const first = view({ workstream: "murmur", agent_name: "worker-1" });
+  const second = view({ workstream: "murmur", agent_name: "worker-2" });
+
+  expect(sameWorker(first, second)).toBe(false);
+});
 
 test("renderState picks one word by priority, and attention beats activity", () => {
   // Presentation only: the facts underneath are untouched, which is why a
