@@ -186,8 +186,10 @@ export const tmux: Mux = {
   setWindowBadge(window, state) {
     if (state === null) {
       runTmux(["set-window-option", "-qu", "-t", window, "@agent_state"]);
+      runTmux(["set-window-option", "-qu", "-t", window, "@pane_agent"]);
     } else {
       runTmux(["set-window-option", "-q", "-t", window, "@agent_state", tmuxBadgeState(state)]);
+      // The tmux status bar and picker read this as "an agent is in this window".
       runTmux(["set-window-option", "-q", "-t", window, "@pane_agent", "1"]);
     }
     runTmux(["refresh-client", "-S"]);

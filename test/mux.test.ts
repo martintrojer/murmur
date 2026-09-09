@@ -1,5 +1,14 @@
-import { expect, test } from "vitest";
-import { chosenWindowName, pidAlive, tmuxBadgeState } from "../src/mux.js";
+import { expect, test, vi } from "vitest";
+import { asWindowId } from "../src/ids.js";
+import { chosenWindowName, pidAlive, tmux, tmuxBadgeState } from "../src/mux.js";
+
+const tmuxCalls = vi.hoisted(() => [] as string[][]);
+vi.mock("node:child_process", () => ({
+  execFileSync: (_file: string, args: string[]) => {
+    tmuxCalls.push(args);
+    return "";
+  },
+}));
 
 test("pidAlive is true for self and false for an unused pid", () => {
   expect(pidAlive(process.pid)).toBe(true);
@@ -9,6 +18,18 @@ test("pidAlive is true for self and false for an unused pid", () => {
 test("tmux badges preserve the established working token", () => {
   expect(tmuxBadgeState("running")).toBe("working");
   expect(tmuxBadgeState("blocked")).toBe("blocked");
+});
+
+test("retracting a window badge clears both agent options", () => {
+  tmuxCalls.length = 0;
+
+  tmux.setWindowBadge(asWindowId("@7"), null);
+
+  expect(tmuxCalls).toEqual([
+    ["set-window-option", "-qu", "-t", "@7", "@agent_state"],
+    ["set-window-option", "-qu", "-t", "@7", "@pane_agent"],
+    ["refresh-client", "-S"],
+  ]);
 });
 
 // The picker's `agent` column showed `Python`, `node` and `zsh` for three real
