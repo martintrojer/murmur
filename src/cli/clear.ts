@@ -54,16 +54,29 @@ export function clearPane(raw: string, mux: Mux = tmux): void {
       store = openStore();
       store.acknowledgePane(pane);
     } catch {
-      // No database, or an unwritable one. The badge still clears below, which
-      // is the visible half.
+      // No database, or an unwritable one. Nothing was read, so there is no
+      // evidence the request was satisfied -- and clearing on no evidence is the
+      // one direction that loses information.
     }
 
-    if (!window) return;
+    // Both guards, for the same reason, stated at the top of this file: keep the
+    // badge when tmux OR the store cannot answer.
+    //
+    // The store guard used to be a ternary passing `null`, which erased the
+    // badge without murmur ever reading the attention it reported -- the exact
+    // opposite of the rule. A locked or transiently unwritable state.db plus one
+    // focus event wiped the crashed/blocked glyph off a window whose attention
+    // row was still in the database, and nothing repaints it until the agent's
+    // next event. For a crashed agent that is never.
+    //
+    // A pane murmur has never seen still clears, because there `openStore`
+    // succeeds and `windowBadge` returns null on its own evidence.
+    if (!window || !store) return;
     // @agent_state is a derived window-scoped projection, so it is recomputed
     // after the delete: blindly clearing the option made a live running agent
     // display as idle though its agent row was untouched.
     try {
-      mux.setWindowBadge(window, store ? windowBadge(window, mux, store) : null);
+      mux.setWindowBadge(window, windowBadge(window, mux, store));
     } catch {
       // Unreadable projection: leave the badge. Stale is recoverable, erasing a
       // real signal is not.

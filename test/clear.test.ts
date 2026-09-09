@@ -1,4 +1,4 @@
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, expect, test } from "vitest";
@@ -196,6 +196,33 @@ test("clear is silent and total when nothing can answer", () => {
       }),
     ),
   ).not.toThrow();
+});
+
+// The file's own rule, stated at the top of src/cli/clear.ts: keep the badge when
+// tmux OR THE STORE cannot answer. The store half used to do the opposite -- a
+// ternary passed null, erasing the badge without ever reading the attention it
+// reported. A locked state.db plus one focus event wiped a crashed glyph off a
+// window whose attention row was still there, and for a crashed agent nothing
+// ever repaints it.
+test("an unopenable store leaves the badge alone rather than erasing it", () => {
+  const badges: [string, string | null][] = [];
+  const mux = fakeMux({
+    windowForPane: () => asWindowId("@1"),
+    setWindowBadge: (window: WindowId, state: string | null) => {
+      badges.push([window, state]);
+    },
+  });
+
+  // Unopenable, not merely empty: a path whose parent is a FILE cannot be
+  // created as a directory, which is the closest stand-in for the locked or
+  // unwritable database this guards against.
+  const parent = mkdtempSync(join(tmpdir(), "murmur-clear-blocked-"));
+  const asFile = join(parent, "occupied");
+  writeFileSync(asFile, "not a directory");
+  process.env.MURMUR_STATE_DIR = join(asFile, "state");
+
+  expect(() => clearPane("%1", mux)).not.toThrow();
+  expect(badges).toEqual([]);
 });
 
 test("another window's attention cannot light this window's badge", () => {
