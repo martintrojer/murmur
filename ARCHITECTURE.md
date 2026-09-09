@@ -560,6 +560,18 @@ file yet. Both are follow-on work, not gaps in this.
   "stale host" flag. That is the honest presentation: the fields are real, they
   are simply old, and hiding them would lose the only information available.
 
+On a REACHABLE peer, `stale` is transient by construction and you will rarely
+see it: every surface that can render it also refreshes it. `murmur status`
+collects inline before it reads, and `pick` paints from cache while starting a
+floored collect behind it, so the state exists only in the gap between the
+collect floor (30s ± 10s) and `STALENESS_MS` (60s) — and any read landing in
+that gap closes it. The flag is durable only for a peer murmur cannot reach,
+which is what it is for.
+
+That makes it awkward to exercise by hand, worth knowing before hunting a bug
+that is not there: aging `fetched_at` alone shows it, while aging
+`last_attempt_at` too makes the peer due and the next read refreshes it away.
+
 Two clocks, and collapsing them shipped a bug where a dead host's agents
 rendered as live, because the *replica* really was current:
 
