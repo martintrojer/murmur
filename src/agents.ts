@@ -136,8 +136,27 @@ export function peerForHost(
   return target ? { peer, target } : null;
 }
 
-export function remoteSessionName(peerName: string): string {
-  return `${peerName.replace(/^[@$%=]+/, "").replaceAll(/[:.\s]+/g, "-")}~`;
+export function remoteSessionName(peerName: string, hostId?: string): string {
+  const label = peerName.replace(/^[@$%=]+/, "").replaceAll(/[:.\s]+/g, "-");
+  // The sanitised label is NOT injective -- `a:b` and `a.b` both become `a-b`,
+  // and `@foo` becomes `foo`. Reuse is matched on this name, so two peers
+  // colliding here meant a jump to the second finding the FIRST one's wrapper,
+  // taking the reuse branch, and attaching the operator to the wrong machine
+  // while reporting ok. That is the failure the pane retarget already fixed one
+  // level down, reappearing at the level of the host.
+  //
+  // The host id disambiguates because it is what actually identifies the
+  // destination; the name is a label a human typed. Hashed rather than sliced:
+  // a host id is a uuid in production but nothing enforces that, and slicing
+  // hex characters out of an arbitrary string reintroduces the collision it is
+  // here to prevent (`remote-host` yields `ee`). Six base-36 characters of a
+  // cheap hash keep the session list readable and separate any two ids.
+  //
+  // Optional so a caller without a host id still gets the sanitised form.
+  if (!hostId) return `${label}~`;
+  let hash = 0;
+  for (const character of hostId) hash = (Math.imul(hash, 31) + character.charCodeAt(0)) | 0;
+  return `${label}-${Math.abs(hash).toString(36).padStart(6, "0").slice(0, 6)}~`;
 }
 
 /**
@@ -359,7 +378,7 @@ export function jumpToAgent(
     // Named after the peer as configured, matching the picker's host column: a
     // self-reported display_name can be a container id, unrecognisable in a
     // session list.
-    const name = remoteSessionName(peer.name);
+    const name = remoteSessionName(peer.name, agent.host_id);
 
     // Reuse this host's wrapper rather than stacking one per jump -- three jumps
     // to bubba left three identical windows. Matched on name, the only handle

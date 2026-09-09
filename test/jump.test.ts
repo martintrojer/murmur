@@ -281,7 +281,7 @@ test("an existing per-host session is switched to, and no new one is opened", ()
 
   expect(result).toEqual({ ok: true });
   expect(opened).toBe(0);
-  expect(switched).toEqual(["p~"]);
+  expect(switched).toEqual([remoteSessionName("p", "remote-host")]);
 });
 
 // Reported by review, reproduced against two real remote panes while dogfooding:
@@ -352,7 +352,7 @@ test("with no existing session, exactly one is opened for the peer", () => {
   // longer what rescues this particular value -- it stays because nothing
   // validates a pane id's shape (`asPaneId` deliberately round-trips whatever a
   // peer sent), and the layer below still crosses two shells.
-  expect(opened[0]).toContain("p~ ::");
+  expect(opened[0]).toContain(`${remoteSessionName("p", "remote-host")} ::`);
   expect(opened[0]).toContain("'%9'");
 });
 
@@ -402,7 +402,12 @@ test("the wrapper session hides the local status bar and disables the local pref
     () => ok("%9\n"),
   );
 
-  expect(options).toEqual(["p~ status=off", "p~ prefix=None", "p~ detach-on-destroy=previous"]);
+  const wrapper = remoteSessionName("p", "remote-host");
+  expect(options).toEqual([
+    `${wrapper} status=off`,
+    `${wrapper} prefix=None`,
+    `${wrapper} detach-on-destroy=previous`,
+  ]);
 });
 
 test("the wrapper returns the originating client to where the jump started", () => {
@@ -452,6 +457,17 @@ test("a wrapper name never starts with a tmux id sigil", () => {
   // name. `-t @bubba` parses as a window id, so every set-option and
   // switch-client against it failed with `can't find window` -- verified
   // against a real tmux while designing this.
+  // Two peers whose sanitised labels collide get different wrapper sessions,
+  // because the wrapper's identity is the HOST it reaches and not the label a
+  // human typed. Without the host id, `a:b` and `a.b` both become `a-b~`, and a
+  // jump to the second finds the first's wrapper and attaches to the wrong
+  // machine while reporting success -- the same failure the pane retarget
+  // fixed one level down, at the level of the host.
+  expect(remoteSessionName("a:b", "host-A")).not.toBe(remoteSessionName("a.b", "host-B"));
+  expect(remoteSessionName("@foo", "host-A")).not.toBe(remoteSessionName("foo", "host-B"));
+  // Stable for one peer, or reuse would never match and every jump would stack
+  // a new window.
+  expect(remoteSessionName("dev", "host-A")).toBe(remoteSessionName("dev", "host-A"));
   expect(remoteSessionName("bubba")).toBe("bubba~");
   expect(remoteSessionName("@bubba")).toBe("bubba~");
   expect(remoteSessionName("$0")).toBe("0~");
@@ -479,7 +495,7 @@ test("a wrapper that opens but cannot be switched to is reported", () => {
   );
 
   expect(result).toMatchObject({ ok: false, reason: "attach_failed" });
-  if (!result.ok) expect(result.message).toContain("p~");
+  if (!result.ok) expect(result.message).toContain(remoteSessionName("p", "remote-host"));
 });
 
 test("outside tmux, no local wrapper session is created", () => {
