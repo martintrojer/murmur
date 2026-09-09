@@ -1,6 +1,13 @@
 import type { Command } from "commander";
 import { ssh } from "../channel.js";
-import { COLLECT_FLOOR_MS, collect, describeFailure } from "../collector.js";
+import {
+  attachmentHoldingPeer,
+  COLLECT_FLOOR_MS,
+  collect,
+  describeFailure,
+  sessionChannelBusy,
+} from "../collector.js";
+import { tmux } from "../mux.js";
 import { openStore } from "../store.js";
 import { requireIdentity } from "./identity-guard.js";
 
@@ -30,9 +37,19 @@ export function registerCollect(program: Command): void {
         //
         // One line per peer, on stderr so a caller can still parse stdout, and
         // never a stack or an ssh command line.
+        // Read the local panes ONCE, and only when something actually failed with
+        // a session-channel refusal: this is a `ps` per pane, far too costly to
+        // pay on a healthy collect.
+        const busy = results.some(
+          (result) => !result.ok && result.error && sessionChannelBusy(result.error),
+        );
+        const localPanes = busy ? tmux.localPaneProcesses() : [];
+        const peersByName = new Map(store.peers().map((peer) => [peer.name, peer]));
         for (const result of results) {
           if (result.ok || !result.error) continue;
-          process.stderr.write(`murmur: ${describeFailure(result.peer, result.error)}\n`);
+          const jump = peersByName.get(result.peer)?.jump_command;
+          const culprit = jump && busy ? attachmentHoldingPeer(jump, localPanes) : null;
+          process.stderr.write(`murmur: ${describeFailure(result.peer, result.error, culprit)}\n`);
         }
 
         // A summary only when something is wrong, and only for the case a human

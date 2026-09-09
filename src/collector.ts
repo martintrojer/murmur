@@ -350,16 +350,54 @@ function normalizeFailure(message: string): string {
  * invocation plus ssh's message -- 200+ characters whose actionable part is the
  * host name, leaking every ssh option murmur passes.
  */
-export function describeFailure(peer: string, message: string): string {
+export function describeFailure(peer: string, message: string, culprit?: string | null): string {
   const collapsed = normalizeFailure(message);
   if (isUnreachable(collapsed)) {
     const reason = /ssh: (?:connect to host \S+ port \d+: )?(.+?)(?: \(|$)/i.exec(collapsed);
     return `${peer}: unreachable (${(reason?.[1] ?? "ssh failed").trim()})`;
   }
+  // A session-channel refusal on a host that caps sessions per connection is
+  // usually SELF-INFLICTED: an interactive attach to that same peer is holding
+  // the only channel, so the collect that would have shown you the remote agent
+  // is blocked by the pane you opened to look at it. ssh reports it as
+  // `Permission denied (keyboard-interactive)`, which sends you to look at
+  // credentials -- measured twice in one session, by the person who wrote the
+  // warning against doing it.
+  //
+  // The culprit is passed in rather than probed here: this function is pure and
+  // its callers already hold the pane list. Naming the pane is the whole value,
+  // since the remedy is to close that one.
+  if (culprit && sessionChannelBusy(collapsed)) {
+    return `${peer}: ssh session limit reached -- pane ${culprit} is your own attachment to this peer. Close it, then collect.`;
+  }
   // Reachable but wrong: keep the message, since it is the diagnosis, but bound
   // it so a corrupt snapshot cannot print a screenful.
   const detail = collapsed.length > 160 ? `${collapsed.slice(0, 157)}...` : collapsed;
   return `${peer}: ${detail}`;
+}
+
+/**
+ * The local pane attached to `peer`, if one is open.
+ *
+ * Deliberately does NOT use `attached_pane` from a pane view: that requires a
+ * successful collect to have produced the remote row first, and on a capped host
+ * the attachment is exactly what prevents the collect. Depending on it would
+ * make the diagnosis unavailable in the only case that needs it.
+ *
+ * Matches a local pane whose foreground command is one of the names in the
+ * peer's jump command, which is how the same match is made in `status`.
+ */
+export function attachmentHoldingPeer(
+  jumpCommand: string,
+  panes: readonly { pane: string; current_command: string }[],
+): string | null {
+  const names = new Set(
+    [...jumpCommand.matchAll(/(?:^|[\s'"/])([\w.-]+)(?=$|[\s'"])/g)].flatMap((match) => {
+      const name = match[1]?.replace(/^-+/, "");
+      return name ? [name] : [];
+    }),
+  );
+  return panes.find((pane) => names.has(pane.current_command))?.pane ?? null;
 }
 
 /**

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import type { Channel } from "../src/channel.js";
 import {
+  attachmentHoldingPeer,
   COLLECT_FLOOR_MS,
   COLLECT_JITTER_MS,
   collect,
@@ -126,6 +127,50 @@ test("a failed fetch keeps the last snapshot and leaves fetched_at alone", async
   expect(peer?.snapshot?.panes).toHaveLength(1);
   expect(peer).toMatchObject({ fetched_at: 1_000, last_attempt_at: 9_000 });
   expect(peer?.last_error).toContain("Host is down");
+});
+
+// Dogfooded 2026-09-09: reproduced twice in one session, by the person who wrote
+// the warning against it. The tool now says what the operator could not see.
+test("a session-channel refusal names the attachment holding the slot", () => {
+  const refusal =
+    "mux_client_request_session: session request failed: Session open refused by peer " +
+    "mtrojer@dev: Permission denied (keyboard-interactive).";
+
+  expect(describeFailure("dev", refusal, "%210")).toBe(
+    "dev: ssh session limit reached -- pane %210 is your own attachment to this peer. Close it, then collect.",
+  );
+  // Without a culprit it stays the raw diagnosis: the refusal may be another
+  // process entirely, and inventing a pane would be worse than saying nothing.
+  expect(describeFailure("dev", refusal)).toContain("Session open refused by peer");
+});
+
+test("a culprit is ignored for a failure that is not a channel refusal", () => {
+  // Same pane open, different problem. Blaming the attachment for a genuine auth
+  // wall would send the operator to close a pane that is not the cause.
+  expect(describeFailure("dev", "Permission denied (publickey).", "%210")).toContain(
+    "Permission denied (publickey)",
+  );
+});
+
+test("the attachment is found by the jump command's own program names", () => {
+  const panes = [
+    { pane: "%1", current_command: "zsh" },
+    { pane: "%210", current_command: "ssh" },
+  ];
+  expect(attachmentHoldingPeer("ssh -t dev tmux attach -t {pane}", panes)).toBe("%210");
+  // A wrapper transport is matched the same way, since the names come out of
+  // whatever the operator stored.
+  expect(
+    attachmentHoldingPeer("x2ssh -et dev -c 'tmux attach -t {pane}'", [
+      { pane: "%7", current_command: "et" },
+    ]),
+  ).toBe("%7");
+  // Nothing local is attached: no blame to assign.
+  expect(
+    attachmentHoldingPeer("ssh -t dev tmux attach -t {pane}", [
+      { pane: "%1", current_command: "zsh" },
+    ]),
+  ).toBeNull();
 });
 
 test("an invalid snapshot is rejected before storage and reads as reachable-but-broken", async () => {
