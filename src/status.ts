@@ -1,6 +1,7 @@
 import { type Channel, hasWarmSocket, ssh } from "./channel.js";
 import { type CollectOptions, collect, needsInteractiveAuth } from "./collector.js";
 import type { NodeIdentity } from "./identity.js";
+import { type Mux, tmux } from "./mux.js";
 import type { Store } from "./store.js";
 import {
   freshness,
@@ -11,10 +12,26 @@ import {
   type RenderState,
   renderState,
   type SortContext,
+  sameWorker,
   viewSort,
 } from "./view.js";
 
 type Counts = Record<RenderState, number>;
+
+type StatusOptions = { mux?: Mux };
+
+function commandNames(command: string): string[] {
+  return [...command.matchAll(/(?:^|[\s'"/])([\w.-]+)(?=$|[\s'"])/g)].flatMap((match) => {
+    const name = match[1]?.replace(/^-+/, "");
+    return name ? [name] : [];
+  });
+}
+
+function attachedWorker(command: string): { agent_name: string; workstream: string } | null {
+  const agentName = command.match(/(?:^|\s)MU_AGENT_NAME=([^\s'";]+)/)?.[1] ?? null;
+  const workstream = command.match(/(?:^|\s)MU_WORKSTREAM=([^\s'";]+)/)?.[1] ?? null;
+  return agentName && workstream ? { agent_name: agentName, workstream } : null;
+}
 
 export type Status = {
   counts: Counts;
@@ -94,11 +111,30 @@ export function status(
   // not the pane this process runs in -- and the status bar renders in the tmux
   // server itself, where that would name an unrelated agent.
   context: SortContext = { here: process.env.TMUX_PANE },
+  options: StatusOptions = {},
 ): Status {
   const counts = emptyCounts();
   const orchestratedCounts = emptyCounts();
-  const panes = viewSort(paneViews(store, identity, now), { ...context, now });
-  for (const pane of panes) {
+  const panes = paneViews(store, identity, now);
+  const peers = store.peers();
+  const commandsByPeer = new Map(
+    peers
+      .filter((peer): peer is typeof peer & { host_id: string } => peer.host_id !== null)
+      .map((peer) => [peer.host_id, new Set(commandNames(peer.jump_command))]),
+  );
+  for (const process of (options.mux ?? tmux).localPaneProcesses()) {
+    const worker = attachedWorker(process.arguments);
+    if (!worker) continue;
+    const remote = panes.find(
+      (pane) =>
+        !pane.local &&
+        commandsByPeer.get(pane.host_id)?.has(process.current_command) &&
+        sameWorker(pane, worker),
+    );
+    if (remote) remote.attached_pane = process.pane;
+  }
+  const sortedPanes = viewSort(panes, { ...context, now });
+  for (const pane of sortedPanes) {
     const target = pane.driver === "human" ? counts : orchestratedCounts;
     target[renderState(pane)] += 1;
   }
@@ -106,8 +142,8 @@ export function status(
   return {
     counts,
     orchestrated_counts: orchestratedCounts,
-    panes,
-    peers: store.peers().map((peer) => ({
+    panes: sortedPanes,
+    peers: peers.map((peer) => ({
       name: peer.name,
       target: peer.target,
       display_name: peer.display_name,

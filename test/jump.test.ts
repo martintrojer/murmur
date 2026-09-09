@@ -56,6 +56,7 @@ function view(over: Partial<PaneView> = {}): PaneView {
     updated_at: 1,
     snapshot_at: null,
     fetched_at: null,
+    attached_pane: null,
     ...over,
   };
 }

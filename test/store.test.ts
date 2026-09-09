@@ -394,6 +394,14 @@ test("reconcileLocal with panes null writes nothing", () => {
   expect(s.localPanes()[0]?.attention).toHaveLength(1);
 });
 
+test("reconcileLocal distinguishes an empty pane list from a failed read", () => {
+  const s = store();
+  s.claimAgent({ location: location(), owner_pid: 100, meta: meta() });
+
+  expect(s.reconcileLocal({ panes: new Set(), isAlive: dead }).removed).toEqual(["%1"]);
+  expect(s.localPanes()).toEqual([]);
+});
+
 test("a dead running owner becomes stopped plus one crashed row, idempotently", () => {
   const s = store();
   const claim = s.claimAgent({ location: location(), owner_pid: 100, meta: meta(), now: 1 });

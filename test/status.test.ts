@@ -148,6 +148,86 @@ test("counts group by render state, and attention beats activity", () => {
   expect(blocked?.attention.map((entry) => entry.kind)).toEqual(["blocked"]);
 });
 
+test("a remote worker points back to its matching local attachment", () => {
+  store.addPeer("dev", "dev", "x2ssh -et dev -c 'tmux attach -t {pane}'");
+  store.replacePeerSnapshot("dev", {
+    ok: true,
+    at: 1_000,
+    snapshot: remoteSnapshot([
+      remotePane("%50", {
+        agent: {
+          agent_id: "remote-worker",
+          activity: "running",
+          agent_name: "worker-1",
+          pi_session: null,
+          workstream: "murmur",
+          role: null,
+          cli: "pi",
+          driver: "orchestrated",
+          claimed_at: 1,
+          updated_at: 1,
+        },
+      }),
+    ]),
+  });
+
+  const result = status(store, IDENTITY, 1_000, () => false, undefined, {
+    mux: fakeMux({
+      localPaneProcesses: () => [
+        {
+          pane: asPaneId("%7"),
+          current_command: "et",
+          arguments: "x2ssh -et dev MU_AGENT_NAME=worker-1 MU_WORKSTREAM=murmur",
+        },
+      ],
+    }),
+  });
+
+  expect(result.panes.find((pane) => pane.pane === "%50")).toMatchObject({
+    agent_name: "worker-1",
+    workstream: "murmur",
+    attached_pane: asPaneId("%7"),
+  });
+});
+
+test("a remote worker has no back-reference when no local pane matches", () => {
+  store.addPeer("dev", "dev", "ssh -t dev tmux attach -t {pane}");
+  store.replacePeerSnapshot("dev", {
+    ok: true,
+    at: 1_000,
+    snapshot: remoteSnapshot([
+      remotePane("%50", {
+        agent: {
+          agent_id: "remote-worker",
+          activity: "running",
+          agent_name: "worker-1",
+          pi_session: null,
+          workstream: "murmur",
+          role: null,
+          cli: "pi",
+          driver: "orchestrated",
+          claimed_at: 1,
+          updated_at: 1,
+        },
+      }),
+    ]),
+  });
+
+  const result = status(store, IDENTITY, 1_000, () => false, undefined, {
+    mux: fakeMux({
+      localPaneProcesses: () => [
+        {
+          pane: asPaneId("%7"),
+          current_command: "ssh",
+          arguments: "ssh dev MU_AGENT_NAME=worker-2 MU_WORKSTREAM=murmur",
+        },
+      ],
+    }),
+  });
+
+  expect(result.panes.find((pane) => pane.pane === "%50")?.attached_pane).toBeNull();
+});
+
 test("a remote pane keeps its own node's fields and takes its node's freshness", () => {
   store.addPeer("dev", "dev.example");
   store.replacePeerSnapshot("dev", {

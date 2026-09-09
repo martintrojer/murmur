@@ -16,6 +16,7 @@ export function fakeMux(over: Partial<Mux> = {}): Mux {
   return {
     currentWindow: () => null,
     livePanes: () => new Set<PaneId>(),
+    localPaneProcesses: () => [],
     setWindowBadge: () => {},
     attach: () => true,
     capture: () => null,

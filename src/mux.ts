@@ -3,9 +3,16 @@ import { asPaneId, asSessionId, asWindowId, type PaneId, type WindowId } from ".
 import type { Location } from "./types.js";
 import type { RenderState } from "./view.js";
 
+export type LocalPaneProcess = {
+  pane: PaneId;
+  current_command: string;
+  arguments: string;
+};
+
 export interface Mux {
   currentWindow(): Location | null;
   livePanes(): Set<PaneId> | null;
+  localPaneProcesses(): LocalPaneProcess[];
   // Sets `@agent_state` on a WINDOW though the attention belongs to a pane. The
   // asymmetry is tmux's: the status bar and the `tms` picker read a window
   // option and there is no per-pane equivalent. The consequence is that a pane
@@ -148,6 +155,32 @@ export const tmux: Mux = {
     const out = runTmux(["list-panes", "-a", "-F", "#{pane_id}"]);
     if (out === null) return null;
     return new Set(out.split("\n").filter(Boolean).map(asPaneId));
+  },
+
+  // A separate best-effort read for presentation. Unlike livePanes(), failure
+  // and no panes have the same harmless result here: no attachment hint.
+  localPaneProcesses() {
+    const out = runTmux([
+      "list-panes",
+      "-a",
+      "-F",
+      "#{pane_id}\t#{pane_current_command}\t#{pane_pid}",
+    ]);
+    if (!out) return [];
+    return out.split("\n").flatMap((line) => {
+      const [pane, currentCommand, pid] = line.split("\t");
+      if (!pane || !currentCommand || !pid) return [];
+      try {
+        const arguments_ = execFileSync("ps", ["eww", "-p", pid, "-o", "command="], {
+          encoding: "utf8",
+          timeout: 3000,
+          stdio: ["ignore", "pipe", "ignore"],
+        }).trim();
+        return [{ pane: asPaneId(pane), current_command: currentCommand, arguments: arguments_ }];
+      } catch {
+        return [];
+      }
+    });
   },
 
   setWindowBadge(window, state) {

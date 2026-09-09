@@ -43,6 +43,7 @@ const base: PaneView = {
   updated_at: null,
   snapshot_at: null,
   fetched_at: null,
+  attached_pane: null,
 };
 
 /** The visible label: the row minus its two hidden key columns and the escapes. */

@@ -126,6 +126,8 @@ export type PaneView = {
   snapshot_at: number | null;
   /** When we last reached that node. Null for local. */
   fetched_at: number | null;
+  /** A local pane already attached to this remote worker, derived per read. */
+  attached_pane: PaneId | null;
 };
 
 /**
@@ -263,6 +265,7 @@ function paneView(pane: SnapshotPane, source: ViewSource): PaneView {
     updated_at: newest(agent?.updated_at ?? null, newestAttention(pane)),
     snapshot_at: source.snapshot_at,
     fetched_at: source.fetched_at,
+    attached_pane: null,
   };
 }
 
