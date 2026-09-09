@@ -339,6 +339,7 @@ test("the store exposes no reader-side mutation of remote state", () => {
     "replacePeerSnapshot",
     "requestAttention",
     "setActivity",
+    "setPeerJumpCommand",
   ]);
 });
 

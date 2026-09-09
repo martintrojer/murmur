@@ -573,6 +573,21 @@ test("a failed fetch keeps the previous snapshot and leaves fetched_at alone", (
   });
 });
 
+test("a new peer defaults to today's ssh attach command", () => {
+  const s = store();
+  s.addPeer("dev", "dev.example");
+
+  expect(s.peers()[0]?.jump_command).toBe("ssh -t 'dev.example' tmux attach -t ''\\''{pane}'\\'''");
+});
+
+test("a stored jump command round-trips", () => {
+  const s = store();
+  s.addPeer("dev", "dev.example");
+
+  expect(s.setPeerJumpCommand("dev", 'x2ssh -et dev -c "tmux attach -t {pane}"')).toBe(true);
+  expect(s.peers()[0]?.jump_command).toBe('x2ssh -et dev -c "tmux attach -t {pane}"');
+});
+
 test("addPeer corrects a target without discarding the cache", () => {
   const s = store();
   s.addPeer("dev", "old.example");
@@ -658,7 +673,7 @@ test("openStore mints no identity", async () => {
   expect(loadIdentity()).toBeNull();
 });
 
-test("a database from an older version is recreated with the peer names salvaged", () => {
+test("an existing database upgrades without losing peers", () => {
   const s = store();
   s.addPeer("dev", "dev.example");
   s.replacePeerSnapshot("dev", {
@@ -677,17 +692,19 @@ test("a database from an older version is recreated with the peer names salvaged
   s.close();
 
   const database = new Database(dbPath());
-  database.pragma("user_version = 1");
+  database.exec("ALTER TABLE peers DROP COLUMN jump_command");
+  database.pragma("user_version = 3");
   database.close();
 
   const reopened = store();
 
-  // The two fields a human typed survive; every observed column starts empty,
+  // The fields a human typed survive; every observed column starts empty,
   // so a never-reached peer cannot render as fresh.
   expect(reopened.peers()).toEqual([
     {
       name: "dev",
       target: "dev.example",
+      jump_command: "ssh -t 'dev.example' tmux attach -t ''\\''{pane}'\\'''",
       host_id: null,
       display_name: null,
       snapshot: null,

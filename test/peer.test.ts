@@ -22,6 +22,7 @@ function existing(name: string, hostId: string): PeerRecord {
   return {
     name,
     target: name,
+    jump_command: `ssh -t '${name}' tmux attach -t {pane}`,
     host_id: hostId,
     display_name: name,
     snapshot: null,

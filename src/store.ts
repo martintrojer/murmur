@@ -5,6 +5,7 @@ import Database from "better-sqlite3";
 import type { NodeIdentity } from "./identity.js";
 import type { PaneId } from "./ids.js";
 import { asPaneId, asSessionId, asWindowId } from "./ids.js";
+import { defaultJumpCommand } from "./jump-command.js";
 import { pidAlive } from "./mux.js";
 import { dbPath } from "./paths.js";
 import type {
@@ -33,7 +34,7 @@ import { RENDER_PRIORITY } from "./view.js";
  * typed, deletes the file, and recreates the schema. No ALTER TABLE anywhere, so
  * there is no additive path to forget to use.
  */
-const SCHEMA_USER_VERSION = 3;
+const SCHEMA_USER_VERSION = 4;
 
 /**
  * How long to wait for another process's reset before stealing its lock.
@@ -80,6 +81,7 @@ const SCHEMA = `
   CREATE TABLE peers (
     name             TEXT NOT NULL PRIMARY KEY,
     target           TEXT NOT NULL,
+    jump_command     TEXT NOT NULL,
     host_id          TEXT,
     display_name     TEXT,
     snapshot         TEXT,
@@ -120,7 +122,8 @@ export interface Store {
 
   // --- peer cache ---------------------------------------------------------
   peers(): PeerRecord[];
-  addPeer(name: string, target: string): void;
+  addPeer(name: string, target: string, jumpCommand?: string): void;
+  setPeerJumpCommand(name: string, jumpCommand: string): boolean;
   removePeer(name: string): boolean;
   replacePeerSnapshot(name: string, fetch: PeerFetch): void;
 
@@ -161,6 +164,7 @@ type AttentionDbRow = {
 type PeerDbRow = {
   name: string;
   target: string;
+  jump_command: string;
   host_id: string | null;
   display_name: string | null;
   snapshot: string | null;
@@ -220,16 +224,19 @@ function withResetLock<T>(path: string, work: () => T): T {
   }
 }
 
-/** Peer names and targets: the two fields a human typed, and all we salvage. */
-function salvagePeers(path: string): { name: string; target: string }[] {
+/** Human-authored peer fields, and the only state worth salvaging. */
+function salvagePeers(path: string): { name: string; target: string; jump_command?: string }[] {
   try {
     const existing = new Database(path, { fileMustExist: true });
     try {
       const version = (existing.pragma("user_version", { simple: true }) as number) ?? 0;
       if (version === SCHEMA_USER_VERSION) return [];
-      return existing.prepare("SELECT name, target FROM peers").all() as {
+      const columns = existing.prepare("PRAGMA table_info(peers)").all() as { name: string }[];
+      const jump = columns.some((column) => column.name === "jump_command") ? ", jump_command" : "";
+      return existing.prepare(`SELECT name, target${jump} FROM peers`).all() as {
         name: string;
         target: string;
+        jump_command?: string;
       }[];
     } catch {
       // Too old to have the table, or unreadable. Nothing to save.
@@ -395,8 +402,12 @@ export function openStore(): Store {
         // Re-inserted with every OBSERVED column null: a salvaged peer has no
         // snapshot and has never been fetched, and saying otherwise would
         // render a never-reached host as fresh.
-        const restore = opened.prepare("INSERT OR IGNORE INTO peers (name, target) VALUES (?, ?)");
-        for (const peer of salvaged) restore.run(peer.name, peer.target);
+        const restore = opened.prepare(
+          "INSERT OR IGNORE INTO peers (name, target, jump_command) VALUES (?, ?, ?)",
+        );
+        for (const peer of salvaged) {
+          restore.run(peer.name, peer.target, peer.jump_command ?? defaultJumpCommand(peer.target));
+        }
       })
       .immediate();
 
@@ -644,6 +655,7 @@ export function openStore(): Store {
     return {
       name: row.name,
       target: row.target,
+      jump_command: row.jump_command,
       host_id: row.host_id,
       display_name: row.display_name,
       snapshot,
@@ -745,15 +757,31 @@ export function openStore(): Store {
       );
     },
 
-    addPeer(name, target) {
-      // Correcting a target must not discard the cache, so this updates only
-      // the field the operator retyped.
+    addPeer(name, target, jumpCommand) {
+      // Correcting a target must not discard the cache or a custom jump command.
+      // A default command follows a corrected target because it was derived from it.
+      const existing = database
+        .prepare("SELECT target, jump_command FROM peers WHERE name = ?")
+        .get(name) as Pick<PeerDbRow, "target" | "jump_command"> | undefined;
+      const command =
+        jumpCommand ??
+        (existing && existing.jump_command !== defaultJumpCommand(existing.target)
+          ? existing.jump_command
+          : defaultJumpCommand(target));
       database
         .prepare(
-          `INSERT INTO peers (name, target) VALUES (?, ?)
-           ON CONFLICT(name) DO UPDATE SET target = excluded.target`,
+          `INSERT INTO peers (name, target, jump_command) VALUES (?, ?, ?)
+           ON CONFLICT(name) DO UPDATE SET
+             target = excluded.target, jump_command = excluded.jump_command`,
         )
-        .run(name, target);
+        .run(name, target, command);
+    },
+
+    setPeerJumpCommand(name, jumpCommand) {
+      return (
+        database.prepare("UPDATE peers SET jump_command = ? WHERE name = ?").run(jumpCommand, name)
+          .changes > 0
+      );
     },
 
     removePeer(name) {

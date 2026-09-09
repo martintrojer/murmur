@@ -15,6 +15,7 @@ import type { PeerRecord } from "../src/types.js";
 function peerRecord(over: Partial<PeerRecord> & { name: string }): PeerRecord {
   return {
     target: over.name,
+    jump_command: `ssh -t '${over.name}' tmux attach -t {pane}`,
     host_id: null,
     display_name: null,
     snapshot: null,

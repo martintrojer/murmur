@@ -159,7 +159,8 @@ export function registerPeer(program: Command): void {
     // without an ssh binary or a commander harness.
     .argument("<name>")
     .argument("[target]")
-    .action(async (name: string, target = name) => {
+    .option("--jump-command <template>", "interactive command template; {pane} is substituted")
+    .action(async (name: string, target = name, options: { jumpCommand?: string }) => {
       const store = openStore();
       try {
         // Probe BEFORE writing. Identity is discovered, so the probe is what
@@ -187,7 +188,7 @@ export function registerPeer(program: Command): void {
           return;
         }
 
-        store.addPeer(name, target);
+        store.addPeer(name, target, options.jumpCommand);
         // The probe already parsed a valid document, so recording it here means
         // `peer list` can name the host, its version and its snapshot version
         // immediately rather than after the first collect.
@@ -199,6 +200,28 @@ export function registerPeer(program: Command): void {
             ? `Added ${name} (${snapshot.display_name})\n`
             : `Added ${name} (identity pending)\n`,
         );
+      } finally {
+        store.close();
+      }
+    });
+
+  peer
+    .command("set")
+    .description("Set peer properties")
+    .argument("<name>", "peer to update")
+    .requiredOption(
+      "--jump-command <template>",
+      "interactive command template; {pane} is substituted",
+    )
+    .action((name: string, options: { jumpCommand: string }) => {
+      const store = openStore();
+      try {
+        if (store.setPeerJumpCommand(name, options.jumpCommand))
+          process.stdout.write(`Updated ${name}\n`);
+        else {
+          process.stderr.write(`no such peer: ${name}\n`);
+          process.exitCode = 1;
+        }
       } finally {
         store.close();
       }
