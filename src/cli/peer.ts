@@ -3,7 +3,9 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Command } from "commander";
 import { hasWarmSocket, ssh } from "../channel.js";
+import { attachmentHoldingPeer, sessionChannelBusy } from "../collector.js";
 import { loadIdentity } from "../identity.js";
+import { tmux } from "../mux.js";
 import { parseSnapshot } from "../snapshot.js";
 import { openStore } from "../store.js";
 import type { PeerRecord, Snapshot } from "../types.js";
@@ -376,8 +378,27 @@ export function registerPeer(program: Command): void {
         // rather than in it, because the message is a sentence and a column of
         // sentences is not a table.
         const broken = rows.filter((row) => row.error);
+        // Same diagnosis `collect` gives, for the same reason: a session-channel
+        // refusal on a capped host is usually the operator's own attachment
+        // holding the only channel, and ssh reports it as `Permission denied
+        // (keyboard-interactive)`, which sends you to check credentials. This is
+        // where that message is most often read, since a failed collect sends
+        // you here to find out why.
+        //
+        // The pane read costs a `ps` per pane, so it is paid only when a refusal
+        // is actually on screen.
+        const refused = broken.some((row) => row.error && sessionChannelBusy(row.error));
+        const localPanes = refused ? tmux.localPaneProcesses() : [];
         for (const row of broken) {
-          process.stdout.write(`\n${row.name}: last attempt failed -- ${row.error}\n`);
+          const jump = store.peers().find((peer) => peer.name === row.name)?.jump_command;
+          const culprit =
+            refused && jump && row.error && sessionChannelBusy(row.error)
+              ? attachmentHoldingPeer(jump, localPanes)
+              : null;
+          const detail = culprit
+            ? `ssh session limit reached -- pane ${culprit} is your own attachment to this peer. Close it, then collect.`
+            : `last attempt failed -- ${row.error}`;
+          process.stdout.write(`\n${row.name}: ${detail}\n`);
         }
 
         const addable = rows.filter((row) => !row.peer).length;
