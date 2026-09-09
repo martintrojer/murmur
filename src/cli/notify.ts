@@ -2,7 +2,7 @@ import type { Command } from "commander";
 import { asPaneId } from "../ids.js";
 import { type Mux, tmux } from "../mux.js";
 import { openStore, type Store } from "../store.js";
-import type { AttentionKind, Location } from "../types.js";
+import type { Location, RequestableKind } from "../types.js";
 import { windowBadge } from "./clear.js";
 
 /**
@@ -45,7 +45,7 @@ type NotifyPayload = Record<string, unknown>;
  * mistake rather than a feature: an external notifier cannot know a process
  * died. That stays reconciliation's, which is the only thing holding the pid.
  */
-const EVENT_KINDS: Record<string, AttentionKind> = {
+const EVENT_KINDS: Record<string, RequestableKind> = {
   // codex, its single notify event.
   "agent-turn-complete": "done",
   // opencode's idle event, the same fact under another name.
@@ -65,7 +65,7 @@ const EVENT_KINDS: Record<string, AttentionKind> = {
  * It also keeps every existing caller working: a notifier passing only
  * `--source` still lands where it always did.
  */
-const UNKNOWN_KIND: AttentionKind = "blocked";
+const UNKNOWN_KIND: RequestableKind = "blocked";
 
 /**
  * The attention kind for one notification, from the event type either half of
@@ -75,7 +75,7 @@ const UNKNOWN_KIND: AttentionKind = "blocked";
  * flags beat the payload, so a hook line can pin the meaning of an event murmur
  * does not know about.
  */
-export function notifyKind(input: NotifyInput, payload: NotifyPayload = {}): AttentionKind {
+export function notifyKind(input: NotifyInput, payload: NotifyPayload = {}): RequestableKind {
   const flag = input.eventType?.trim();
   const field = typeof payload.type === "string" ? payload.type.trim() : "";
   for (const value of [flag, field]) {

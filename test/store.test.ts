@@ -300,7 +300,7 @@ test("a notifier cannot change any agent field", () => {
   s.claimAgent({ location: location(), owner_pid: 100, meta: meta(), now: 1 });
   const before = agentRows();
 
-  for (const kind of ["done", "blocked", "crashed"] as const) {
+  for (const kind of ["done", "blocked"] as const) {
     s.requestAttention({
       kind,
       location: location(),
@@ -362,9 +362,10 @@ test("a repeated attention request does not reset requested_at", () => {
 
 test("kinds coexist on one pane, and acknowledge clears them all for that pane only", () => {
   const s = store();
-  for (const kind of ["crashed", "blocked", "done"] as const) {
+  for (const kind of ["blocked", "done"] as const) {
     s.requestAttention({ kind, location: location("%1"), message: kind, source: "x" });
   }
+  s.recordCrash(location("%1"));
   s.requestAttention({ kind: "done", location: location("%2"), message: "", source: "x" });
 
   expect(s.localPanes()[0]?.attention.map((entry) => entry.kind)).toEqual([

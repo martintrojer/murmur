@@ -153,11 +153,27 @@ export type ActivityUpdate = {
 export type AgentRelease = { agent_id: string; owner_pid: number };
 
 /**
+ * The kinds an EXTERNAL writer may request.
+ *
+ * `crashed` is deliberately absent. It is reconciliation's word: it means "the
+ * owning process died without saying so", which only the node that can probe
+ * that pid may conclude. A caller asserting it would be manufacturing a fact it
+ * cannot observe, and the rule was previously only a convention -- nothing
+ * stopped `requestAttention({ kind: "crashed" })` from an extension, a notify
+ * hook, or a future surface, and a sweep confirmed such a row lands in
+ * `localPanes` indistinguishable from a real crash.
+ *
+ * The narrower type is the enforcement. Reconciliation writes its own row
+ * through the same statement without going through this shape.
+ */
+export type RequestableKind = Exclude<AttentionKind, "crashed">;
+
+/**
  * Everything an attention writer may say. There is no agent_id, no owner_pid,
  * no activity and no owner metadata field, and adding one is a contract change.
  */
 export type AttentionRequest = {
-  kind: AttentionKind;
+  kind: RequestableKind;
   location: Location;
   message: string;
   source: string;

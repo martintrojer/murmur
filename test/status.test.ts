@@ -83,7 +83,8 @@ function localAgent(
     });
   }
   for (const kind of options.attention ?? []) {
-    store.requestAttention({ kind, location: location(pane), message: "", source: "pi" });
+    if (kind === "crashed") store.recordCrash(location(pane));
+    else store.requestAttention({ kind, location: location(pane), message: "", source: "pi" });
   }
 }
 
@@ -426,8 +427,12 @@ test("tmux status emits urgent counts and never agent-supplied text", () => {
   localAgent("%3", { attention: ["done"] });
   localAgent("%4", { activity: "running" });
   localAgent("%5");
+  // An attention-only pane whose text is hostile. `blocked` rather than
+  // `crashed` because crashes are reconciliation's to write and carry no
+  // caller-supplied message -- the claim under test is that NO agent-supplied
+  // text reaches the status bar, and a blocked row carries the same fields.
   store.requestAttention({
-    kind: "crashed",
+    kind: "blocked",
     location: location("%6"),
     message: injection,
     source: injection,
@@ -436,7 +441,7 @@ test("tmux status emits urgent counts and never agent-supplied text", () => {
 
   const output = tmuxStatus(status(store, IDENTITY));
 
-  expect(output).toBe("crashed\t2\nblocked\t1\ndone\t1\nworking\t1\nidle\t1\n");
+  expect(output).toBe("crashed\t1\nblocked\t2\ndone\t1\nworking\t1\nidle\t1\n");
   expect(output).not.toContain(injection);
 });
 

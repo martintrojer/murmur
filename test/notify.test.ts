@@ -59,17 +59,12 @@ test("a notification cannot downgrade a crashed glyph on a sibling pane", () => 
   };
 
   // A crashed agent in %2, the same window the notifier is reporting from.
-  store.requestAttention({
-    kind: "crashed",
-    location: {
-      session: asSessionId("$0"),
-      window: asWindowId("@1"),
-      pane: asPaneId("%2"),
-      session_name: "dev",
-      window_name: "codex",
-    },
-    message: "",
-    source: "murmur",
+  store.recordCrash({
+    session: asSessionId("$0"),
+    window: asWindowId("@1"),
+    pane: asPaneId("%2"),
+    session_name: "dev",
+    window_name: "codex",
   });
 
   const ok = runNotify(

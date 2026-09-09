@@ -8,6 +8,7 @@ import { asPaneId, asSessionId, asWindowId } from "./ids.js";
 import { defaultJumpCommand } from "./jump-command.js";
 import { pidAlive } from "./mux.js";
 import { dbPath } from "./paths.js";
+import { parseSnapshot } from "./snapshot.js";
 import type {
   ActivityUpdate,
   AgentClaim,
@@ -16,6 +17,7 @@ import type {
   AttentionRequest,
   ClaimResult,
   LocalWorld,
+  Location,
   PeerFetch,
   PeerRecord,
   ReconcileSummary,
@@ -112,6 +114,17 @@ export interface Store {
 
   // --- attention: pane-addressed, no agent authority ----------------------
   requestAttention(request: AttentionRequest): void;
+  /**
+   * Record a crash for a pane, as reconciliation would.
+   *
+   * `crashed` is not in `AttentionRequest` because it is reconciliation's word:
+   * it asserts an owning process died without saying so, which only the node
+   * that probed that pid may conclude. This is the same statement reconciliation
+   * uses, named so that a caller reaching for it has to mean it -- tests seeding
+   * a crashed row are the honest use, and anything else in production would be
+   * manufacturing a fact it cannot observe.
+   */
+  recordCrash(location: Location, now?: number): void;
   acknowledgePane(pane: PaneId): number;
 
   // --- local truth --------------------------------------------------------
@@ -704,10 +717,21 @@ export function openStore(): Store {
     let snapshot: Snapshot | null = null;
     if (row.snapshot !== null) {
       try {
-        // Parsed leniently on the way OUT: it was validated on the way in, and
-        // a read path must not throw. A stored document that no longer parses
-        // reads as "no snapshot" and is left in place, not deleted.
-        snapshot = JSON.parse(row.snapshot) as Snapshot;
+        // VALIDATED on the way out, not merely parsed. A read path must not
+        // throw, and a stored document that no longer holds up reads as "no
+        // snapshot" and is left in place rather than deleted -- but the check
+        // has to be structural, not syntactic.
+        //
+        // `JSON.parse(...) as Snapshot` caught only malformed TEXT, so a
+        // syntactically valid document of the wrong shape sailed through: a
+        // column set to `{"foo":1}` yielded a non-null snapshot with no `panes`,
+        // and the first reader to iterate it threw `snapshot.panes is not
+        // iterable` -- a crash in a surface, from data the store handed it. The
+        // cast was the whole problem: it asserted a shape nothing had checked.
+        //
+        // Reusing `parseSnapshot` means the way in and the way out agree by
+        // construction, which is the only version of this that cannot drift.
+        snapshot = parseSnapshot(row.snapshot);
       } catch {
         snapshot = null;
       }
@@ -756,6 +780,20 @@ export function openStore(): Store {
       // survive the agent exiting, or completion becomes invisible the moment
       // the process quits.
       return deleteAgentOwned.run(release.agent_id, release.owner_pid).changes === 1;
+    },
+
+    recordCrash(location, now = Date.now()) {
+      upsertAttention.run({
+        pane: location.pane,
+        kind: "crashed",
+        message: "",
+        source: "murmur",
+        session: location.session,
+        window: location.window,
+        session_name: location.session_name,
+        window_name: location.window_name,
+        requested_at: now,
+      });
     },
 
     requestAttention(request) {

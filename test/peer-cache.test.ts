@@ -256,6 +256,33 @@ test("a cached peer document carries no owner_pid, so remote liveness is unrepre
   expect(JSON.stringify(s.peers())).not.toContain("owner_pid");
 });
 
+// Sweep finding, mutation-verified: the read path used
+// `JSON.parse(...) as Snapshot`, which caught malformed TEXT and nothing else.
+// A syntactically valid document of the wrong shape therefore reached readers as
+// a non-null snapshot, and the first one to iterate it threw `snapshot.panes is
+// not iterable` -- a crash in a surface, from data the store handed it.
+test("a stored document of the wrong shape also reads as no snapshot", () => {
+  const s = store();
+  s.addPeer("dev", "dev");
+  s.replacePeerSnapshot("dev", { ok: true, at: 1_000, snapshot: document([pane("%1")]) });
+  s.close();
+
+  const raw = new Database(dbPath());
+  try {
+    // Valid JSON. No panes, no host_id, nothing a reader can use.
+    raw.prepare("UPDATE peers SET snapshot = ? WHERE name = ?").run('{"foo":1}', "dev");
+  } finally {
+    raw.close();
+  }
+
+  const reopened = store();
+  expect(reopened.peers()[0]).toMatchObject({ snapshot: null, last_error: null });
+  // And nothing throws when a surface reads through it, which is the actual
+  // guarantee: the cast made that impossible to rely on.
+  expect(() => reopened.localPanes()).not.toThrow();
+  reopened.close();
+});
+
 test("a stored document that no longer parses reads as no snapshot and is left in place", () => {
   // A read path must not throw and must not delete: the peer's next successful
   // fetch replaces the column whole, and `last_error` describes the last FETCH,
@@ -325,6 +352,11 @@ test("the store exposes no reader-side mutation of remote state", () => {
   // The forbidden shapes, asserted as a closed key set rather than as prose. A
   // reader holds one snapshot per peer and evicts nothing, so there is no
   // per-agent eviction, no rewind and no ingest for a reader to be wrong with.
+  //
+  // `recordCrash` is a LOCAL writer, not a reader-side one: it says "the owner
+  // of this local pane died", which is reconciliation's conclusion about this
+  // node's own panes. It exists separately from `requestAttention` precisely so
+  // that `crashed` cannot be requested by an external caller.
   expect(Object.keys(store()).sort()).toEqual([
     "acknowledgePane",
     "addPeer",
@@ -334,6 +366,7 @@ test("the store exposes no reader-side mutation of remote state", () => {
     "localPanes",
     "peers",
     "reconcileLocal",
+    "recordCrash",
     "releaseAgent",
     "removePeer",
     "replacePeerSnapshot",

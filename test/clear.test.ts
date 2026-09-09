@@ -5,7 +5,7 @@ import { beforeEach, expect, test } from "vitest";
 import { clearPane } from "../src/cli/clear.js";
 import { asPaneId, asSessionId, asWindowId, type WindowId } from "../src/ids.js";
 import { openStore, type Store } from "../src/store.js";
-import type { AgentMeta, AttentionKind, Location } from "../src/types.js";
+import type { AgentMeta, Location } from "../src/types.js";
 import { fakeMux } from "./helpers/fake-mux.js";
 
 beforeEach(() => {
@@ -67,9 +67,11 @@ test("focus acknowledges every kind of attention on the pane", () => {
   // All kinds at once, in one statement, because (pane, kind) is the key and a
   // crashed row must not survive a focus that acknowledged the done next to it.
   seed((store) => {
-    for (const kind of ["blocked", "done", "crashed"] as AttentionKind[]) {
+    for (const kind of ["blocked", "done"] as const) {
       store.requestAttention({ kind, location: location("%1"), message: kind, source: "pi" });
     }
+    // Through the crash path, because that is the only writer of `crashed`.
+    store.recordCrash(location("%1"));
   });
   const badges = badgeRecorder();
 
