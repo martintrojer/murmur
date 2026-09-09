@@ -176,8 +176,19 @@ test("repeated upgrade bursts never lose the salvaged peer", async () => {
   // that fails three times in eight is one people re-run until it passes.
   //
   // Eight bursts, each preceded by a fresh stale-version seed, so that window is
-  // entered dozens of times per run: with the lock removed this failed every
-  // attempt, and with it 30 consecutive runs kept the peer.
+  // entered dozens of times per run.
+  //
+  // The round count is DETECTION PROBABILITY, not repetition of a deterministic
+  // failure, and it was measured rather than assumed. Neutering `withResetLock`
+  // and varying the count: 2 rounds PASSED (bug undetected), 4 failed at round
+  // 4, 5 passed, 6 failed. So each round is an independent chance to lose the
+  // race, and cutting the count trades regression coverage for wall clock --
+  // silently, because the reduced version is still green against broken code.
+  //
+  // That is why this stays at 8 despite being the slowest test in the suite
+  // (~13.8s, 64 real node processes): the earlier claim that removing the lock
+  // "failed every attempt" is not what the evidence shows, and 8 is the count
+  // this was validated at. Lower it only with the same experiment re-run.
   for (let round = 0; round < 8; round += 1) {
     const seed = openStore();
     seed.addPeer("dev", "dev.example");

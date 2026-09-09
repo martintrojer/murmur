@@ -117,7 +117,44 @@ export type Runner = (
  * A probe runs on the picker's interactive path, so it must not hang the list;
  * ten seconds is far above a warm ssh and still finite for a sleeping laptop.
  */
-const PROBE_TIMEOUT_MS = 10_000;
+export const PROBE_TIMEOUT_MS = 10_000;
+
+/**
+ * The real runner, parameterised by the probe's deadline.
+ *
+ * The deadline is an argument rather than a module constant so the timeout
+ * POSTURE can be asserted in milliseconds. It used to be baked in, which left
+ * only one way to prove the interactive path is unbounded: outlive the real 10s
+ * with a `sleep 12`, and pay 22 seconds of wall clock across two tests on every
+ * run. The posture is the claim; the size of the number never was.
+ *
+ * Same lesson as the two-postures comment below, one level up: a constant that
+ * only one caller may choose is a seam missing, not a value.
+ */
+export function makeSpawnRunner(probeTimeoutMs: number = PROBE_TIMEOUT_MS): Runner {
+  return (file, args, inherit = false) => {
+    const result = spawnSync(file, args, {
+      encoding: "utf8",
+      // `inherit` means the user is SITTING IN this process -- the outside-tmux
+      // ssh attach -- and a session a human is working in must have no deadline.
+      // spawnSync's timeout is a hard kill, so the shared 10s SIGTERMed the ssh
+      // ten seconds into a working remote pane, and because that leaves
+      // `status: null` with ETIMEDOUT, `failed` went true and murmur reported
+      // "ssh attach failed" with exit 1 for a session that was fine.
+      //
+      // Two callers, two postures: the same lesson as SSH_OPTIONS in channel.ts,
+      // where one posture reused across two purposes was also the bug.
+      ...(inherit ? { stdio: "inherit" as const } : { timeout: probeTimeoutMs }),
+    });
+    return {
+      status: result.status,
+      stdout: result.stdout ?? "",
+      // spawnSync reports a failure to start the child in `error` and leaves
+      // status null. Collapsing both keeps the decision table below one question.
+      failed: result.error !== undefined,
+    };
+  };
+}
 
 /**
  * Exported for its TIMEOUT POSTURE only, which no fake can assert: every jump
@@ -125,28 +162,7 @@ const PROBE_TIMEOUT_MS = 10_000;
  * with no coverage -- and a hard kill on the interactive path is exactly the
  * kind of bug that hides there.
  */
-export const spawnRunner: Runner = (file, args, inherit = false) => {
-  const result = spawnSync(file, args, {
-    encoding: "utf8",
-    // `inherit` means the user is SITTING IN this process -- the outside-tmux
-    // ssh attach -- and a session a human is working in must have no deadline.
-    // spawnSync's timeout is a hard kill, so the shared 10s SIGTERMed the ssh
-    // ten seconds into a working remote pane, and because that leaves
-    // `status: null` with ETIMEDOUT, `failed` went true and murmur reported
-    // "ssh attach failed" with exit 1 for a session that was fine.
-    //
-    // Two callers, two postures: the same lesson as SSH_OPTIONS in channel.ts,
-    // where one posture reused across two purposes was also the bug.
-    ...(inherit ? { stdio: "inherit" as const } : { timeout: PROBE_TIMEOUT_MS }),
-  });
-  return {
-    status: result.status,
-    stdout: result.stdout ?? "",
-    // spawnSync reports a failure to start the child in `error` and leaves
-    // status null. Collapsing both keeps the decision table below one question.
-    failed: result.error !== undefined,
-  };
-};
+export const spawnRunner: Runner = makeSpawnRunner();
 
 export type JumpResult =
   | { ok: true }
