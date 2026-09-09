@@ -284,6 +284,50 @@ test("an existing per-host session is switched to, and no new one is opened", ()
   expect(switched).toEqual(["p~"]);
 });
 
+// Reported by review, reproduced against two real remote panes while dogfooding:
+// jump to agent A on a host, come back, pick agent B on the same host, and the
+// reused wrapper still shows A -- while the call reports ok: true.
+test("reusing a host's wrapper retargets it at the pane that was picked", () => {
+  peer("p", "remote-host");
+  vi.stubEnv("TMUX", "/tmp/tmux-1000/default,123,0");
+  const remoteCommands: string[] = [];
+
+  const result = jumpToAgent(
+    store,
+    view({ pane: asPaneId("%42") }),
+    fakeMux({ sessionNamed: () => true }),
+    (_file, args) => {
+      remoteCommands.push(args.at(-1) ?? "");
+      return ok("%42\n");
+    },
+  );
+
+  expect(result).toEqual({ ok: true });
+  // The probe is still there, AND a switch-client naming the picked pane. The
+  // pane is double-quoted for the same reason the attach command is: the local
+  // shell must not expand a `$`-leading tmux id before ssh sees it.
+  expect(remoteCommands.some((command) => /switch-client -t .*%42/.test(command))).toBe(true);
+});
+
+test("a wrapper reuse that cannot retarget still lands on the host", () => {
+  // Best-effort by design: the operator ends up on the right host looking at
+  // the wrong pane, which another jump fixes. Refusing to move would be worse.
+  peer("p", "remote-host");
+  vi.stubEnv("TMUX", "/tmp/tmux-1000/default,123,0");
+
+  const result = jumpToAgent(
+    store,
+    view({ pane: asPaneId("%42") }),
+    fakeMux({ sessionNamed: () => true }),
+    (_file, args) =>
+      /switch-client/.test(args.at(-1) ?? "")
+        ? { status: 1, stdout: "", failed: true }
+        : ok("%42\n"),
+  );
+
+  expect(result).toEqual({ ok: true });
+});
+
 test("with no existing session, exactly one is opened for the peer", () => {
   peer("p", "remote-host");
   vi.stubEnv("TMUX", "/tmp/tmux-1000/default,123,0");

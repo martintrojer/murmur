@@ -341,13 +341,38 @@ export function jumpToAgent(
     // available: the ssh is opaque and a remote session id is not a local
     // address.
     if (mux.sessionNamed(name)) {
-      return mux.switchClient(client, name)
-        ? { ok: true }
-        : {
-            ok: false,
-            reason: "attach_failed",
-            message: `could not switch to the existing ${name} session.`,
-          };
+      // RETARGET the remote client first. Reuse is matched on the host's name
+      // alone, so without this the wrapper still shows whichever pane the last
+      // jump left it on: jump to agent A on a host, come back, pick agent B on
+      // the same host, and you land on A while the call reports `ok: true`. A
+      // wrong destination claiming success is the failure this file's own
+      // "a silently failed jump looked exactly like enter did nothing" comment
+      // exists to prevent, and the local attach had the identical bug.
+      //
+      // One extra round trip, on the reuse path only, over the socket the
+      // wrapper's own ssh already warmed. A failure here is not fatal: the
+      // switch below still lands the operator on the right HOST, which is
+      // better than refusing to move, so this reports rather than aborts.
+      const retarget = run("ssh", [
+        ...SSH_OPTIONS,
+        target,
+        `tmux switch-client -t ${shellQuote(shellQuote(agent.pane))}`,
+      ]);
+      if (!mux.switchClient(client, name)) {
+        return {
+          ok: false,
+          reason: "attach_failed",
+          message: `could not switch to the existing ${name} session.`,
+        };
+      }
+      // A failed retarget is NOT reported. `JumpResult`'s success case carries
+      // no message, and widening it for a warning would make every caller
+      // handle a third state for a case that leaves the operator on the right
+      // host looking at the wrong pane -- recoverable by jumping again. The
+      // limitation worth knowing is above; if this needs surfacing, the honest
+      // change is a partial-success variant, not a message smuggled into `ok`.
+      void retarget;
+      return { ok: true };
     }
 
     // The peer's opaque command template owns its shell quoting. The default
