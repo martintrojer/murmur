@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Command } from "commander";
 import { hasWarmSocket, ssh } from "../channel.js";
-import { attachmentHoldingPeer, sessionChannelBusy } from "../collector.js";
+import { attachmentHoldingPeer, describeFailure, sessionChannelBusy } from "../collector.js";
 import { loadIdentity } from "../identity.js";
 import { tmux } from "../mux.js";
 import { parseSnapshot } from "../snapshot.js";
@@ -170,11 +170,26 @@ export function registerPeer(program: Command): void {
         // — and a peer written first would be found by its own duplicate
         // check.
         let snapshot: Snapshot | null = null;
+        // WHY the probe failed, kept rather than discarded. A host that answered
+        // and answered WRONG was reported as "identity pending" -- the right
+        // words for a sleeping laptop, and a lie for a reachable host serving a
+        // document murmur rejected. `error: null` meant nothing downstream could
+        // tell them apart either, so the operator waited for a collect that was
+        // never going to succeed.
+        //
+        // Reachable-but-broken is a category this repo already models
+        // everywhere else; `peer add` is the one surface where a human is
+        // actively waiting for the answer, and it was throwing it away.
+        let probeError: string | null = null;
         try {
           // Bare `murmur export`: it takes no options, here or in the collector.
           snapshot = parseSnapshot(await ssh.exec(target, ["murmur", "export"]));
-        } catch {
+        } catch (error) {
           snapshot = null;
+          probeError = describeFailure(
+            name,
+            error instanceof Error ? error.message : String(error),
+          );
         }
 
         const refusal = peerAddDecision({
@@ -196,12 +211,18 @@ export function registerPeer(program: Command): void {
         // immediately rather than after the first collect.
         if (snapshot) {
           store.replacePeerSnapshot(name, { ok: true, snapshot, at: Date.now() });
+        } else if (probeError) {
+          // Recorded so `peer list`, `doctor` and the collector's own
+          // classification all agree without a second probe.
+          store.replacePeerSnapshot(name, { ok: false, error: probeError, at: Date.now() });
         }
-        process.stdout.write(
-          snapshot
-            ? `Added ${name} (${snapshot.display_name})\n`
-            : `Added ${name} (identity pending)\n`,
-        );
+        if (snapshot) {
+          process.stdout.write(`Added ${name} (${snapshot.display_name})\n`);
+        } else if (probeError) {
+          process.stdout.write(`Added ${name}, but it did not answer usefully:\n  ${probeError}\n`);
+        } else {
+          process.stdout.write(`Added ${name} (identity pending)\n`);
+        }
       } finally {
         store.close();
       }
