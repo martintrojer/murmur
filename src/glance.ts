@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { shellQuote } from "./agents.js";
+import { peerForHost, shellQuote } from "./agents.js";
 import { SSH_OPTIONS } from "./channel.js";
 import { tmux } from "./mux.js";
 import type { Store } from "./store.js";
@@ -40,9 +40,9 @@ export function glance(
 ): string | null {
   if (agent.local) return tmux.capture(agent.pane, lines);
 
-  const peer = store.peers().find((candidate) => candidate.host_id === agent.host_id);
-  const target = peer?.target ?? peer?.name;
-  if (!target) return null;
+  const resolved = peerForHost(store, agent.host_id);
+  if (!resolved) return null;
+  const { peer, target } = resolved;
   // Never dial a peer whose last attempt failed.
   //
   // The preview runs PER KEYPRESS as the cursor moves, so this ssh is on the
@@ -60,7 +60,7 @@ export function glance(
   // The row itself still previews. Its metadata is cached and worth reading --
   // and a peer whose fetch failed keeps its last-known snapshot, which is
   // exactly why the row is on screen at all.
-  if (peer?.last_error !== null) return null;
+  if (peer.last_error !== null) return null;
   try {
     // `shellQuote`, not `'${...}'`, because nothing constrains this value to
     // `%N`: it arrives in a peer's snapshot, `parseSnapshot` checks only that it

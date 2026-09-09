@@ -4,6 +4,7 @@ import { asPaneId } from "./ids.js";
 import { renderJumpCommand } from "./jump-command.js";
 import { type Mux, tmux } from "./mux.js";
 import type { Store } from "./store.js";
+import type { PeerRecord } from "./types.js";
 import type { PaneView } from "./view.js";
 
 /**
@@ -112,6 +113,29 @@ export function shellQuote(value: string): string {
  * or a name someone typed. Whitespace is replaced too: it survives quoting but
  * reads badly in a session list.
  */
+/**
+ * The peer that reaches a pane's host, and the ssh target to use for it.
+ *
+ * One boundary for a POLICY, not a convenience: "match on host_id, prefer
+ * `target`, fall back to `name`". It was written out twice -- here and in
+ * `glance` -- so peer identity gaining a second key would have needed both sites
+ * changed with nothing saying so.
+ *
+ * Returns the row and the target together, so callers narrow on the PEER rather
+ * than on the target. Narrowing on the target was what left both sites carrying
+ * defensive `peer?.name` and `peer?.last_error` where `peer` was provably
+ * defined.
+ */
+export function peerForHost(
+  store: Store,
+  hostId: string,
+): { peer: PeerRecord; target: string } | null {
+  const peer = store.peers().find((candidate) => candidate.host_id === hostId);
+  if (!peer) return null;
+  const target = peer.target ?? peer.name;
+  return target ? { peer, target } : null;
+}
+
 export function remoteSessionName(peerName: string): string {
   return `${peerName.replace(/^[@$%=]+/, "").replaceAll(/[:.\s]+/g, "-")}~`;
 }
@@ -233,8 +257,9 @@ export function jumpToAgent(
     }
     return { ok: true };
   }
-  const peer = store.peers().find((candidate) => candidate.host_id === agent.host_id);
-  const target = peer?.target ?? peer?.name;
+  const resolved = peerForHost(store, agent.host_id);
+  const peer = resolved?.peer;
+  const target = resolved?.target;
   if (!peer || !target) {
     return {
       ok: false,
@@ -334,7 +359,7 @@ export function jumpToAgent(
     // Named after the peer as configured, matching the picker's host column: a
     // self-reported display_name can be a container id, unrecognisable in a
     // session list.
-    const name = remoteSessionName(peer?.name ?? target);
+    const name = remoteSessionName(peer.name);
 
     // Reuse this host's wrapper rather than stacking one per jump -- three jumps
     // to bubba left three identical windows. Matched on name, the only handle
