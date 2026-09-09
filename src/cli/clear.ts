@@ -14,8 +14,15 @@ import { RENDER_PRIORITY, type RenderState, renderState } from "../view.js";
  * Fails safe by keeping the badge when tmux or the store cannot answer: a badge
  * wrongly kept is recoverable by focusing the pane, one wrongly cleared loses
  * the signal.
+ *
+ * Exported because WRITING the badge needs the same recomputation as clearing
+ * it: `notify` used to paint its own kind unconditionally, so a `done` on one
+ * pane replaced the `crashed` glyph of another agent in the same window. It
+ * stays here, beside its only other caller, rather than moving to view.ts --
+ * that module is pure and knows nothing of `Mux` or `Store`, and giving it a
+ * projection that needs both would invert the layering.
  */
-function windowBadge(window: WindowId, mux: Mux, store: Store): RenderState | null {
+export function windowBadge(window: WindowId, mux: Mux, store: Store): RenderState | null {
   const panes = new Set(mux.panesInWindow(window));
   const states = store
     .localPanes()

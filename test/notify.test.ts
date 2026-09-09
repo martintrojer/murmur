@@ -45,6 +45,50 @@ function inPane(panes: string[] = ["%1"]) {
   });
 }
 
+// @agent_state is a WINDOW option projecting the highest-priority state in that
+// window, and RENDER_PRIORITY puts crashed above blocked above done. notify used
+// to paint its own kind unconditionally, so a notification on one pane erased a
+// crashed agent's glyph on another pane of the same window -- attention rows
+// still correct, only the surface a human scans wrong. clear.ts paid for the
+// same class of bug in the other direction.
+test("a notification cannot downgrade a crashed glyph on a sibling pane", () => {
+  const badges: [WindowId, RenderState | null][] = [];
+  const mux = inPane(["%1", "%2"]);
+  mux.setWindowBadge = (window: WindowId, state: RenderState | null) => {
+    badges.push([window, state]);
+  };
+
+  // A crashed agent in %2, the same window the notifier is reporting from.
+  store.requestAttention({
+    kind: "crashed",
+    location: {
+      session: asSessionId("$0"),
+      window: asWindowId("@1"),
+      pane: asPaneId("%2"),
+      session_name: "dev",
+      window_name: "codex",
+    },
+    message: "",
+    source: "murmur",
+  });
+
+  const ok = runNotify(
+    store,
+    { source: "codex", eventType: "agent-turn-complete", title: "Codex" },
+    {},
+    mux,
+  );
+
+  expect(ok).toBe(true);
+  // The pane's own `done` is recorded -- the request is not being discarded.
+  expect(store.localPanes().find((pane) => pane.pane === "%1")?.attention).toMatchObject([
+    { kind: "done" },
+  ]);
+  // ...but the WINDOW keeps the stronger word, because a human scanning the
+  // status bar must see the crash first.
+  expect(badges).toEqual([[asWindowId("@1"), "crashed"]]);
+});
+
 test("a notification with no recognised event records blocked for the caller's pane", () => {
   // Flags only, no payload: the shape every notifier that predates the payload
   // reader still uses. An unrecognised event stays `blocked`, which is the
@@ -114,6 +158,9 @@ test("the badge shows the kind actually recorded, not a fixed word", () => {
       session_name: "dev",
       window_name: "codex",
     }),
+    // Real tmux lists the pane the notifier is sitting in; the fake defaults to
+    // an empty window, which is a state tmux cannot produce.
+    panesInWindow: () => [asPaneId("%1")],
     setWindowBadge: (window, state) => void badges.push([window, state]),
   });
 
@@ -275,6 +322,9 @@ test("the window badge is set, so the status bar does not wait for a collect", (
       session_name: "dev",
       window_name: "codex",
     }),
+    // The badge is RECOMPUTED from the window's panes, so the window must
+    // contain the pane being reported for, as real tmux guarantees.
+    panesInWindow: () => [asPaneId("%1")],
     setWindowBadge: (window, state) => void badges.push([window, state]),
   });
 
