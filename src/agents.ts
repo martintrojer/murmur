@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { SSH_OPTIONS } from "./channel.js";
 import { asPaneId } from "./ids.js";
+import { renderJumpCommand } from "./jump-command.js";
 import { type Mux, tmux } from "./mux.js";
 import type { Store } from "./store.js";
 import type { PaneView } from "./view.js";
@@ -99,8 +100,8 @@ export function remoteSessionName(peerName: string): string {
 }
 
 /**
- * The one process call jump makes that is not a tmux command: the remote probe,
- * and the direct ssh attach when outside tmux. Injectable so the jump decision
+ * The process calls jump makes outside tmux: the remote probe and the configured
+ * interactive command. Injectable so the jump decision
  * table is testable without an ssh binary or a live peer -- without this seam,
  * replacing `jumpToAgent`'s body with `return { ok: true }` kept every jump
  * test green.
@@ -217,7 +218,7 @@ export function jumpToAgent(
   }
   const peer = store.peers().find((candidate) => candidate.host_id === agent.host_id);
   const target = peer?.target ?? peer?.name;
-  if (!target) {
+  if (!peer || !target) {
     return {
       ok: false,
       reason: "no_peer",
@@ -291,7 +292,7 @@ export function jumpToAgent(
   // "only a pane may decide whether an agent exists" exists to prevent, applied
   // one level short of the action. `tmux attach -t %pane` resolves session,
   // window and pane together, verified against a real tmux server.
-  const attachTarget = shellQuote(agent.pane);
+  const attach = renderJumpCommand(peer.jump_command, agent.pane);
 
   // Hand the ssh to tmux as its own detached SESSION rather than running it
   // here: `murmur pick` is usually a display-popup, and a popup is modal, so an
@@ -332,11 +333,9 @@ export function jumpToAgent(
           };
     }
 
-    // `tmux new-session <command>` runs the command through a shell, so the
-    // string expands LOCALLY before ssh sees it. A session id is always `$N`, so
-    // `$0:@6` arrived as `:@6` and the remote attach failed with "can't find
-    // session". shellQuote protects the remote shell; this protects the local.
-    const attach = `ssh -t ${shellQuote(target)} tmux attach -t ${shellQuote(attachTarget)}`;
+    // The peer's opaque command template owns its shell quoting. The default
+    // retains both layers: one for this local shell and one for ssh's remote
+    // shell, so a tmux target containing `$` cannot expand on either side.
 
     // The return home, inside the wrapper's own command: when the attach exits
     // -- inner detach, remote session killed, ssh dropped -- this runs, then the
@@ -384,12 +383,12 @@ export function jumpToAgent(
   //
   // The tradeoff, no reuse of an existing attach, is correct rather than
   // missing: there is no local server holding one.
-  const attach = run("ssh", ["-t", target, "tmux", "attach", "-t", attachTarget], true);
-  return attach.status === 0 && !attach.failed
+  const attached = run("sh", ["-c", attach], true);
+  return attached.status === 0 && !attached.failed
     ? { ok: true }
     : {
         ok: false,
         reason: "attach_failed",
-        message: `ssh attach to ${target} failed.`,
+        message: `attach to ${target} failed.`,
       };
 }

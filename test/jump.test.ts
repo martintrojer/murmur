@@ -71,8 +71,8 @@ function localView(over: Partial<PaneView> = {}): PaneView {
  * than set directly, because that is the only way a host_id can enter the cache:
  * it comes out of the document the peer served.
  */
-function peer(name: string, hostId: string, panes: string[] = []): void {
-  store.addPeer(name, name);
+function peer(name: string, hostId: string, panes: string[] = [], jumpCommand?: string): void {
+  store.addPeer(name, name, jumpCommand);
   store.replacePeerSnapshot(name, {
     ok: true,
     at: 1_000,
@@ -217,8 +217,8 @@ test("the remote probe asks tmux for PANES, not windows", () => {
   vi.stubEnv("TMUX", "");
   const probes: string[] = [];
 
-  jumpToAgent(store, view(), fakeMux(), (_file, args) => {
-    if (args.includes("attach")) return ok();
+  jumpToAgent(store, view(), fakeMux(), (file, args) => {
+    if (file === "sh") return ok();
     probes.push(args.at(-1) ?? "");
     return ok("%9\n");
   });
@@ -237,8 +237,8 @@ test("a remote agent whose pane MOVED window survives the jump", () => {
   vi.stubEnv("TMUX", "");
   const attached: string[][] = [];
 
-  const result = jumpToAgent(store, view(), fakeMux(), (_file, args) => {
-    if (args.includes("attach")) {
+  const result = jumpToAgent(store, view(), fakeMux(), (file, args) => {
+    if (file === "sh") {
       attached.push(args);
       return ok();
     }
@@ -310,6 +310,33 @@ test("with no existing session, exactly one is opened for the peer", () => {
   // peer sent), and the layer below still crosses two shells.
   expect(opened[0]).toContain("p~ ::");
   expect(opened[0]).toContain("'%9'");
+});
+
+test("the wrapper runs the peer's configured jump command after the ssh probe", () => {
+  peer("p", "remote-host", [], 'x2ssh -et dev -c "tmux attach -t {pane}"');
+  vi.stubEnv("TMUX", "/tmp/tmux-1000/default,123,0");
+  const calls: string[][] = [];
+  let command = "";
+
+  const result = jumpToAgent(
+    store,
+    view(),
+    fakeMux({
+      newSession: (_name, value) => {
+        command = value;
+        return true;
+      },
+    }),
+    (file, args) => {
+      calls.push([file, ...args]);
+      return ok("%9\n");
+    },
+  );
+
+  expect(result).toEqual({ ok: true });
+  expect(calls).toHaveLength(1);
+  expect(calls[0]?.[0]).toBe("ssh");
+  expect(command).toBe('x2ssh -et dev -c "tmux attach -t %9"');
 });
 
 test("the wrapper session hides the local status bar and disables the local prefix", () => {
@@ -431,8 +458,8 @@ test("outside tmux, no local wrapper session is created", () => {
         return true;
       },
     }),
-    (_file, args) => {
-      if (args.includes("attach")) {
+    (file, args) => {
+      if (file === "sh") {
         attached.push(args);
         return ok();
       }
@@ -442,20 +469,33 @@ test("outside tmux, no local wrapper session is created", () => {
 
   expect(result).toEqual({ ok: true });
   expect(sessions).toBe(0);
-  // Attached directly as argv, so there is no LOCAL shell to protect against
-  // and only one layer of quoting -- unlike the wrapper command above. ssh
-  // still joins argv and hands it to a remote shell, which is what this layer
-  // is for.
-  expect(attached).toEqual([["-t", "p", "tmux", "attach", "-t", "'%9'"]]);
+  // The configured command is opaque, so the shell parses it just as it does
+  // inside a wrapper session.
+  expect(attached).toEqual([["-c", "ssh -t 'p' tmux attach -t ''\\''%9'\\'''"]]);
+});
+
+test("outside tmux, the configured jump command runs through a shell", () => {
+  peer("p", "remote-host", [], 'x2ssh -et dev -c "tmux attach -t {pane}"');
+  vi.stubEnv("TMUX", "");
+  const calls: [string, string[], boolean | undefined][] = [];
+
+  const result = jumpToAgent(store, view(), fakeMux(), (file, args, inherit) => {
+    calls.push([file, args, inherit]);
+    return calls.length === 1 ? ok("%9\n") : ok();
+  });
+
+  expect(result).toEqual({ ok: true });
+  expect(calls[0]?.[0]).toBe("ssh");
+  expect(calls[1]).toEqual(["sh", ["-c", 'x2ssh -et dev -c "tmux attach -t %9"'], true]);
 });
 
 test("outside tmux, a failed ssh attach is reported", () => {
   peer("p", "remote-host");
   vi.stubEnv("TMUX", "");
 
-  const result = jumpToAgent(store, view(), fakeMux(), (_file, args) =>
+  const result = jumpToAgent(store, view(), fakeMux(), (file) =>
     // The probe succeeds; the attach that follows does not.
-    args.includes("attach") ? { status: 1, stdout: "", failed: false } : ok("%9\n"),
+    file === "sh" ? { status: 1, stdout: "", failed: false } : ok("%9\n"),
   );
 
   expect(result).toMatchObject({ ok: false, reason: "attach_failed" });
