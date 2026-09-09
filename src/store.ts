@@ -357,22 +357,29 @@ function toAgent(row: AgentDbRow): SnapshotAgent {
   };
 }
 
-const PRIORITY = new Map<AttentionKind, number>(
-  ATTENTION_PRIORITY.map((kind, index): [AttentionKind, number] => [kind, index]),
-);
-
 /**
- * A kind's rank. `ATTENTION_PRIORITY` is exhaustive over `AttentionKind`, so
- * every value is present -- but a Map lookup is `T | undefined` regardless, and
- * the honest way to say "cannot miss" is a default rather than a `!`. Any kind
- * added to the type without being ranked sorts last instead of throwing.
+ * Rank per kind, as a total Record rather than a Map.
+ *
+ * A Record keyed by the union is EXHAUSTIVE AT COMPILE TIME: adding a kind to
+ * `AttentionKind` without ranking it here fails typecheck, and the lookup
+ * returns `number` rather than `number | undefined`. The Map version needed a
+ * `?? ATTENTION_PRIORITY.length` to typecheck, which put a fallback branch in a
+ * sort path -- and the reason this column is CHECK-constrained in SQL, and
+ * validated by `parseSnapshot` on the way in, is precisely so that no sort,
+ * count or render path needs one. A sweep confirmed the branch was unreachable
+ * by changing it to -1000 and watching 68 assertions stay green.
+ *
+ * Derived from `ATTENTION_PRIORITY` so the order lives in one place, beside the
+ * type, with the two kept consistent by a test.
  */
-function rank(kind: AttentionKind): number {
-  return PRIORITY.get(kind) ?? ATTENTION_PRIORITY.length;
-}
+const RANK: Record<AttentionKind, number> = {
+  crashed: ATTENTION_PRIORITY.indexOf("crashed"),
+  blocked: ATTENTION_PRIORITY.indexOf("blocked"),
+  done: ATTENTION_PRIORITY.indexOf("done"),
+};
 
 function attentionOrder(left: SnapshotAttention, right: SnapshotAttention): number {
-  return rank(left.kind) - rank(right.kind);
+  return RANK[left.kind] - RANK[right.kind];
 }
 
 /**
