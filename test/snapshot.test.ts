@@ -337,6 +337,15 @@ test("nothing is coerced, defaulted or carried through", () => {
     ["a pane missing window_name", { ...base, panes: [{ ...pane, window_name: undefined }] }],
     ["an unknown pane key", { ...base, panes: [{ ...pane, rank: 4 }] }],
     ["an empty pane id", { ...base, panes: [{ ...pane, pane: "" }] }],
+    // Every nullable string, each wrong in the same way. `textOrNull` guards six
+    // fields and NONE was covered: a sweep made it return `value as string |
+    // null` -- accepting a number for all six -- and the suite stayed green.
+    ["a numeric session_name", { ...base, panes: [{ ...pane, session_name: 7 }] }],
+    ["a numeric window_name", { ...base, panes: [{ ...pane, window_name: 7 }] }],
+    ["a numeric agent_name", { ...base, panes: [{ ...pane, agent: { ...owner, agent_name: 7 } }] }],
+    ["a numeric pi_session", { ...base, panes: [{ ...pane, agent: { ...owner, pi_session: 7 } }] }],
+    ["a numeric workstream", { ...base, panes: [{ ...pane, agent: { ...owner, workstream: 7 } }] }],
+    ["a numeric role", { ...base, panes: [{ ...pane, agent: { ...owner, role: 7 } }] }],
     ["a duplicate pane", { ...base, panes: [pane, pane] }],
     [
       // An agent_id is minted per process instance, so the same id in two panes

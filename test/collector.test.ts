@@ -17,6 +17,7 @@ import { asPaneId, asSessionId, asWindowId } from "../src/ids.js";
 import { openStore, type Store } from "../src/store.js";
 import type { Snapshot, SnapshotPane } from "../src/types.js";
 import { STALENESS_MS } from "../src/view.js";
+import { fakeMux } from "./helpers/fake-mux.js";
 
 const stores: Store[] = [];
 let store: Store;
@@ -351,8 +352,36 @@ test("an empty peer list touches no channel and still reconciles locally", async
     },
   };
 
-  await expect(collect(store, spy)).resolves.toEqual([]);
+  // A local agent whose pane is GONE. Reconciliation must remove it, and the
+  // assertion has to be that removal rather than the empty result: the empty
+  // result is true whether or not reconcileLocal ran, so a sweep deleted the
+  // call and this test stayed green while its own name promised otherwise.
+  store.claimAgent({
+    location: {
+      session: asSessionId("$0"),
+      window: asWindowId("@1"),
+      pane: asPaneId("%99"),
+      session_name: null,
+      window_name: null,
+    },
+    owner_pid: process.pid,
+    meta: {
+      agent_name: null,
+      pi_session: null,
+      workstream: null,
+      role: null,
+      cli: "pi",
+      driver: "human",
+    },
+  });
+  expect(store.localPanes()).toHaveLength(1);
+
+  await expect(
+    collect(store, spy, Date.now(), { mux: fakeMux({ livePanes: () => new Set() }) }),
+  ).resolves.toEqual([]);
   expect(calls).toBe(0);
+  // The housekeeping actually happened.
+  expect(store.localPanes()).toEqual([]);
 });
 
 test("collect never writes to stderr, whatever the peer does", async () => {
