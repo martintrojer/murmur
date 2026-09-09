@@ -931,8 +931,16 @@ Several of those are asserted structurally — over the whole returned object
 graph, not by reading the type — because a type says what the author intended
 and a test says what the object contains.
 
-Not tested: ssh transport (OpenSSH's job), tmux wrappers (thin and loud), TUI
+Not tested: ssh transport (OpenSSH's job), live interactive use, full terminal
 rendering, packaging.
+
+That boundary is narrower than it once read. "tmux wrappers" and "TUI
+rendering" were listed here as untested and both now are:
+`test/mux-targets.test.ts` drives a real tmux server for target syntax, moved
+panes and pane-addressed switching; `test/jump.test.ts` asserts wrapper
+creation, its session options and the return home; and `test/pick-row.test.ts`
+asserts what a row renders. What remains untested is sitting in the result --
+attaching by hand and looking at a terminal.
 
 New tests are verified by breaking the code they cover and watching them fail. A
 test that has never failed has not been shown to test anything. A test asserting
