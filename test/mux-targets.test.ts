@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { rmSync } from "node:fs";
 import { afterAll, expect, test } from "vitest";
+import { remoteSessionName } from "../src/agents.js";
 import { exactPaneTarget, exactSession } from "../src/mux.js";
 
 // A private tmux server, so nothing here can touch the developer's session.
@@ -151,6 +152,44 @@ test("a bare target cannot address a session whose name starts with a sigil", ()
   // still worth doing -- a session called `@bubba` is a trap for every tmux
   // command a human types at it by hand, not just for murmur's own calls.
   expect(rigFails("set-option", "-t", exactPaneTarget("@sigil"), "status", "off")).toBe(false);
+});
+
+test("a colon anywhere in a session name breaks targeting, which is why the whole name is sanitised", () => {
+  // Reported by review, reproduced here against a real server. `:` separates
+  // session from window in a target, so the name is addressable only up to the
+  // colon. Stripping leading sigils did not help: the colon is not at the front.
+  //
+  // The live consequence was worse than a failed jump. `newSession` succeeded,
+  // then `switch-client` could not find it, so the jump returned attach_failed
+  // and left an orphan session with `status` on and the local prefix live --
+  // which `sessionNamed` then matched on every later attempt, taking the reuse
+  // branch and failing identically. Permanent until killed by hand.
+  rig("new-session", "-d", "-s", "colon:name", "sleep 300");
+
+  // `switch-client` is the call the jump actually makes, and it is the one that
+  // cannot resolve the name: the target splits at the colon, so it looks for a
+  // session called `colon`. `exactSession` does NOT rescue it -- unlike the
+  // leading-sigil case, where the `=` prefix is enough -- because the split
+  // happens inside the name rather than at its first character.
+  expect(rigFails("switch-client", "-t", exactSession("colon:name"))).toBe(true);
+  // `has-session` fails too, and differently: it reads `name` as a window.
+  // Measured, and worth pinning -- two calls, two error messages, neither
+  // mentioning that the NAME is the problem.
+  expect(rigFails("has-session", "-t", "colon:name")).toBe(true);
+
+  // Killing it needs the session ID, since every name-based form fails. That is
+  // the "recoverable only by hand" part of the report.
+  const id = rig("display-message", "-p", "-F", "#{session_id}", "-t", exactPaneTarget("colon"));
+  rig("kill-session", "-t", id ?? exactSession("colon"));
+
+  // remoteSessionName's output has no reserved character left, so the same
+  // operations succeed. This is the invariant: no character tmux's target
+  // grammar reserves, anywhere in the name.
+  const safe = remoteSessionName("colon:name");
+  expect(safe).toBe("colon-name~");
+  rig("new-session", "-d", "-s", safe, "sleep 300");
+  expect(rigFails("set-option", "-t", safe, "status", "off")).toBe(false);
+  rig("kill-session", "-t", exactSession(safe));
 });
 
 test("a pane id as a switch-client target selects the pane, not just its window", () => {
