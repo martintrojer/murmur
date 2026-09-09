@@ -312,6 +312,14 @@ export function registerPeer(program: Command): void {
             // document is reachable but broken, which is an operator task and
             // reads nothing like a sleeping laptop.
             error: entry?.last_error ?? null,
+            // How to reach this peer INTERACTIVELY, so another tool can use it
+            // rather than hardcoding ssh. mu's remote-worker recipe attaches to
+            // a host with a bare `ssh <host> -t`, which on a session-capped host
+            // contends with whatever already holds the channel and lands on an
+            // auth prompt -- while this peer's command may name a transport that
+            // takes no session at all. JSON only: the table has no room and this
+            // is a value for a script, not a reader.
+            jump_command: entry?.jump_command ?? null,
           };
         });
 
