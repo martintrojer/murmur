@@ -143,6 +143,13 @@ rather than `ssh <host> <cmd>`, and they stop starving collects. Measured on a
 capped host: five concurrent calls, 1 of 5 succeeded ungated, 5 of 5 through
 coop.
 
+A collect itself does not belong there. coop dispatch costs ~125ms against
+~33ms for a bare ssh over the master, and a collect is already sub-second, so
+there is no long hold to remove and the overhead is pure cost. murmur's existing
+answer — classify `sessionChannelBusy` and retry — is the right one for
+something this cheap and idempotent. Use coop for what holds the channel for
+minutes, not for what holds it for milliseconds.
+
 Note coop requires an ssh master and refuses to open one, exiting 3 with the
 command to run: opening it may need a human to touch a hardware key, which a
 background process cannot do. That is the same master this page tells you to
