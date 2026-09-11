@@ -3,6 +3,30 @@
 Notable changes per release. Written for someone deciding whether to upgrade,
 so it says what changed for a user rather than listing every commit.
 
+## 0.2.6
+
+Wire-compatible with 0.2.x: the snapshot format is unchanged at version 1, so
+no coordinated upgrade is needed.
+
+**Ambient collects no longer trigger a hardware-token prompt.** On a host whose
+ssh config routes through a site wrapper (`ProxyCommand x2ssh ...`), every
+collect that could not ride a warm master spawned that wrapper, which asks for
+a Yubikey tap on whatever terminal it can find. `BatchMode=yes` does not
+prevent this: it suppresses ssh's *own* prompts, and a ProxyCommand is a
+separate program with its own terminal. Since tmux re-runs `murmur status` on
+every `status-interval`, per attached client, the prompt recurred rather than
+happening once.
+
+`SSH_OPTIONS` now passes `ProxyCommand=none`, which is safe for the same reason
+`ControlMaster=no` is: murmur only ever multiplexes over an existing master, so
+the socket is already connected and no proxy is needed to reach the host.
+
+One consequence worth knowing: a peer whose hostname resolves *only* through
+the proxy is now unreachable when its master is down, and reports a DNS failure
+instead of prompting. Open the master yourself — `ssh -MNf -S
+~/.ssh/control/%r@%h:%p <host>` — which is where a 2FA tap belongs: once per
+`ControlPersist` window, deliberately, with a terminal attached.
+
 ## 0.2.5
 
 Wire-compatible with 0.2.x: the snapshot format is unchanged at version 1, so a
