@@ -84,10 +84,25 @@ const EXEC_TIMEOUT_MS = 3_000;
 //
 // BatchMode=yes bounds that fallback by disabling every prompt -- password,
 // passphrase, host key -- so a cold peer that cannot authenticate fails at once
-// rather than blocking a background collect on a human. "Never prompt", not
-// "never authenticate": a host demanding a hardware-token touch per connection
-// is the case this does not cover, and why `hasWarmSocket` exists should it
-// ever need gating.
+// rather than blocking a background collect on a human.
+//
+// It is not sufficient on its own, because it gags only ssh's OWN prompts. A
+// `ProxyCommand` is a separate program with its own terminal: a site wrapper
+// doing 2FA (`ProxyCommand x2ssh -fallback -tunnel %h`) prompts for a
+// hardware-token tap regardless, and since a collect is ambient, that means
+// taps sprayed across the reader's ttys during ordinary invocations. Observed
+// exactly that against a host whose `ssh -G` reports the wrapper, with
+// BatchMode already set.
+//
+// ProxyCommand=none closes it, and is safe for the same reason ControlMaster=no
+// is: murmur only ever multiplexes over an EXISTING master, so the socket is
+// already connected and no proxy is needed to reach the host. The master the
+// reader opens by hand keeps its own ProxyCommand -- which is where 2FA
+// belongs, once per ControlPersist window, with a terminal attached.
+//
+// `hasWarmSocket` does not cover this: its guard in `duePeers` skips a peer
+// only AFTER a failure has been cached, and the prompt happens on the first
+// attempt.
 //
 // Exported because every ssh murmur runs wants this posture -- collector,
 // preview, jump probe. Three hand-rolled copies is how one ends up without
@@ -97,6 +112,8 @@ export const SSH_OPTIONS = [
   "BatchMode=yes",
   "-o",
   "ControlMaster=no",
+  "-o",
+  "ProxyCommand=none",
   "-o",
   `ControlPath=${CONTROL_PATH}`,
   "-o",

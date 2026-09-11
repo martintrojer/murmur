@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { warmSocketCommand } from "../src/channel.js";
+import { SSH_OPTIONS, warmSocketCommand } from "../src/channel.js";
 
 test("the warm-socket remedy opens no session of its own", () => {
   const command = warmSocketCommand("dev");
@@ -38,4 +38,25 @@ test("the warm-socket remedy opens no session of its own", () => {
 
   // The target is last, and unquoted: it is pasted verbatim.
   expect(command.endsWith(" dev")).toBe(true);
+});
+
+test("SSH_OPTIONS disables a site ProxyCommand, which BatchMode cannot gag", () => {
+  // BatchMode=yes suppresses *ssh's own* prompts. A ProxyCommand is a separate
+  // program with its own terminal, so a site wrapper doing 2FA prompts anyway
+  // -- and murmur collects ambiently, so that becomes a hardware-token prompt
+  // spraying the reader's tty on ordinary invocations.
+  //
+  // Observed on a host whose `ssh -G dev` reports
+  // `proxycommand x2ssh -fallback -tunnel %h`: taps demanded repeatedly with
+  // BatchMode already set. The same posture in a sibling tool that DOES pass
+  // ProxyCommand=none produced none.
+  //
+  // Safe because murmur only ever multiplexes over an EXISTING master: the
+  // socket is already connected, so no proxy is needed to reach the host. The
+  // master the reader opens by hand keeps its own ProxyCommand, which is where
+  // 2FA belongs -- once, deliberately, with a terminal attached.
+  expect(SSH_OPTIONS).toContain("ProxyCommand=none");
+
+  // Paired with BatchMode: neither alone closes the prompt surface.
+  expect(SSH_OPTIONS).toContain("BatchMode=yes");
 });
