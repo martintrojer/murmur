@@ -150,3 +150,8 @@ test("fitFooterHints drops low-priority items before wrapping", () => {
   expect(tight.every((hint) => hint.label === "" || hintsWidth(tight) <= 36)).toBe(true);
   expect(tight[0]?.chord).toBe("j/k");
 });
+
+test("dash footer makes input mode discoverable", () => {
+  const hints = dashFooterHints({ sort: "priority", hide_stale: false, crew: true });
+  expect(hints.some((hint) => hint.chord === "i" && hint.label === "input")).toBe(true);
+});

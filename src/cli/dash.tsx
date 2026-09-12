@@ -14,6 +14,13 @@ import { agentLabel, jumpToAgent, terminalText } from "../agents.js";
 import { ssh } from "../channel.js";
 import { COLLECT_FLOOR_MS } from "../collector.js";
 import {
+  type Composer,
+  editComposer,
+  emptyComposer,
+  sendEscape,
+  sendPrompt,
+} from "../dash-input.js";
+import {
   clampGlanceScroll,
   classifyClick,
   disableMouse,
@@ -49,6 +56,7 @@ import { age, oneLiner, type PaneView, RENDER_PRIORITY, renderState } from "../v
 import { requireIdentity } from "./identity-guard.js";
 
 const REDRAW_MS = 1_000;
+const INPUT_PREVIEW_MS = 500;
 const SORTS: DashSort[] = ["priority", "node", "age"];
 
 type DashProps = {
@@ -88,8 +96,25 @@ function Hint({ chord, label, value }: { chord: string; label: string; value?: s
   );
 }
 
-function Footer({ columns, prefs }: { columns: number; prefs: DashPrefs }) {
-  const hints = fitFooterHints(dashFooterHints(prefs), columns);
+function Footer({
+  columns,
+  prefs,
+  inputMode,
+}: {
+  columns: number;
+  prefs: DashPrefs;
+  inputMode: boolean;
+}) {
+  const hints = fitFooterHints(
+    inputMode
+      ? [
+          { chord: "enter", label: "send", drop: 0 },
+          { chord: "^e", label: "stop", drop: 1 },
+          { chord: "esc", label: "leave", drop: 2 },
+        ]
+      : dashFooterHints(prefs),
+    columns,
+  );
   return (
     <Box width={columns} height={1}>
       {hints.map((hint, index) => (
@@ -159,6 +184,11 @@ function App({ store, initial }: DashProps) {
   );
   const [glance, setGlance] = useState("");
   const [glanceScroll, setGlanceScroll] = useState(0);
+  const [inputTarget, setInputTarget] = useState<PaneView | null>(null);
+  const [composer, setComposer] = useState<Composer>(emptyComposer);
+  const [inputError, setInputError] = useState("");
+  const [inputSending, setInputSending] = useState(false);
+  const inputGenerationRef = useRef(0);
   const [message, setMessage] = useState("");
   const [now, setNow] = useState(Date.now());
   const [collectRevision, setCollectRevision] = useState(0);
@@ -168,7 +198,9 @@ function App({ store, initial }: DashProps) {
     panes.findIndex((pane) => paneKey(pane) === selectedKey),
   );
   const selected = panes[selectedIndex];
-  const selectedFingerprint = selected ? paneFingerprint(selected) : null;
+  const inputMode = inputTarget !== null;
+  const previewPane = inputTarget ?? selected;
+  const selectedFingerprint = previewPane ? paneFingerprint(previewPane) : null;
   const glanceRequestRef = useRef({ selected, peers: view.peers });
   const lastGlanceRequestRef = useRef({
     selectedKey: null as string | null,
@@ -179,7 +211,7 @@ function App({ store, initial }: DashProps) {
   const cardNodesRef = useRef(new Map<string, DOMElement>());
   const railNodeRef = useRef<DOMElement | null>(null);
   const glanceNodeRef = useRef<DOMElement | null>(null);
-  glanceRequestRef.current = { selected, peers: view.peers };
+  glanceRequestRef.current = { selected: previewPane, peers: view.peers };
 
   const updatePrefs = useCallback((patch: Partial<DashPrefs>) => {
     setPrefs((current) => {
@@ -252,8 +284,23 @@ function App({ store, initial }: DashProps) {
   }, [selectedKey, collectRevision, selectedFingerprint, store]);
 
   useEffect(() => {
-    if (selected && selectedKey !== paneKey(selected)) setSelectedKey(paneKey(selected));
-  }, [selected, selectedKey]);
+    if (!inputMode && selected && selectedKey !== paneKey(selected))
+      setSelectedKey(paneKey(selected));
+  }, [inputMode, selected, selectedKey]);
+
+  useEffect(() => {
+    if (!inputMode) return;
+    const timer = setInterval(() => {
+      const { selected: current, peers } = glanceRequestRef.current;
+      if (current) {
+        setGlance(
+          previewText(store, current, peers, undefined, { paneTailLines: PREVIEW_PANE_TAIL_LINES }),
+        );
+        setGlanceScroll(Number.MAX_SAFE_INTEGER);
+      }
+    }, INPUT_PREVIEW_MS);
+    return () => clearInterval(timer);
+  }, [inputMode, store]);
 
   const notice = sessionNotice(view.peers, now);
   const placement = glancePlacement(columns);
@@ -300,6 +347,7 @@ function App({ store, initial }: DashProps) {
     panes,
     move,
     activatePane,
+    inputMode,
     glanceLineCount: 0,
     glanceVisibleLines: 1,
   });
@@ -307,6 +355,7 @@ function App({ store, initial }: DashProps) {
     panes,
     move,
     activatePane,
+    inputMode,
     glanceLineCount: glance.split("\n").length,
     glanceVisibleLines: glanceViewport(
       glance.split("\n").length,
@@ -326,6 +375,7 @@ function App({ store, initial }: DashProps) {
       const parsed = parseMouseEvents(rest + buffer.toString("utf8"));
       rest = parsed.rest;
       const live = mouseLiveRef.current;
+      if (live.inputMode) return;
       for (const event of parsed.events) {
         if (event.kind === "press" && event.button === "left") {
           for (const [key, node] of cardNodesRef.current) {
@@ -367,6 +417,57 @@ function App({ store, initial }: DashProps) {
   }, []);
 
   useInput((input, key) => {
+    if (inputTarget) {
+      if (key.escape) {
+        inputGenerationRef.current += 1;
+        setInputTarget(null);
+        setComposer(emptyComposer());
+        setInputError("");
+        setInputSending(false);
+      } else if (inputSending) {
+        return;
+      } else if (key.ctrl && input === "e") {
+        const generation = inputGenerationRef.current;
+        setInputSending(true);
+        void sendEscape(store, inputTarget).then((result) => {
+          if (inputGenerationRef.current !== generation) return;
+          setInputSending(false);
+          setInputError(result.ok ? "" : result.message);
+          if (result.ok) setCollectRevision((revision) => revision + 1);
+        });
+      } else if (key.return) {
+        if (!composer.text) return;
+        const generation = inputGenerationRef.current;
+        setInputSending(true);
+        void sendPrompt(store, inputTarget, composer.text).then((result) => {
+          if (inputGenerationRef.current !== generation) return;
+          setInputSending(false);
+          setInputError(result.ok ? "" : result.message);
+          if (result.ok) {
+            setComposer(emptyComposer());
+            setCollectRevision((revision) => revision + 1);
+          }
+        });
+      } else if (key.tab) {
+        setComposer((state) => editComposer(state, { type: "insert", text: "\t" }));
+      } else if (key.backspace) {
+        setComposer((state) => editComposer(state, { type: "backspace" }));
+      } else if (key.delete) {
+        setComposer((state) => editComposer(state, { type: "delete" }));
+      } else if (key.leftArrow) {
+        setComposer((state) => editComposer(state, { type: "left" }));
+      } else if (key.rightArrow) {
+        setComposer((state) => editComposer(state, { type: "right" }));
+      } else if (key.home) {
+        setComposer((state) => editComposer(state, { type: "home" }));
+      } else if (key.end) {
+        setComposer((state) => editComposer(state, { type: "end" }));
+      } else if (input && !key.ctrl && !key.meta) {
+        setComposer((state) => editComposer(state, { type: "insert", text: input }));
+      }
+      return;
+    }
+
     if (input === "q" || (key.ctrl && input === "c")) {
       exit();
     } else if (input === "j" || key.downArrow) {
@@ -383,6 +484,13 @@ function App({ store, initial }: DashProps) {
       jumpTo(panes.length - 1);
     } else if (key.return && selected) {
       activatePane(selected);
+    } else if (input === "i" && selected) {
+      inputGenerationRef.current += 1;
+      setInputTarget(selected);
+      setComposer(emptyComposer());
+      setInputError("");
+      setInputSending(false);
+      setGlanceScroll(Number.MAX_SAFE_INTEGER);
     } else if (input === "s") {
       updatePrefs({ sort: nextSort(prefs.sort) });
     } else if (input === "f") {
@@ -404,7 +512,8 @@ function App({ store, initial }: DashProps) {
     return placement === "bottom" ? Math.max(5, bodyRows - cardHeight) : bodyRows;
   })();
   const glanceLines = glance.split("\n");
-  const glanceFrame = glanceViewport(glanceLines.length, glanceBoxHeight);
+  const inputChromeRows = inputMode ? 2 + (inputError ? 1 : 0) : 0;
+  const glanceFrame = glanceViewport(glanceLines.length, glanceBoxHeight - inputChromeRows);
   const glanceVisibleLines = glanceFrame.visible;
   const glanceScrollMax = Math.max(0, glanceLines.length - glanceVisibleLines);
   const glanceOffset = clampGlanceScroll(glanceScroll, glanceLines.length, glanceVisibleLines);
@@ -413,6 +522,10 @@ function App({ store, initial }: DashProps) {
     .reverse()
     .find((line) => line.trim())
     ?.trim();
+  const draft = [...composer.text.replaceAll("\n", "↵")];
+  const draftBefore = draft.slice(0, composer.cursor).join("");
+  const draftCursor = draft[composer.cursor] ?? " ";
+  const draftAfter = draft.slice(composer.cursor + (draft[composer.cursor] ? 1 : 0)).join("");
 
   const stateCounts = RENDER_PRIORITY.filter((state) => count(view, state) > 0).map((state) => ({
     state,
@@ -484,13 +597,24 @@ function App({ store, initial }: DashProps) {
         </Box>
         <Box
           ref={glanceNodeRef}
-          borderStyle="single"
+          borderStyle={inputMode ? "double" : "single"}
+          borderColor={inputMode ? DASH_CHROME_COLOR.accent : undefined}
           flexDirection="column"
           width={placement === "right" ? `${Math.round(share * 100)}%` : "100%"}
           height={placement === "bottom" ? Math.max(5, bodyRows - cardHeight) : bodyRows}
           paddingX={1}
           overflow="hidden"
         >
+          {inputMode && previewPane ? (
+            <Text
+              bold
+              backgroundColor={DASH_CHROME_COLOR.accent}
+              color="#11111b"
+              wrap="truncate-end"
+            >
+              {` INPUT → ${terminalText(previewPane.host)}/${previewPane.pane} · ${inputSending ? "sending…" : "Enter send · Ctrl+E stop · Esc leave"} `}
+            </Text>
+          ) : null}
           {glanceFrame.chrome ? (
             <Text color={DASH_CHROME_COLOR.stale} wrap="truncate-end">
               {glanceOffset > 0 ? `↑ ${glanceOffset} more` : "↑ top"}
@@ -511,9 +635,24 @@ function App({ store, initial }: DashProps) {
               </Text>
             );
           })}
+          {inputError ? (
+            <Text color={DASH_COLOR.crashed} wrap="truncate-end">
+              {inputError}
+            </Text>
+          ) : null}
+          {inputMode ? (
+            <Text color={DASH_CHROME_COLOR.text} wrap="truncate-end">
+              <Text bold color={DASH_CHROME_COLOR.accent}>
+                {"> "}
+              </Text>
+              {draftBefore}
+              <Text inverse>{draftCursor}</Text>
+              {draftAfter}
+            </Text>
+          ) : null}
         </Box>
       </Box>
-      <Footer columns={columns} prefs={prefs} />
+      <Footer columns={columns} prefs={prefs} inputMode={inputMode} />
       {message ? (
         <Box width={columns} height={1}>
           <Text color="red" wrap="truncate-end">
@@ -533,6 +672,8 @@ export function registerDash(program: Command): void {
       const identity = requireIdentity();
       if (!identity) return;
       const store = openStore();
+      const previousTitle = process.title;
+      process.title = "murmur";
       try {
         const instance = render(<App store={store} initial={status(store, identity)} />, {
           alternateScreen: true,
@@ -541,6 +682,7 @@ export function registerDash(program: Command): void {
       } finally {
         disableMouse(process.stdout);
         store.close();
+        process.title = previousTitle;
       }
     });
 }

@@ -22,6 +22,8 @@ remote jump opens over ssh (or your `--jump-command`).
 `murmur dash` wants a [Nerd Font](https://www.nerdfonts.com/) and a Catppuccin
 Mocha terminal. Keys: `j`/`k` select, enter jump, click selects, double-click
 jumps, wheel scrolls the card rail or the glance, `s` cycles sort, `q` quits.
+Press `i` to compose a prompt for the selected local or remote agent. In input
+mode, enter sends, `ctrl-e` stops the agent, and escape returns to the dashboard.
 `s` **node** sort is local cards first, then remotes A–Z.
 
 ## Install

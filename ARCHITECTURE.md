@@ -34,7 +34,8 @@ socket, no master node.
 
 Three paint surfaces share that list: `status` (counts), `pick` (fzf jump),
 `dash` (cards + pane glance). Jump is the same whether you left from pick or
-dash.
+dash. Dash can also send a buffered prompt to the selected pane without leaving
+the dashboard.
 
 murmur observes and connects. It does not place work. That is an orchestrator's
 job, and mixing the two is how you end up owning scheduling, credentials and
@@ -810,10 +811,11 @@ your session and six spawned workers at once.
 
 **Glance, not remote rendering.** "Render any pane from the master" hides two
 different problems: a stateless `capture-pane` (cheap, and what the preview
-does) and continuous frame streaming with resize negotiation and input routing
-(most of herdr's codebase). Glance plus jump gets everything except never
-leaving the local frame, and you are jumping there to work anyway. This
-deferral is the main reason murmur is small.
+does) and continuous frame streaming with resize negotiation and arbitrary
+input routing (most of herdr's codebase). Dash adds buffered prompt submission:
+the editor is local, and one tmux command runs on submission. It does not stream
+a terminal, negotiate size, or forward each key. Glance remains small because
+murmur still does not emulate a terminal.
 
 ## Why not something else
 

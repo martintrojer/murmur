@@ -9,8 +9,10 @@ import type { PaneView } from "./view.js";
  * Glance: the last few lines a pane printed.
  *
  * The cheap half of what "render any pane from the master" hides: a stateless
- * `capture-pane`, not a frame stream -- no resize negotiation, no input routing,
- * no reconnect. That deferral is what keeps murmur a state layer rather than a
+ * `capture-pane`, not a frame stream -- no resize negotiation, arbitrary key
+ * routing, or reconnect. Dash can submit a buffered prompt, but that remains one
+ * stateless command rather than a terminal protocol. That deferral is what keeps
+ * murmur a state layer rather than a
  * multiplexer (see ARCHITECTURE.md's non-goals), and why this file is thirty
  * lines instead of most of herdr.
  */
