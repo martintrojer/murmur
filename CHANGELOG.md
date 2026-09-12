@@ -3,6 +3,26 @@
 Notable changes per release. Written for someone deciding whether to upgrade,
 so it says what changed for a user rather than listing every commit.
 
+## 0.3.1
+
+Wire-compatible with 0.3.0 and 0.2.x: the snapshot format is unchanged at
+version 1, so no coordinated upgrade is needed.
+
+**Talk to local and remote agents without leaving `murmur dash`.** Press `i` to
+open a one-line composer for the selected pane. Enter sends the whole prompt
+through tmux locally or over the existing SSH connection remotely, then keeps
+input mode open for follow-ups. `ctrl-e` sends Escape to stop the agent, and
+escape returns to dashboard controls.
+
+The selected pane stays locked while you type. Input mode uses a colored double
+border and banner, reports delivery errors in place, and refreshes the pane
+glance after input. Prompt text travels through stdin and a tmux buffer rather
+than command arguments. The dashboard window title now reads `murmur` instead
+of `node`.
+
+**Dashboard activity is easier to scan.** Running agents now use a play glyph;
+the moon remains the idle glyph.
+
 ## 0.3.0
 
 Wire-compatible with 0.2.x: the snapshot format is unchanged at version 1, so
