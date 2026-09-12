@@ -21,8 +21,7 @@ absent: orchestrated agents are hidden unless they are `blocked` or `crashed`,
 since their supervisor consumes anything else. `M-a` or `--all` reveals them.
 
 Pick a row, press enter. Local agents are a window switch; remote ones open over
-ssh. The preview shows the last lines the agent printed, so you can tell "waiting
-on me" from "still thinking" without going there.
+ssh.
 
 ## What it is
 
@@ -323,13 +322,10 @@ this peer. Close it, then collect.
 bind -N "agent state picker" a display-popup -E -w 80% -h 60% "murmur pick"
 ```
 
-In the picker: `^r` refreshes, `^p` cycles the preview, and fzf's own `^u` clears
-the filter. `M-b` / `M-w` / `M-d` / `M-x` filter to blocked, running, done or
-crashed, with `^w` / `^d` / `^x` as aliases for three of them; `M-a` toggles
-orchestrated agents. There is no `^b`: that is tmux's default prefix, which tmux
-consumes before a popup ever sees it, so the one filter that cannot have a ctrl
-alias is `blocked`. Typing matches agent name, workstream or tmux session, and
-host, as literal substrings.
+The picker is a jump list: enter jumps, typing narrows, and `M-a` toggles
+orchestrated agents. Typing matches agent name, workstream or tmux session,
+host, and the state word, as literal substrings -- so `blocked` narrows to the
+blocked rows without a binding for it.
 
 `murmur status` prints per-state counts for a status bar. Everything else is
 `--help`.

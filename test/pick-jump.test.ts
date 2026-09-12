@@ -118,6 +118,57 @@ async function pickReturning(selected: string): Promise<{ jumped: string[]; rows
   return { jumped, rows };
 }
 
+test("the picker binds only jump and the crew toggle", async () => {
+  // The dash owns the glance now, so the picker is a jump list and nothing else.
+  // Every binding below was deleted rather than moved: a preview window that
+  // sshs per keypress, a refresh, a preview-layout cycle, an attach-again
+  // expect key, and four state filters plus ctrl aliases. They are asserted
+  // absent because a dead --bind string is invisible until someone presses it.
+  agent("%1");
+  let captured: string[] = [];
+  await runPick(
+    store,
+    {},
+    {
+      fzf: (args) => {
+        captured = args;
+        return "";
+      },
+      jump: () => ({ ok: true }),
+      collect: () => {},
+    },
+  );
+
+  const joined = captured.join(" ");
+  for (const gone of [
+    "--preview",
+    "--preview-window",
+    "--expect",
+    "ctrl-r",
+    "ctrl-p",
+    "alt-enter",
+    "alt-b",
+    "alt-w",
+    "alt-d",
+    "alt-x",
+    "ctrl-w",
+    "ctrl-d",
+    "ctrl-x",
+  ]) {
+    expect(joined, gone).not.toContain(gone);
+  }
+  // The crew toggle survives: it is the one key that changes WHICH agents the
+  // list holds, which no amount of typing can do.
+  expect(joined).toContain("alt-a");
+
+  // And the key legend is gone from the header, leaving the notice and the
+  // column labels -- the action and the grid, no furniture.
+  const header = captured[captured.indexOf("--header") + 1] ?? "";
+  expect(header).not.toContain("refresh");
+  expect(header).not.toContain("filter:");
+  expect(header).not.toContain("enter focus");
+});
+
 test("enter focuses an attached local pane instead of opening another remote session", async () => {
   agent("%1", "human", "worker-1");
   store.addPeer("dev", "dev.example", "x2ssh -et dev -c 'tmux attach -t {pane}'");
@@ -185,22 +236,8 @@ test("enter focuses an attached local pane instead of opening another remote ses
   expect(mux.attach).toHaveBeenCalledWith(attached);
   expect(jumped).toBe(false);
 
-  await runPick(
-    store,
-    {},
-    {
-      fzf: () => "alt-enter\nREMOTE\t%9\tlabel",
-      jump: () => {
-        jumped = true;
-        return { ok: true };
-      },
-      collect: () => {},
-      mux,
-    },
-  );
-
   expect(mux.attach).toHaveBeenCalledTimes(1);
-  expect(jumped).toBe(true);
+  expect(jumped).toBe(false);
 });
 
 test("a cold remote jump warns and still proceeds when confirmed", async () => {

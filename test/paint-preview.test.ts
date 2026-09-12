@@ -3,9 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { warmSocketCommand } from "../src/channel.js";
-import { runPreview } from "../src/cli/pick.js";
-import { createIdentity } from "../src/identity.js";
+import { createIdentity, loadIdentity } from "../src/identity.js";
 import { asPaneId, asSessionId, asWindowId } from "../src/ids.js";
+import { previewText } from "../src/paint.js";
+import { status } from "../src/status.js";
 import { openStore, type Store } from "../src/store.js";
 import type { Location, Snapshot, SnapshotPane } from "../src/types.js";
 
@@ -74,6 +75,11 @@ function remotePane(pane: string): SnapshotPane {
  * The runner is injected rather than spied: `execFileSync` is an ESM namespace
  * export and not configurable, so `vi.spyOn` throws on it. Same seam the jump
  * tests use for the same reason.
+ *
+ * Resolves the pane the way any caller must: `previewText` takes ONE agent and
+ * the already-resolved peers, so the host column is part of the lookup here.
+ * Pane ids are unique per node and nothing more, so two machines routinely hold
+ * a `%1` and matching on the pane alone renders the wrong agent.
  */
 function preview(
   pane: string,
@@ -86,32 +92,25 @@ function preview(
   // appeared. A test must assert the code, not the machine.
   warm: (target: string) => boolean = () => false,
 ): { text: string; dialled: string[]; argv: string[][] } {
-  const written: string[] = [];
   const dialled: string[] = [];
   // The argv too, because the pane id crosses a remote LOGIN SHELL: ssh joins
   // its arguments into one string, so how the id is quoted is the whole defence
   // and asserting only the target would miss it entirely.
   const argv: string[][] = [];
-  const stdout = vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
-    written.push(String(chunk));
-    return true;
-  });
-  try {
-    runPreview(
-      store,
-      pane,
-      host,
-      (target, args) => {
+  const identity = loadIdentity();
+  if (!identity) throw new Error("no identity");
+  const view = status(store, identity, Date.now(), warm);
+  const agent = view.panes.find(
+    (candidate) => candidate.pane === pane && (host === undefined || candidate.host_id === host),
+  );
+  const text = agent
+    ? previewText(store, agent, view.peers, (target, args) => {
         dialled.push(target);
         argv.push(args);
         return glanceOutput;
-      },
-      warm,
-    );
-  } finally {
-    stdout.mockRestore();
-  }
-  return { text: written.join(""), dialled, argv };
+      })
+    : "";
+  return { text, dialled, argv };
 }
 
 test("the preview resolves the host as well as the pane", () => {
@@ -147,7 +146,7 @@ test("the preview resolves the host as well as the pane", () => {
   const local = preview("%1", "LOCAL_MISSING_HOST_ID").text;
   // A host we hold nothing for is a miss, not a silent fall-through to another
   // node's pane of the same id.
-  expect(local).not.toContain("remote-worker");
+  expect(local).toBe("");
 });
 
 test("a peer whose last fetch failed is not dialled for a glance", () => {
@@ -216,14 +215,6 @@ test("a reachable peer is still dialled for a glance", () => {
 
   expect(dialled).toEqual(["bubba.example"]);
   expect(text).toContain("pane contents");
-});
-
-test("a pane that is gone says so rather than previewing nothing", () => {
-  // The preview is a child process whose whole output is the pane it was asked
-  // about. Printing nothing looks exactly like a broken preview command, and
-  // the row can genuinely vanish between the collect and the keypress.
-  const text = preview("%404", "LOCAL").text;
-  expect(text).toContain("%404");
 });
 
 test("a hostile pane id is quoted, not interpolated, into the remote command", () => {

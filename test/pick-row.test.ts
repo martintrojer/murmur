@@ -1,20 +1,12 @@
 import { expect, test } from "vitest";
 import { agentLabel } from "../src/agents.js";
 import { warmSocketCommand } from "../src/channel.js";
-import {
-  FILTER_ALIASES,
-  FILTER_KEYS,
-  headerRow,
-  isPopup,
-  isVisible,
-  pickerRow,
-  sessionNotice,
-} from "../src/cli/pick.js";
+import { headerRow, isPopup, isVisible, pickerRow, sessionNotice } from "../src/cli/pick.js";
 import { asPaneId, asSessionId, asWindowId } from "../src/ids.js";
 import { tmux } from "../src/mux.js";
 import type { Status } from "../src/status.js";
 import type { AttentionKind } from "../src/types.js";
-import { type PaneAttention, type PaneView, RENDER_PRIORITY } from "../src/view.js";
+import type { PaneAttention, PaneView } from "../src/view.js";
 
 /** Attention kinds as the view carries them: each with its own clock. */
 function at(kinds: AttentionKind[], requested_at = 1_000): PaneAttention[] {
@@ -267,49 +259,15 @@ test("a row shows activity and attention at once, and says when the host is stal
   expect(label(pickerRow(base, true, false, false))).not.toContain("stale");
 });
 
-test("every filter key queries a render state that rows actually contain", () => {
-  // `alt-w working` outlived the word it searched for. The filters type an
-  // exact-prefix query against the visible row, and the row prints a
-  // RenderState, so a filter naming a state that no longer exists narrows the
-  // list to nothing -- silently, and indistinguishably from "nothing is running".
-  const states = new Set<string>(RENDER_PRIORITY);
-  for (const [, query] of [...FILTER_KEYS, ...FILTER_ALIASES]) {
-    expect(states).toContain(query);
-  }
-
-  // And a query really does appear in a row painted in that state.
+test("the state word is searchable by typing it, which is what replaced the filter keys", () => {
+  // The state filters were `--bind` chords typing an exact query for you, and
+  // they only ever worked because the row PRINTS the state word in the one field
+  // fzf searches. That property is what makes the keys redundant -- typing
+  // `running` narrows identically -- so it is the thing worth pinning, and it
+  // outlives the bindings. `alt-w working` had already outlived its own state
+  // word and silently matched nothing.
   const row = label(pickerRow({ ...base, attention: [], activity: "running" }, false, false, true));
   expect(row).toContain("running");
-});
-
-test("the filter keys do not include a clear, which fzf already has", () => {
-  // "all" meant two things and the wrong one was bound to M-a: clearing the
-  // state filter, when the picker uses --all for the POPULATION -- the flag,
-  // and the "crew hidden (--all)" notice. Pressing it emptied the query instead
-  // of revealing the crew rows named two lines below, which read as broken.
-  //
-  // Clearing is fzf's own ctrl-u, a standard readline binding that needs no
-  // --bind, so the redundant spelling cost the word for nothing.
-  for (const [, query] of [...FILTER_KEYS, ...FILTER_ALIASES]) {
-    expect(query).not.toBe("");
-  }
-});
-
-test("no filter key can collide with tmux's default prefix", () => {
-  // `ctrl-b` was the filter for `blocked` and could never fire: C-b is tmux's
-  // DEFAULT prefix, and tmux consumes the prefix before delivering to any pane,
-  // including the display-popup the picker runs in. So the filter reached for
-  // most was dead on exactly the setup the README tells people to configure.
-  //
-  // The general rule this pins: murmur cannot know a user's prefix, so a single
-  // ctrl-letter is always a gamble. The primary keys are alt chords, which are
-  // not prefix candidates.
-  for (const [key] of FILTER_KEYS) {
-    expect(key.startsWith("alt-")).toBe(true);
-  }
-  for (const [key] of FILTER_ALIASES) {
-    expect(key).not.toBe("ctrl-b");
-  }
 });
 
 test("a row never spends two columns saying one thing", () => {
@@ -531,12 +489,10 @@ test("the notice comes first in the header, above the legend", () => {
   // runPick, so this asserts the contract that conditional lines precede static
   // ones by checking the one property that makes it observable.
   const notice = sessionNotice([gated("dev", 1_000)], 5_000) ?? "";
-  const header = [notice, "enter jump   ^r refresh", "filter: M-x crashed", headerRow(true)]
-    .filter(Boolean)
-    .join("\n");
+  const header = [notice, headerRow(true)].filter(Boolean).join("\n");
 
   expect(header.split("\n")[0]).toBe(notice);
-  expect(header.indexOf("re-auth")).toBeLessThan(header.indexOf("enter jump"));
+  expect(header.indexOf("re-auth")).toBeLessThan(header.indexOf("state"));
 });
 
 test("the column header is styled, and not as furniture", () => {
@@ -556,14 +512,12 @@ test("the column header is styled, and not as furniture", () => {
   expect(header.endsWith("\u001b[0m")).toBe(true);
 });
 
-test("the three header registers are visually distinct", () => {
-  // The actual complaint: keys and column labels rendered identically. Each of
-  // the three lines is a different kind of thing -- an action, furniture, and a
-  // label belonging to the grid -- so each must carry a different attribute.
-  // Asserted together, because "distinct" is a property of the SET and a test
-  // per line would let two of them drift into agreement.
+test("the two header registers are visually distinct", () => {
+  // The original complaint: the key legend and the column labels rendered
+  // identically. The legend is gone, so the header is two lines -- an action and
+  // a label belonging to the grid -- and they still must not read as one block.
+  // Asserted together, because "distinct" is a property of the SET.
   const notice = sessionNotice([gated("dev", 1_000)], 5_000) ?? "";
-  const keys = `\u001b[2menter jump   ^r refresh\u001b[0m`;
   const columns = headerRow(true);
 
   // Built from a char class, not written literally: a bare \u001b in a pattern
@@ -572,5 +526,5 @@ test("the three header registers are visually distinct", () => {
   // as ANSI_PATTERN in the production file.
   const attribute = (line: string) => (line.match(ANSI) ?? []).sort().join(",");
 
-  expect(new Set([attribute(notice), attribute(keys), attribute(columns)]).size).toBe(3);
+  expect(new Set([attribute(notice), attribute(columns)]).size).toBe(2);
 });
