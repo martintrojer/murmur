@@ -6,6 +6,7 @@ import { ssh } from "../channel.js";
 import { COLLECT_FLOOR_MS } from "../collector.js";
 import { DASH_CHROME, DASH_CHROME_COLOR, DASH_COLOR, DASH_GLYPH } from "../dash-paint.js";
 import { type DashPrefs, type DashSort, loadDashPrefs, saveDashPrefs } from "../dash-prefs.js";
+import { glanceNeedsRefresh, paneFingerprint } from "../dash-tick.js";
 import { dashRows } from "../dash-view.js";
 import { tmux } from "../mux.js";
 import { glancePlacement, glanceShare, previewText, sessionNotice } from "../paint.js";
@@ -47,16 +48,18 @@ function Card({
   pane,
   selected,
   glanceLine,
+  now,
 }: {
   pane: PaneView;
   selected: boolean;
   glanceLine?: string;
+  now: number;
 }) {
   const state = renderState(pane);
   const stale = pane.freshness === "stale";
   const stream = pane.workstream ?? pane.session_name;
   const summary = oneLiner(pane, glanceLine);
-  const elapsed = age(pane.updated_at === null ? null : Date.now() - pane.updated_at);
+  const elapsed = age(pane.updated_at === null ? null : now - pane.updated_at);
 
   return (
     <Box
@@ -103,7 +106,13 @@ function App({ store, initial }: DashProps) {
     panes.findIndex((pane) => paneKey(pane) === selectedKey),
   );
   const selected = panes[selectedIndex];
+  const selectedFingerprint = selected ? paneFingerprint(selected) : null;
   const glanceRequestRef = useRef({ selected, peers: view.peers });
+  const lastGlanceRequestRef = useRef({
+    selectedKey: null as string | null,
+    collectRevision: -1,
+    fingerprint: null as string | null,
+  });
   glanceRequestRef.current = { selected, peers: view.peers };
 
   const updatePrefs = useCallback((patch: Partial<DashPrefs>) => {
@@ -149,12 +158,27 @@ function App({ store, initial }: DashProps) {
   }, [refresh, store]);
 
   useEffect(() => {
+    const previous = lastGlanceRequestRef.current;
+    const selectionChanged = selectedKey !== previous.selectedKey;
+    const collectionChanged = collectRevision !== previous.collectRevision;
+    const fingerprintChanged = glanceNeedsRefresh(previous.fingerprint, selectedFingerprint);
+    lastGlanceRequestRef.current = {
+      selectedKey,
+      collectRevision,
+      fingerprint: selectedFingerprint,
+    };
+
     const { selected: current, peers } = glanceRequestRef.current;
-    setGlance(current ? previewText(store, current, peers) : "No agents");
-    // A glance refresh belongs to selection and collection, not the redraw tick.
-    void selectedKey;
-    void collectRevision;
-  }, [selectedKey, collectRevision, store]);
+    if (!current) {
+      setGlance("No agents");
+      return;
+    }
+    // Local store changes can refresh each tick. Remote previews wait for a
+    // selection or collect so their SSH capture cannot fire every second.
+    if (selectionChanged || collectionChanged || (current.local && fingerprintChanged)) {
+      setGlance(previewText(store, current, peers));
+    }
+  }, [selectedKey, collectRevision, selectedFingerprint, store]);
 
   useEffect(() => {
     if (selected && selectedKey !== paneKey(selected)) setSelectedKey(paneKey(selected));
@@ -243,6 +267,7 @@ function App({ store, initial }: DashProps) {
               pane={pane}
               selected={paneKey(pane) === paneKey(selected ?? pane)}
               glanceLine={pane === selected ? glanceLine : undefined}
+              now={now}
             />
           ))}
         </Box>
