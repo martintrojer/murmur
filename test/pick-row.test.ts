@@ -18,7 +18,7 @@ import { type PaneAttention, type PaneView, RENDER_PRIORITY } from "../src/view.
 
 /** Attention kinds as the view carries them: each with its own clock. */
 function at(kinds: AttentionKind[], requested_at = 1_000): PaneAttention[] {
-  return kinds.map((kind) => ({ kind, requested_at }));
+  return kinds.map((kind) => ({ kind, requested_at, message: "" }));
 }
 
 const base: PaneView = {
@@ -31,7 +31,7 @@ const base: PaneView = {
   session_name: "dev",
   window_name: "editor",
   activity: "running",
-  attention: [{ kind: "blocked", requested_at: 1_000 }],
+  attention: [{ kind: "blocked", requested_at: 1_000, message: "" }],
   freshness: "fresh",
   agent_id: "agent-1",
   agent_name: null,

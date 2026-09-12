@@ -327,7 +327,9 @@ test("attention raised on one node is visible on the other, and acknowledging it
   expect(before[0]).toMatchObject({ pane: "%12", activity: null });
   // The request's own clock crosses the wire with it, which is what lets a
   // reader age a row by the kind it renders as.
-  expect(before[0]?.attention).toEqual([{ kind: "blocked", requested_at: expect.any(Number) }]);
+  expect(before[0]?.attention).toEqual([
+    { kind: "blocked", requested_at: expect.any(Number), message: "needs a decision" },
+  ]);
 
   expect(b.acknowledgePane(asPaneId("%12"))).toBe(1);
   // Acknowledge the pane that DOES hold a running agent too. This is the
@@ -374,7 +376,7 @@ test("a crash detected on one node reaches the other as crashed, with the dead a
   });
   // WHEN it died, not merely that it did: `crashed` sorts oldest-first, so a
   // reader on the far node needs the owning node's `requested_at` to place it.
-  expect(view.attention).toEqual([{ kind: "crashed", requested_at: 5_000 }]);
+  expect(view.attention).toEqual([{ kind: "crashed", requested_at: 5_000, message: "" }]);
   expect(renderState(view)).toBe("crashed");
 });
 

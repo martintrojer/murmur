@@ -371,7 +371,7 @@ test("an attention-only pane is a listable row with no agent", () => {
   // Each request carries its OWN clock now, which is what lets the sort age a
   // row by the kind it renders as rather than by the newest fact on the pane.
   expect(result.panes[0]?.attention).toEqual([
-    { kind: "blocked", requested_at: expect.any(Number) },
+    { kind: "blocked", requested_at: expect.any(Number), message: "needs input" },
   ]);
   expect(result.counts.blocked).toBe(1);
 });

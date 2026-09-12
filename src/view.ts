@@ -58,10 +58,10 @@ export const NEEDS_HUMAN: readonly AttentionKind[] = ["blocked", "crashed"];
  * `max` -- which is what `updated_at` is -- let a fresh `done` mask a starving
  * `blocked` on the same pane.
  *
- * `message` and `source` stay in the snapshot and out of here: nothing paints
- * them, and a field carried for a future reader is a field nobody keeps true.
+ * `message` is carried for the dash card one-liner. `source` stays in the
+ * snapshot because no surface paints it.
  */
-export type PaneAttention = { kind: AttentionKind; requested_at: number };
+export type PaneAttention = { kind: AttentionKind; requested_at: number; message: string };
 
 /** Does this pane want this kind of attention? */
 export function wants(
@@ -69,6 +69,21 @@ export function wants(
   kind: AttentionKind,
 ): boolean {
   return view.attention.some((entry) => entry.kind === kind);
+}
+
+/** The first attention message, or the last non-empty line of pane output. */
+export function oneLiner(agent: PaneView, glanceLine?: string | null): string {
+  for (const entry of agent.attention) {
+    const message = entry.message.trim();
+    if (message) return message;
+  }
+
+  const lines = glanceLine?.split("\n") ?? [];
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = lines[index]?.trim();
+    if (line) return line;
+  }
+  return "";
 }
 
 /** The owner-reported fields that identify one mu worker. */
@@ -237,6 +252,7 @@ function paneView(pane: SnapshotPane, source: ViewSource): PaneView {
     attention: pane.attention.map((entry) => ({
       kind: entry.kind,
       requested_at: entry.requested_at,
+      message: entry.message,
     })),
     freshness: source.freshness,
     agent_id: agent?.agent_id ?? null,

@@ -23,7 +23,7 @@ import {
  * age say so explicitly.
  */
 function at(kinds: AttentionKind[], requested_at = 1_000): PaneAttention[] {
-  return kinds.map((kind) => ({ kind, requested_at }));
+  return kinds.map((kind) => ({ kind, requested_at, message: "" }));
 }
 
 /**
@@ -246,8 +246,8 @@ test("a row is aged by the kind it RENDERS as, not by the newest thing on the pa
   const masked = view({
     pane: asPaneId("%masked"),
     attention: [
-      { kind: "crashed", requested_at: NOW - 60 * 60_000 },
-      { kind: "done", requested_at: NOW - 1_000 },
+      { kind: "crashed", requested_at: NOW - 60 * 60_000, message: "" },
+      { kind: "done", requested_at: NOW - 1_000, message: "" },
     ],
     updated_at: NOW - 1_000,
   });
