@@ -37,15 +37,17 @@ export function dashVisible(agent: PaneView, prefs: DashPrefs): boolean {
  *
  * `priority` is `viewSort` verbatim -- the attention-first ordering every
  * surface uses -- and the other two exist because it is not always the question
- * being asked: `node` is "what is happening on that machine", `age` is "what
- * moved most recently". Both stay TOTAL for the same reason `viewSort` is, with
- * `pane` as the final key: an unbroken tie hands the position back to whatever
- * order SQLite and the peer loop produced, and a row that moves under a keypress
- * is worse than any ordering.
+ * being asked: `node` is "what is happening on that machine" with here first,
+ * then remotes A-Z; `age` is "what moved most recently". Both stay TOTAL for
+ * the same reason `viewSort` is, with `pane` as the final key: an unbroken tie
+ * hands the position back to whatever order SQLite and the peer loop produced,
+ * and a row that moves under a keypress is worse than any ordering.
  */
 export function dashSort(views: PaneView[], prefs: DashPrefs, now = Date.now()): PaneView[] {
   if (prefs.sort === "node") {
     return [...views].sort((left, right) => {
+      const byLocal = Number(right.local) - Number(left.local);
+      if (byLocal !== 0) return byLocal;
       const byHost = left.host.localeCompare(right.host);
       if (byHost !== 0) return byHost;
       const byState = (ORDER.get(renderState(left)) ?? 99) - (ORDER.get(renderState(right)) ?? 99);

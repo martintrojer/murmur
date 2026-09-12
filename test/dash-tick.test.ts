@@ -1,9 +1,12 @@
 import { expect, test } from "vitest";
 import {
   cardWindow,
+  dashFooterHints,
   fetchedText,
+  fitFooterHints,
   formatFetchedAge,
   glanceNeedsRefresh,
+  hintsWidth,
   moveIndex,
   paneFingerprint,
   scrollLabel,
@@ -121,4 +124,22 @@ test("scrollLabel is silent when everything fits", () => {
   expect(scrollLabel({ first: 2, shown: 3, above: 2, below: 5, total: 10 })).toBe("↑2 3–5/10 ↓5");
   expect(scrollLabel({ first: 0, shown: 3, above: 0, below: 7, total: 10 })).toBe("1–3/10 ↓7");
   expect(scrollLabel({ first: 7, shown: 3, above: 7, below: 0, total: 10 })).toBe("↑7 8–10/10");
+});
+
+test("fitFooterHints drops low-priority items before wrapping", () => {
+  const hints = dashFooterHints({ sort: "priority", hide_stale: false, crew: true });
+  const wide = fitFooterHints(hints, 200);
+  expect(wide).toHaveLength(hints.length);
+  expect(hintsWidth(wide)).toBeLessThanOrEqual(200);
+
+  const mid = fitFooterHints(hints, 72);
+  expect(hintsWidth(mid)).toBeLessThanOrEqual(72);
+  expect(mid.some((hint) => hint.chord === "j/k")).toBe(true);
+  expect(mid.some((hint) => hint.chord === "q")).toBe(true);
+  expect(mid.some((hint) => hint.chord === "+/-")).toBe(false);
+
+  const tight = fitFooterHints(hints, 36);
+  expect(hintsWidth(tight)).toBeLessThanOrEqual(36);
+  expect(tight.every((hint) => hint.label === "" || hintsWidth(tight) <= 36)).toBe(true);
+  expect(tight[0]?.chord).toBe("j/k");
 });

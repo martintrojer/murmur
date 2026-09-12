@@ -88,3 +88,77 @@ export function scrollLabel(window: {
   const down = window.below > 0 ? ` ↓${window.below}` : "";
   return `${up}${from}\u2013${to}/${window.total}${down}`;
 }
+
+export type FooterHint = {
+  chord: string;
+  /** Empty when the compact form drops the verb. */
+  label: string;
+  value?: string;
+  /** Higher drops first when the line will not fit. */
+  drop: number;
+};
+
+const DOT = " · ";
+
+export function hintWidth(hint: FooterHint): number {
+  return (
+    hint.chord.length +
+    (hint.label ? 1 + hint.label.length : 0) +
+    (hint.value !== undefined ? 1 + hint.value.length : 0)
+  );
+}
+
+export function hintsWidth(hints: FooterHint[]): number {
+  if (hints.length === 0) return 0;
+  return hints.reduce((sum, hint) => sum + hintWidth(hint), 0) + DOT.length * (hints.length - 1);
+}
+
+/**
+ * One-line footer budget: drop lowest-priority hints, then strip verbs, until
+ * the line fits. Never wraps — a wrapped footer pushed the fixed-height TUI
+ * into a scrollable viewport on narrow panes.
+ */
+export function fitFooterHints(hints: FooterHint[], columns: number): FooterHint[] {
+  const budget = Math.max(0, columns);
+  let fitted = hints.map((hint) => ({ ...hint }));
+
+  while (fitted.length > 1 && hintsWidth(fitted) > budget) {
+    let dropAt = 0;
+    for (let index = 1; index < fitted.length; index += 1) {
+      if ((fitted[index]?.drop ?? 0) >= (fitted[dropAt]?.drop ?? 0)) dropAt = index;
+    }
+    fitted = fitted.filter((_, index) => index !== dropAt);
+  }
+
+  if (hintsWidth(fitted) <= budget) return fitted;
+
+  fitted = fitted.map((hint) => ({ ...hint, label: "" }));
+  while (fitted.length > 1 && hintsWidth(fitted) > budget) {
+    let dropAt = 0;
+    for (let index = 1; index < fitted.length; index += 1) {
+      if ((fitted[index]?.drop ?? 0) >= (fitted[dropAt]?.drop ?? 0)) dropAt = index;
+    }
+    fitted = fitted.filter((_, index) => index !== dropAt);
+  }
+
+  return fitted;
+}
+
+export function dashFooterHints(prefs: {
+  sort: string;
+  hide_stale: boolean;
+  crew: boolean;
+}): FooterHint[] {
+  return [
+    { chord: "j/k", label: "select", drop: 0 },
+    { chord: "enter", label: "jump", drop: 1 },
+    { chord: "s", label: "sort", value: prefs.sort, drop: 2 },
+    { chord: "q", label: "quit", drop: 3 },
+    { chord: "a", label: "crew", value: prefs.crew ? "on" : "off", drop: 4 },
+    { chord: "f", label: "stale", value: prefs.hide_stale ? "off" : "on", drop: 5 },
+    { chord: "^r", label: "refresh", drop: 6 },
+    { chord: "^u/^d", label: "page", drop: 7 },
+    { chord: "g/G", label: "top/end", drop: 8 },
+    { chord: "+/-", label: "preview", drop: 9 },
+  ];
+}

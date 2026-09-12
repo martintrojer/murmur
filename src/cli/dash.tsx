@@ -8,7 +8,9 @@ import { DASH_CHROME, DASH_CHROME_COLOR, DASH_COLOR, DASH_GLYPH } from "../dash-
 import { type DashPrefs, type DashSort, loadDashPrefs, saveDashPrefs } from "../dash-prefs.js";
 import {
   cardWindow,
+  dashFooterHints,
   fetchedText,
+  fitFooterHints,
   glanceNeedsRefresh,
   moveIndex,
   paneFingerprint,
@@ -56,9 +58,23 @@ function Hint({ chord, label, value }: { chord: string; label: string; value?: s
   return (
     <Text>
       <Text color={DASH_CHROME_COLOR.accent}>{chord}</Text>
-      <Text dimColor> {label}</Text>
+      {label ? <Text dimColor> {label}</Text> : null}
       {value !== undefined ? <Text color={DASH_CHROME_COLOR.text}> {value}</Text> : null}
     </Text>
+  );
+}
+
+function Footer({ columns, prefs }: { columns: number; prefs: DashPrefs }) {
+  const hints = fitFooterHints(dashFooterHints(prefs), columns);
+  return (
+    <Box width={columns} height={1}>
+      {hints.map((hint, index) => (
+        <Text key={`${hint.chord}:${hint.label}:${hint.value ?? ""}`}>
+          {index > 0 ? <Dot /> : null}
+          <Hint chord={hint.chord} label={hint.label} value={hint.value} />
+        </Text>
+      ))}
+    </Box>
   );
 }
 
@@ -344,28 +360,14 @@ function App({ store, initial }: DashProps) {
           <Text wrap="truncate-end">{glance}</Text>
         </Box>
       </Box>
-      <Box>
-        <Hint chord="j/k" label="select" />
-        <Dot />
-        <Hint chord="^u/^d" label="page" />
-        <Dot />
-        <Hint chord="g/G" label="top/end" />
-        <Dot />
-        <Hint chord="enter" label="jump" />
-        <Dot />
-        <Hint chord="s" label="sort" value={prefs.sort} />
-        <Dot />
-        <Hint chord="f" label="stale" value={prefs.hide_stale ? "off" : "on"} />
-        <Dot />
-        <Hint chord="a" label="crew" value={prefs.crew ? "on" : "off"} />
-        <Dot />
-        <Hint chord="+/-" label="preview" />
-        <Dot />
-        <Hint chord="^r" label="refresh" />
-        <Dot />
-        <Hint chord="q" label="quit" />
-      </Box>
-      {message ? <Text color="red">{message}</Text> : null}
+      <Footer columns={columns} prefs={prefs} />
+      {message ? (
+        <Box width={columns} height={1}>
+          <Text color="red" wrap="truncate-end">
+            {message}
+          </Text>
+        </Box>
+      ) : null}
     </Box>
   );
 }

@@ -104,18 +104,23 @@ test("sort priority matches viewSort", () => {
   );
 });
 
-test("sort node groups rows by host, then by state, then by pane", () => {
+test("sort node puts here first, then hosts A-Z, then state, then pane", () => {
   const rows = [
-    view({ host: "beta", pane: asPaneId("%9"), activity: "stopped" }),
-    view({ host: "alpha", pane: asPaneId("%2"), activity: "stopped" }),
+    view({ host: "beta", local: false, pane: asPaneId("%9"), activity: "stopped" }),
+    view({ host: "alpha", local: false, pane: asPaneId("%2"), activity: "stopped" }),
     view({
       host: "beta",
+      local: false,
       pane: asPaneId("%1"),
       attention: [{ kind: "blocked", requested_at: 1, message: "" }],
     }),
-    view({ host: "alpha", pane: asPaneId("%1"), activity: "stopped" }),
+    view({ host: "zeta", local: true, pane: asPaneId("%3"), activity: "stopped" }),
+    view({ host: "alpha", local: false, pane: asPaneId("%1"), activity: "stopped" }),
+    view({ host: "here", local: true, pane: asPaneId("%1"), activity: "stopped" }),
   ];
   expect(dashSort(rows, prefs({ sort: "node" })).map((row) => `${row.host}${row.pane}`)).toEqual([
+    "here%1",
+    "zeta%3",
     "alpha%1",
     "alpha%2",
     "beta%1",
@@ -149,11 +154,13 @@ test("every sort leaves the input array untouched", () => {
 
 test("dashRows filters then sorts", () => {
   const rows = [
-    view({ host: "beta", pane: asPaneId("%1"), activity: "stopped" }),
-    view({ host: "alpha", pane: asPaneId("%2"), driver: "orchestrated" }),
-    view({ host: "alpha", pane: asPaneId("%3"), activity: "stopped" }),
+    view({ host: "beta", local: false, pane: asPaneId("%1"), activity: "stopped" }),
+    view({ host: "alpha", local: false, pane: asPaneId("%2"), driver: "orchestrated" }),
+    view({ host: "alpha", local: false, pane: asPaneId("%3"), activity: "stopped" }),
+    view({ host: "here", local: true, pane: asPaneId("%4"), activity: "stopped" }),
   ];
   expect(dashRows(rows, prefs({ sort: "node" })).map((row) => `${row.host}${row.pane}`)).toEqual([
+    "here%4",
     "alpha%3",
     "beta%1",
   ]);
