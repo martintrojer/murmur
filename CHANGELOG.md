@@ -3,6 +3,29 @@
 Notable changes per release. Written for someone deciding whether to upgrade,
 so it says what changed for a user rather than listing every commit.
 
+## 0.3.0
+
+Wire-compatible with 0.2.x: the snapshot format is unchanged at version 1, so
+no coordinated upgrade is needed.
+
+The theme is a live dashboard you can stay in, not only a popup jump list.
+
+**`murmur dash` — cards + pane glance.** An ink TUI over the same view `status`
+and `pick` already share: attention-sorted cards on the left, live
+`capture-pane` glance on the right. Floored collect while it stays open; paints
+from cache like pick. Needs a Nerd Font and a Catppuccin Mocha terminal.
+
+Keys: `j`/`k` select, enter jump, `s` cycles sort (`priority` / `node` /
+`age`), click selects, double-click jumps, wheel scrolls the card rail or the
+glance, `q` quits. **node** sort is local cards first, then remotes A–Z.
+Presentation prefs (sort, filters) persist across runs.
+
+**`murmur pick` is jump-first again.** The popup is a narrow list: enter jumps,
+typing narrows, `ctrl-a` / `--all` toggles crew. Dash owns the richer browse.
+
+**Docs.** README is sell/usage with a dash screenshot; harness hooks, doctor,
+and jump detail live in `docs/setup.md`. AGENTS points at the doc map.
+
 ## 0.2.6
 
 Wire-compatible with 0.2.x: the snapshot format is unchanged at version 1, so
