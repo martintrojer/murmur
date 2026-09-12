@@ -32,7 +32,9 @@ import { DASH_CHROME, DASH_CHROME_COLOR, DASH_COLOR, DASH_GLYPH } from "../dash-
 import { type DashPrefs, type DashSort, loadDashPrefs, saveDashPrefs } from "../dash-prefs.js";
 import {
   cardWindow,
+  type DashFocus,
   dashFooterHints,
+  dashNavigation,
   fetchedText,
   fitFooterHints,
   glanceNeedsRefresh,
@@ -100,10 +102,12 @@ function Footer({
   columns,
   prefs,
   inputMode,
+  focus,
 }: {
   columns: number;
   prefs: DashPrefs;
   inputMode: boolean;
+  focus: DashFocus;
 }) {
   const hints = fitFooterHints(
     inputMode
@@ -112,7 +116,7 @@ function Footer({
           { chord: "^e", label: "stop", drop: 1 },
           { chord: "esc", label: "leave", drop: 2 },
         ]
-      : dashFooterHints(prefs),
+      : dashFooterHints(prefs, focus),
     columns,
   );
   return (
@@ -130,12 +134,14 @@ function Footer({
 function Card({
   pane,
   selected,
+  cardsFocused,
   glanceLine,
   now,
   elementRef,
 }: {
   pane: PaneView;
   selected: boolean;
+  cardsFocused: boolean;
   glanceLine?: string;
   now: number;
   elementRef?: (node: DOMElement | null) => void;
@@ -149,7 +155,7 @@ function Card({
   return (
     <Box
       ref={elementRef}
-      borderStyle={selected ? "double" : "single"}
+      borderStyle={selected && cardsFocused ? "double" : "single"}
       borderColor={selected ? DASH_CHROME_COLOR.accent : DASH_CHROME_COLOR.furniture}
       flexDirection="column"
       paddingX={1}
@@ -184,6 +190,7 @@ function App({ store, initial }: DashProps) {
   );
   const [glance, setGlance] = useState("");
   const [glanceScroll, setGlanceScroll] = useState(0);
+  const [focus, setFocus] = useState<DashFocus>("cards");
   const [inputTarget, setInputTarget] = useState<PaneView | null>(null);
   const [composer, setComposer] = useState<Composer>(emptyComposer);
   const [inputError, setInputError] = useState("");
@@ -313,7 +320,6 @@ function App({ store, initial }: DashProps) {
   const window = cardWindow(selectedIndex, panes.length, visibleCards);
   const shown = panes.slice(window.first, window.first + window.shown);
   const scroll = scrollLabel({ ...window, total: panes.length });
-  const halfPage = Math.max(1, Math.floor(visibleCards / 2));
 
   const jumpTo = useCallback(
     (index: number) => {
@@ -380,6 +386,7 @@ function App({ store, initial }: DashProps) {
         if (event.kind === "press" && event.button === "left") {
           for (const [key, node] of cardNodesRef.current) {
             if (!pointInRect(event.x, event.y, measureElement(node))) continue;
+            setFocus("cards");
             const classified = classifyClick(clickMemoryRef.current, key, Date.now());
             clickMemoryRef.current = classified.next;
             if (classified.double) {
@@ -388,6 +395,11 @@ function App({ store, initial }: DashProps) {
             } else {
               setSelectedKey(key);
             }
+            return;
+          }
+          const glanceBox = glanceNodeRef.current;
+          if (glanceBox && pointInRect(event.x, event.y, measureElement(glanceBox))) {
+            setFocus("preview");
             return;
           }
         }
@@ -449,7 +461,7 @@ function App({ store, initial }: DashProps) {
           }
         });
       } else if (key.tab) {
-        setComposer((state) => editComposer(state, { type: "insert", text: "\t" }));
+        return;
       } else if (key.backspace) {
         setComposer((state) => editComposer(state, { type: "backspace" }));
       } else if (key.delete) {
@@ -470,22 +482,49 @@ function App({ store, initial }: DashProps) {
 
     if (input === "q" || (key.ctrl && input === "c")) {
       exit();
-    } else if (input === "j" || key.downArrow) {
-      move(1);
-    } else if (input === "k" || key.upArrow) {
-      move(-1);
-    } else if (key.pageDown || (key.ctrl && input === "d")) {
-      move(key.pageDown ? visibleCards : halfPage, "clamp");
-    } else if (key.pageUp || (key.ctrl && input === "u")) {
-      move(-(key.pageUp ? visibleCards : halfPage), "clamp");
-    } else if (input === "g" || key.home) {
-      jumpTo(0);
-    } else if (input === "G" || key.end) {
-      jumpTo(panes.length - 1);
+    } else if (key.tab) {
+      setFocus((current) => (current === "cards" ? "preview" : "cards"));
+    } else if (
+      input === "j" ||
+      key.downArrow ||
+      input === "k" ||
+      key.upArrow ||
+      key.pageDown ||
+      (key.ctrl && input === "d") ||
+      key.pageUp ||
+      (key.ctrl && input === "u") ||
+      input === "g" ||
+      key.home ||
+      input === "G" ||
+      key.end
+    ) {
+      const navKey =
+        input === "j" || key.downArrow
+          ? "down"
+          : input === "k" || key.upArrow
+            ? "up"
+            : key.pageDown || (key.ctrl && input === "d")
+              ? "pageDown"
+              : key.pageUp || (key.ctrl && input === "u")
+                ? "pageUp"
+                : input === "g" || key.home
+                  ? "home"
+                  : "end";
+      const navigation = dashNavigation(focus, navKey, visibleCards, glanceVisibleLines);
+      if (navigation.type === "cards") move(navigation.offset, "clamp");
+      else if (navigation.type === "cards-edge")
+        jumpTo(navigation.edge === "top" ? 0 : panes.length - 1);
+      else if (navigation.type === "preview")
+        setGlanceScroll((offset) =>
+          clampGlanceScroll(offset + navigation.offset, glanceLines.length, glanceVisibleLines),
+        );
+      else if (navigation.type === "preview-edge")
+        setGlanceScroll(navigation.edge === "top" ? 0 : Number.MAX_SAFE_INTEGER);
     } else if (key.return && selected) {
       activatePane(selected);
     } else if (input === "i" && selected) {
       inputGenerationRef.current += 1;
+      setFocus("preview");
       setInputTarget(selected);
       setComposer(emptyComposer());
       setInputError("");
@@ -512,7 +551,8 @@ function App({ store, initial }: DashProps) {
     return placement === "bottom" ? Math.max(5, bodyRows - cardHeight) : bodyRows;
   })();
   const glanceLines = glance.split("\n");
-  const inputChromeRows = inputMode ? 2 + (inputError ? 1 : 0) : 0;
+  const previewFocused = focus === "preview";
+  const inputChromeRows = inputMode ? 2 + (inputError ? 1 : 0) : previewFocused ? 1 : 0;
   const glanceFrame = glanceViewport(glanceLines.length, glanceBoxHeight - inputChromeRows);
   const glanceVisibleLines = glanceFrame.visible;
   const glanceScrollMax = Math.max(0, glanceLines.length - glanceVisibleLines);
@@ -582,6 +622,7 @@ function App({ store, initial }: DashProps) {
                 key={key}
                 pane={pane}
                 selected={key === paneKey(selected ?? pane)}
+                cardsFocused={focus === "cards"}
                 glanceLine={pane === selected ? glanceLine : undefined}
                 now={now}
                 elementRef={(node) => {
@@ -597,22 +638,30 @@ function App({ store, initial }: DashProps) {
         </Box>
         <Box
           ref={glanceNodeRef}
-          borderStyle={inputMode ? "double" : "single"}
-          borderColor={inputMode ? DASH_CHROME_COLOR.accent : undefined}
+          borderStyle={previewFocused ? "double" : "single"}
+          borderColor={
+            inputMode
+              ? DASH_CHROME_COLOR.accent
+              : previewFocused
+                ? DASH_CHROME_COLOR.info
+                : undefined
+          }
           flexDirection="column"
           width={placement === "right" ? `${Math.round(share * 100)}%` : "100%"}
           height={placement === "bottom" ? Math.max(5, bodyRows - cardHeight) : bodyRows}
           paddingX={1}
           overflow="hidden"
         >
-          {inputMode && previewPane ? (
+          {previewFocused && previewPane ? (
             <Text
               bold
-              backgroundColor={DASH_CHROME_COLOR.accent}
+              backgroundColor={inputMode ? DASH_CHROME_COLOR.accent : DASH_CHROME_COLOR.info}
               color="#11111b"
               wrap="truncate-end"
             >
-              {` INPUT → ${terminalText(previewPane.host)}/${previewPane.pane} · ${inputSending ? "sending…" : "Enter send · Ctrl+E stop · Esc leave"} `}
+              {inputMode
+                ? ` INPUT → ${terminalText(previewPane.host)}/${previewPane.pane} · ${inputSending ? "sending…" : "Enter send · Ctrl+E stop · Esc leave"} `
+                : ` PREVIEW → ${terminalText(previewPane.host)}/${previewPane.pane} · Tab cards `}
             </Text>
           ) : null}
           {glanceFrame.chrome ? (
@@ -652,7 +701,7 @@ function App({ store, initial }: DashProps) {
           ) : null}
         </Box>
       </Box>
-      <Footer columns={columns} prefs={prefs} inputMode={inputMode} />
+      <Footer columns={columns} prefs={prefs} inputMode={inputMode} focus={focus} />
       {message ? (
         <Box width={columns} height={1}>
           <Text color="red" wrap="truncate-end">

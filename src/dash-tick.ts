@@ -102,6 +102,27 @@ export function glanceViewport(
   return { visible: Math.max(1, inner - 1), chrome: true };
 }
 
+export type DashFocus = "cards" | "preview";
+export type DashNavKey = "up" | "down" | "pageUp" | "pageDown" | "home" | "end";
+export type DashNavigation =
+  | { type: "cards" | "preview"; offset: number }
+  | { type: "cards-edge" | "preview-edge"; edge: "top" | "bottom" };
+
+export function dashNavigation(
+  focus: DashFocus,
+  key: DashNavKey,
+  cardPage: number,
+  previewPage: number,
+): DashNavigation {
+  const type = focus === "cards" ? "cards" : "preview";
+  if (key === "home" || key === "end") {
+    return { type: `${type}-edge`, edge: key === "home" ? "top" : "bottom" };
+  }
+  const direction = key === "up" || key === "pageUp" ? -1 : 1;
+  const page = focus === "cards" ? cardPage : previewPage;
+  return { type, offset: direction * (key === "pageUp" || key === "pageDown" ? page : 1) };
+}
+
 export type FooterHint = {
   chord: string;
   /** Empty when the compact form drops the verb. */
@@ -157,22 +178,26 @@ export function fitFooterHints(hints: FooterHint[], columns: number): FooterHint
   return fitted;
 }
 
-export function dashFooterHints(prefs: {
-  sort: string;
-  hide_stale: boolean;
-  crew: boolean;
-}): FooterHint[] {
+export function dashFooterHints(
+  prefs: {
+    sort: string;
+    hide_stale: boolean;
+    crew: boolean;
+  },
+  focus: DashFocus = "cards",
+): FooterHint[] {
   return [
-    { chord: "j/k", label: "select", drop: 0 },
+    { chord: "j/k", label: focus === "cards" ? "select" : "scroll", drop: 0 },
     { chord: "enter", label: "jump", drop: 1 },
-    { chord: "i", label: "input", drop: 2 },
-    { chord: "s", label: "sort", value: prefs.sort, drop: 3 },
-    { chord: "q", label: "quit", drop: 4 },
-    { chord: "a", label: "crew", value: prefs.crew ? "on" : "off", drop: 5 },
-    { chord: "f", label: "stale", value: prefs.hide_stale ? "off" : "on", drop: 6 },
-    { chord: "^r", label: "refresh", drop: 7 },
-    { chord: "^u/^d", label: "page", drop: 8 },
-    { chord: "g/G", label: "top/end", drop: 9 },
-    { chord: "+/-", label: "preview", drop: 10 },
+    { chord: "tab", label: "focus", value: focus, drop: 2 },
+    { chord: "q", label: "quit", drop: 3 },
+    { chord: "i", label: "input", drop: 4 },
+    { chord: "s", label: "sort", value: prefs.sort, drop: 5 },
+    { chord: "a", label: "crew", value: prefs.crew ? "on" : "off", drop: 6 },
+    { chord: "f", label: "stale", value: prefs.hide_stale ? "off" : "on", drop: 7 },
+    { chord: "^r", label: "refresh", drop: 8 },
+    { chord: "^u/^d", label: "page", drop: 9 },
+    { chord: "g/G", label: "top/end", drop: 10 },
+    { chord: "+/-", label: "preview", drop: 11 },
   ];
 }

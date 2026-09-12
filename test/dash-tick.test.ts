@@ -2,6 +2,7 @@ import { expect, test } from "vitest";
 import {
   cardWindow,
   dashFooterHints,
+  dashNavigation,
   fetchedText,
   fitFooterHints,
   formatFetchedAge,
@@ -151,7 +152,21 @@ test("fitFooterHints drops low-priority items before wrapping", () => {
   expect(tight[0]?.chord).toBe("j/k");
 });
 
-test("dash footer makes input mode discoverable", () => {
-  const hints = dashFooterHints({ sort: "priority", hide_stale: false, crew: true });
+test("dash footer makes input mode and region focus discoverable", () => {
+  const hints = dashFooterHints({ sort: "priority", hide_stale: false, crew: true }, "cards");
   expect(hints.some((hint) => hint.chord === "i" && hint.label === "input")).toBe(true);
+  expect(hints.some((hint) => hint.chord === "tab" && hint.value === "cards")).toBe(true);
+
+  const preview = dashFooterHints({ sort: "priority", hide_stale: false, crew: true }, "preview");
+  expect(preview.some((hint) => hint.chord === "tab" && hint.value === "preview")).toBe(true);
+  expect(preview.some((hint) => hint.chord === "j/k" && hint.label === "scroll")).toBe(true);
+});
+
+test("navigation keys map to the active region", () => {
+  expect(dashNavigation("cards", "down", 4, 2)).toEqual({ type: "cards", offset: 1 });
+  expect(dashNavigation("cards", "pageDown", 4, 2)).toEqual({ type: "cards", offset: 4 });
+  expect(dashNavigation("preview", "down", 4, 2)).toEqual({ type: "preview", offset: 1 });
+  expect(dashNavigation("preview", "pageDown", 4, 2)).toEqual({ type: "preview", offset: 2 });
+  expect(dashNavigation("preview", "home", 4, 2)).toEqual({ type: "preview-edge", edge: "top" });
+  expect(dashNavigation("cards", "end", 4, 2)).toEqual({ type: "cards-edge", edge: "bottom" });
 });

@@ -25,9 +25,11 @@ Orchestrated (`crew`) agents stay hidden unless they are `blocked` or `crashed`
 remote jump opens over ssh (or your `--jump-command`).
 
 `murmur dash` wants a [Nerd Font](https://www.nerdfonts.com/) and a Catppuccin
-Mocha terminal. Keys: `j`/`k` select, enter jump, click selects, double-click
-jumps, wheel scrolls the card rail or the glance, `s` cycles sort, `q` quits.
-Press `i` to compose a prompt for the selected local or remote agent. In input
+Mocha terminal. Press `tab` to focus the cards or pane preview; `j`/`k`, arrow
+keys, page keys, `ctrl-u`/`ctrl-d`, and home/end navigate the focused region.
+Clicking a region focuses it. Enter jumps, double-click jumps, the wheel scrolls
+the region under it, `s` cycles sort, and `q` quits. Press `i` to compose a
+prompt for the selected local or remote agent. In input
 mode, enter sends, `ctrl-e` stops the agent, and escape returns to the dashboard.
 `s` **node** sort is local cards first, then remotes A–Z.
 
