@@ -8,7 +8,7 @@ test("every render state has its single-codepoint Nerd Font glyph", () => {
     blocked: "\uf075",
     done: "\uf058",
     running: "\uf013",
-    idle: "\u{f0ecd}",
+    idle: "\uf186",
   });
   for (const state of RENDER_PRIORITY) {
     expect([...DASH_GLYPH[state]]).toHaveLength(1);
@@ -27,7 +27,7 @@ test("dash state colors use the Catppuccin Mocha palette", () => {
 
 test("dash chrome uses Nerd Font glyphs and Catppuccin accents", () => {
   expect(DASH_CHROME).toEqual({
-    robot: "\u{f06a9}",
+    robot: "\uf17b",
     here: "\uf015",
     remote: "\uf233",
     crew: "\uf0c0",

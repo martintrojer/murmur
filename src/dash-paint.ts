@@ -1,12 +1,16 @@
 import type { RenderState } from "./view.js";
 
 // Dash-only vocabulary: do not leak these maps into paint.ts or pick.
+// All glyphs are classic Nerd Font `nf-fa-*` (Font Awesome 4) codepoints —
+// single cell, stable across NF versions. Avoid `nf-md-*`: those PUA slots
+// move between releases and render as the wrong icon (e.g. idle looked like
+// a red shield under md-sleep).
 export const DASH_GLYPH: Record<RenderState, string> = {
-  crashed: "\uf057",
-  blocked: "\uf075",
-  done: "\uf058",
-  running: "\uf013",
-  idle: "\u{f0ecd}",
+  crashed: "\uf057", // nf-fa-times_circle
+  blocked: "\uf075", // nf-fa-comment
+  done: "\uf058", // nf-fa-check_circle
+  running: "\uf013", // nf-fa-cog
+  idle: "\uf186", // nf-fa-moon_o
 };
 
 export const DASH_COLOR: Record<RenderState, string> = {
@@ -18,11 +22,11 @@ export const DASH_COLOR: Record<RenderState, string> = {
 };
 
 export const DASH_CHROME = {
-  robot: "\u{f06a9}",
-  here: "\uf015",
-  remote: "\uf233",
-  crew: "\uf0c0",
-  stale: "\uf017",
+  robot: "\uf17b", // nf-fa-android
+  here: "\uf015", // nf-fa-home
+  remote: "\uf233", // nf-fa-server
+  crew: "\uf0c0", // nf-fa-users
+  stale: "\uf017", // nf-fa-clock_o
 };
 
 export const DASH_CHROME_COLOR = {
