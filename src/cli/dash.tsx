@@ -1,9 +1,26 @@
 import type { Command } from "commander";
-import { Box, render, Text, useApp, useInput, useWindowSize } from "ink";
+import {
+  Box,
+  type DOMElement,
+  measureElement,
+  render,
+  Text,
+  useApp,
+  useInput,
+  useWindowSize,
+} from "ink";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { agentLabel, jumpToAgent, terminalText } from "../agents.js";
 import { ssh } from "../channel.js";
 import { COLLECT_FLOOR_MS } from "../collector.js";
+import {
+  clampGlanceScroll,
+  classifyClick,
+  disableMouse,
+  enableMouse,
+  parseMouseEvents,
+  pointInRect,
+} from "../dash-mouse.js";
 import { DASH_CHROME, DASH_CHROME_COLOR, DASH_COLOR, DASH_GLYPH } from "../dash-paint.js";
 import { type DashPrefs, type DashSort, loadDashPrefs, saveDashPrefs } from "../dash-prefs.js";
 import {
@@ -83,11 +100,13 @@ function Card({
   selected,
   glanceLine,
   now,
+  elementRef,
 }: {
   pane: PaneView;
   selected: boolean;
   glanceLine?: string;
   now: number;
+  elementRef?: (node: DOMElement | null) => void;
 }) {
   const state = renderState(pane);
   const stale = pane.freshness === "stale";
@@ -97,6 +116,7 @@ function Card({
 
   return (
     <Box
+      ref={elementRef}
       borderStyle={selected ? "double" : "single"}
       borderColor={selected ? DASH_CHROME_COLOR.accent : DASH_CHROME_COLOR.furniture}
       flexDirection="column"
@@ -131,6 +151,7 @@ function App({ store, initial }: DashProps) {
     initial.panes[0] ? paneKey(initial.panes[0]) : null,
   );
   const [glance, setGlance] = useState("");
+  const [glanceScroll, setGlanceScroll] = useState(0);
   const [message, setMessage] = useState("");
   const [now, setNow] = useState(Date.now());
   const [collectRevision, setCollectRevision] = useState(0);
@@ -147,6 +168,10 @@ function App({ store, initial }: DashProps) {
     collectRevision: -1,
     fingerprint: null as string | null,
   });
+  const clickMemoryRef = useRef<ReturnType<typeof classifyClick>["next"] | null>(null);
+  const cardNodesRef = useRef(new Map<string, DOMElement>());
+  const railNodeRef = useRef<DOMElement | null>(null);
+  const glanceNodeRef = useRef<DOMElement | null>(null);
   glanceRequestRef.current = { selected, peers: view.peers };
 
   const updatePrefs = useCallback((patch: Partial<DashPrefs>) => {
@@ -211,6 +236,7 @@ function App({ store, initial }: DashProps) {
     // selection or collect so their SSH capture cannot fire every second.
     if (selectionChanged || collectionChanged || (current.local && fingerprintChanged)) {
       setGlance(previewText(store, current, peers));
+      setGlanceScroll(0);
     }
   }, [selectedKey, collectRevision, selectedFingerprint, store]);
 
@@ -247,6 +273,84 @@ function App({ store, initial }: DashProps) {
     [jumpTo, panes.length, selectedIndex],
   );
 
+  const activatePane = useCallback(
+    (pane: PaneView) => {
+      const result = pane.attached_pane
+        ? tmux.attach(pane.attached_pane)
+          ? { ok: true as const }
+          : { ok: false as const, message: `could not focus ${pane.attached_pane}` }
+        : jumpToAgent(store, pane);
+      setMessage(result.ok ? "" : result.message);
+    },
+    [store],
+  );
+
+  const mouseLiveRef = useRef({
+    panes,
+    move,
+    activatePane,
+    glanceLineCount: 0,
+    glanceVisibleLines: 1,
+  });
+  mouseLiveRef.current = {
+    panes,
+    move,
+    activatePane,
+    glanceLineCount: glance.split("\n").length,
+    glanceVisibleLines: Math.max(
+      1,
+      (placement === "bottom" ? Math.max(5, bodyRows - cardHeight) : bodyRows) - 2,
+    ),
+  };
+
+  useEffect(() => {
+    if (!process.stdin.isTTY || !process.stdout.isTTY) return;
+    enableMouse(process.stdout);
+    let rest = "";
+    const onData = (buffer: Buffer) => {
+      const parsed = parseMouseEvents(rest + buffer.toString("utf8"));
+      rest = parsed.rest;
+      const live = mouseLiveRef.current;
+      for (const event of parsed.events) {
+        if (event.kind === "press" && event.button === "left") {
+          for (const [key, node] of cardNodesRef.current) {
+            if (!pointInRect(event.x, event.y, measureElement(node))) continue;
+            const classified = classifyClick(clickMemoryRef.current, key, Date.now());
+            clickMemoryRef.current = classified.next;
+            if (classified.double) {
+              const pane = live.panes.find((entry) => paneKey(entry) === key);
+              if (pane) live.activatePane(pane);
+            } else {
+              setSelectedKey(key);
+            }
+            return;
+          }
+        }
+
+        if (event.kind !== "wheel") continue;
+        const delta = event.button === "up" ? -1 : event.button === "down" ? 1 : 0;
+        if (delta === 0) continue;
+
+        const rail = railNodeRef.current;
+        if (rail && pointInRect(event.x, event.y, measureElement(rail))) {
+          live.move(delta, "clamp");
+          continue;
+        }
+        const glanceBox = glanceNodeRef.current;
+        if (glanceBox && pointInRect(event.x, event.y, measureElement(glanceBox))) {
+          setGlanceScroll((offset) =>
+            clampGlanceScroll(offset + delta * 3, live.glanceLineCount, live.glanceVisibleLines),
+          );
+        }
+      }
+    };
+    process.stdin.on("data", onData);
+    return () => {
+      process.stdin.off("data", onData);
+      disableMouse(process.stdout);
+    };
+  }, []);
+
   useInput((input, key) => {
     if (input === "q" || (key.ctrl && input === "c")) {
       exit();
@@ -263,12 +367,7 @@ function App({ store, initial }: DashProps) {
     } else if (input === "G" || key.end) {
       jumpTo(panes.length - 1);
     } else if (key.return && selected) {
-      const result = selected.attached_pane
-        ? tmux.attach(selected.attached_pane)
-          ? { ok: true as const }
-          : { ok: false as const, message: `could not focus ${selected.attached_pane}` }
-        : jumpToAgent(store, selected);
-      setMessage(result.ok ? "" : result.message);
+      activatePane(selected);
     } else if (input === "s") {
       updatePrefs({ sort: nextSort(prefs.sort) });
     } else if (input === "f") {
@@ -285,6 +384,13 @@ function App({ store, initial }: DashProps) {
   });
 
   const glanceLines = glance.split("\n");
+  const glanceVisibleLines = Math.max(
+    1,
+    (placement === "bottom" ? Math.max(5, bodyRows - cardHeight) : bodyRows) - 2,
+  );
+  const glanceScrollMax = Math.max(0, glanceLines.length - glanceVisibleLines);
+  const glanceOffset = clampGlanceScroll(glanceScroll, glanceLines.length, glanceVisibleLines);
+  const glanceView = glanceLines.slice(glanceOffset, glanceOffset + glanceVisibleLines).join("\n");
   const glanceLine = [...glanceLines]
     .reverse()
     .find((line) => line.trim())
@@ -330,6 +436,7 @@ function App({ store, initial }: DashProps) {
       {notice ? <Text>{notice}</Text> : null}
       <Box flexDirection={placement === "right" ? "row" : "column"} flexGrow={1}>
         <Box
+          ref={railNodeRef}
           flexDirection="column"
           width={placement === "right" ? `${Math.round((1 - share) * 100)}%` : "100%"}
           height={placement === "bottom" ? cardHeight : undefined}
@@ -337,27 +444,43 @@ function App({ store, initial }: DashProps) {
           {window.above > 0 ? (
             <Text color={DASH_CHROME_COLOR.stale}>↑ {window.above} more</Text>
           ) : null}
-          {shown.map((pane) => (
-            <Card
-              key={paneKey(pane)}
-              pane={pane}
-              selected={paneKey(pane) === paneKey(selected ?? pane)}
-              glanceLine={pane === selected ? glanceLine : undefined}
-              now={now}
-            />
-          ))}
+          {shown.map((pane) => {
+            const key = paneKey(pane);
+            return (
+              <Card
+                key={key}
+                pane={pane}
+                selected={key === paneKey(selected ?? pane)}
+                glanceLine={pane === selected ? glanceLine : undefined}
+                now={now}
+                elementRef={(node) => {
+                  if (node) cardNodesRef.current.set(key, node);
+                  else cardNodesRef.current.delete(key);
+                }}
+              />
+            );
+          })}
           {window.below > 0 ? (
             <Text color={DASH_CHROME_COLOR.stale}>↓ {window.below} more</Text>
           ) : null}
         </Box>
         <Box
+          ref={glanceNodeRef}
           borderStyle="single"
           flexDirection="column"
           width={placement === "right" ? `${Math.round(share * 100)}%` : "100%"}
           height={placement === "bottom" ? Math.max(5, bodyRows - cardHeight) : undefined}
           paddingX={1}
         >
-          <Text wrap="truncate-end">{glance}</Text>
+          {glanceScrollMax > 0 ? (
+            <Text color={DASH_CHROME_COLOR.furniture} wrap="truncate-end">
+              {glanceOffset > 0 ? "↑ " : "  "}
+              {glanceOffset + 1}–{Math.min(glanceLines.length, glanceOffset + glanceVisibleLines)}/
+              {glanceLines.length}
+              {glanceOffset < glanceScrollMax ? " ↓" : ""}
+            </Text>
+          ) : null}
+          <Text wrap="truncate-end">{glanceView}</Text>
         </Box>
       </Box>
       <Footer columns={columns} prefs={prefs} />
@@ -381,9 +504,12 @@ export function registerDash(program: Command): void {
       if (!identity) return;
       const store = openStore();
       try {
-        const instance = render(<App store={store} initial={status(store, identity)} />);
+        const instance = render(<App store={store} initial={status(store, identity)} />, {
+          alternateScreen: true,
+        });
         await instance.waitUntilExit();
       } finally {
+        disableMouse(process.stdout);
         store.close();
       }
     });
