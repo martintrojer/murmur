@@ -31,4 +31,10 @@ export const DASH_CHROME_COLOR = {
   stale: "#f9e2af",
   furniture: "#6c7086",
   selectedFallback: "#b4befe",
+  /** Key chords in the footer / robot in the header. */
+  accent: "#cba6f7",
+  /** Preference values beside a key. */
+  text: "#cdd6f4",
+  /** Soft secondary facts in the header (fetched, sort). */
+  info: "#89b4fa",
 };

@@ -6,7 +6,14 @@ import { ssh } from "../channel.js";
 import { COLLECT_FLOOR_MS } from "../collector.js";
 import { DASH_CHROME, DASH_CHROME_COLOR, DASH_COLOR, DASH_GLYPH } from "../dash-paint.js";
 import { type DashPrefs, type DashSort, loadDashPrefs, saveDashPrefs } from "../dash-prefs.js";
-import { glanceNeedsRefresh, paneFingerprint } from "../dash-tick.js";
+import {
+  cardWindow,
+  fetchedText,
+  glanceNeedsRefresh,
+  moveIndex,
+  paneFingerprint,
+  scrollLabel,
+} from "../dash-tick.js";
 import { dashRows } from "../dash-view.js";
 import { tmux } from "../mux.js";
 import { glancePlacement, glanceShare, previewText, sessionNotice } from "../paint.js";
@@ -31,17 +38,28 @@ function nextSort(sort: DashSort): DashSort {
   return SORTS[(SORTS.indexOf(sort) + 1) % SORTS.length] ?? "priority";
 }
 
-function fetchedText(view: Status, now: number): string {
-  if (view.peers.length === 0) return "local";
-  if (view.peers.some((peer) => peer.fetched_at === null)) return "fetched never";
-  const fetched = view.peers.flatMap((peer) => (peer.fetched_at === null ? [] : [peer.fetched_at]));
-  const oldest = Math.min(...fetched);
-  return `fetched ${age(now - oldest) || "now"} ago`;
-}
-
 function count(view: Status, state: (typeof RENDER_PRIORITY)[number]): number {
   const needsHuman = state === "crashed" || state === "blocked";
   return view.counts[state] + (needsHuman ? view.orchestrated_counts[state] : 0);
+}
+
+/** Middle-dot cluster separator — floats between header/footer items. */
+function Dot() {
+  return <Text color={DASH_CHROME_COLOR.furniture}> · </Text>;
+}
+
+/**
+ * One footer hint: coloured chord, dim verb, optional value in text weight.
+ * Bold-everything made the line one slab; this keeps key ≠ label ≠ state.
+ */
+function Hint({ chord, label, value }: { chord: string; label: string; value?: string }) {
+  return (
+    <Text>
+      <Text color={DASH_CHROME_COLOR.accent}>{chord}</Text>
+      <Text dimColor> {label}</Text>
+      {value !== undefined ? <Text color={DASH_CHROME_COLOR.text}> {value}</Text> : null}
+    </Text>
+  );
 }
 
 function Card({
@@ -63,8 +81,8 @@ function Card({
 
   return (
     <Box
-      borderStyle={selected ? "bold" : "single"}
-      borderColor={selected ? DASH_COLOR[state] : undefined}
+      borderStyle={selected ? "double" : "single"}
+      borderColor={selected ? DASH_CHROME_COLOR.accent : DASH_CHROME_COLOR.furniture}
       flexDirection="column"
       paddingX={1}
     >
@@ -184,14 +202,33 @@ function App({ store, initial }: DashProps) {
     if (selected && selectedKey !== paneKey(selected)) setSelectedKey(paneKey(selected));
   }, [selected, selectedKey]);
 
-  const move = useCallback(
-    (offset: number) => {
-      if (panes.length === 0) return;
-      const index = (selectedIndex + offset + panes.length) % panes.length;
+  const notice = sessionNotice(view.peers, now);
+  const placement = glancePlacement(columns);
+  const share = glanceShare(placement, prefs.preview);
+  const headerRows = notice ? 2 : 1;
+  const bodyRows = Math.max(5, terminalRows - headerRows - 2);
+  const cardHeight =
+    placement === "bottom" ? Math.max(4, Math.floor(bodyRows * (1 - share))) : bodyRows;
+  const visibleCards = Math.max(1, Math.floor(cardHeight / 5));
+  const window = cardWindow(selectedIndex, panes.length, visibleCards);
+  const shown = panes.slice(window.first, window.first + window.shown);
+  const scroll = scrollLabel({ ...window, total: panes.length });
+  const halfPage = Math.max(1, Math.floor(visibleCards / 2));
+
+  const jumpTo = useCallback(
+    (index: number) => {
       const pane = panes[index];
       if (pane) setSelectedKey(paneKey(pane));
     },
-    [panes, selectedIndex],
+    [panes],
+  );
+
+  const move = useCallback(
+    (offset: number, mode: "wrap" | "clamp" = "wrap") => {
+      if (panes.length === 0) return;
+      jumpTo(moveIndex(selectedIndex, offset, panes.length, mode));
+    },
+    [jumpTo, panes.length, selectedIndex],
   );
 
   useInput((input, key) => {
@@ -201,6 +238,14 @@ function App({ store, initial }: DashProps) {
       move(1);
     } else if (input === "k" || key.upArrow) {
       move(-1);
+    } else if (key.pageDown || (key.ctrl && input === "d")) {
+      move(key.pageDown ? visibleCards : halfPage, "clamp");
+    } else if (key.pageUp || (key.ctrl && input === "u")) {
+      move(-(key.pageUp ? visibleCards : halfPage), "clamp");
+    } else if (input === "g" || key.home) {
+      jumpTo(0);
+    } else if (input === "G" || key.end) {
+      jumpTo(panes.length - 1);
     } else if (key.return && selected) {
       const result = selected.attached_pane
         ? tmux.attach(selected.attached_pane)
@@ -223,36 +268,48 @@ function App({ store, initial }: DashProps) {
     }
   });
 
-  const notice = sessionNotice(view.peers, now);
-  const placement = glancePlacement(columns);
-  const share = glanceShare(placement, prefs.preview);
-  const headerRows = notice ? 2 : 1;
-  const bodyRows = Math.max(5, terminalRows - headerRows - 2);
-  const cardHeight =
-    placement === "bottom" ? Math.max(4, Math.floor(bodyRows * (1 - share))) : bodyRows;
-  const visibleCards = Math.max(1, Math.floor(cardHeight / 5));
-  const first = Math.max(
-    0,
-    Math.min(selectedIndex - Math.floor(visibleCards / 2), panes.length - visibleCards),
-  );
-  const shown = panes.slice(first, first + visibleCards);
   const glanceLines = glance.split("\n");
   const glanceLine = [...glanceLines]
     .reverse()
     .find((line) => line.trim())
     ?.trim();
 
+  const stateCounts = RENDER_PRIORITY.filter((state) => count(view, state) > 0).map((state) => ({
+    state,
+    n: count(view, state),
+  }));
+
   return (
     <Box flexDirection="column" width={columns} height={terminalRows}>
-      <Box gap={2}>
-        <Text color={DASH_CHROME_COLOR.furniture}>{DASH_CHROME.robot}</Text>
-        {RENDER_PRIORITY.filter((state) => count(view, state) > 0).map((state) => (
-          <Text key={state} color={DASH_COLOR[state]} bold>
-            {DASH_GLYPH[state]} {count(view, state)}
-          </Text>
-        ))}
-        <Text dimColor>{fetchedText(view, now)}</Text>
-        <Text dimColor>sort {prefs.sort}</Text>
+      <Box>
+        <Text bold color={DASH_CHROME_COLOR.accent}>
+          {DASH_CHROME.robot}{" "}
+        </Text>
+        {stateCounts.length === 0 ? (
+          <Text color={DASH_CHROME_COLOR.furniture}>no agents</Text>
+        ) : (
+          stateCounts.map(({ state, n }, index) => (
+            <Text key={state}>
+              {index > 0 ? <Dot /> : null}
+              <Text bold color={DASH_COLOR[state]}>
+                {DASH_GLYPH[state]} {state} {n}
+              </Text>
+            </Text>
+          ))
+        )}
+        <Dot />
+        <Text color={DASH_CHROME_COLOR.info}>{fetchedText(view, now)}</Text>
+        <Dot />
+        <Text color={DASH_CHROME_COLOR.accent}>sort </Text>
+        <Text color={DASH_CHROME_COLOR.text}>{prefs.sort}</Text>
+        {scroll ? (
+          <>
+            <Dot />
+            <Text bold color={DASH_CHROME_COLOR.stale}>
+              {scroll}
+            </Text>
+          </>
+        ) : null}
       </Box>
       {notice ? <Text>{notice}</Text> : null}
       <Box flexDirection={placement === "right" ? "row" : "column"} flexGrow={1}>
@@ -261,6 +318,9 @@ function App({ store, initial }: DashProps) {
           width={placement === "right" ? `${Math.round((1 - share) * 100)}%` : "100%"}
           height={placement === "bottom" ? cardHeight : undefined}
         >
+          {window.above > 0 ? (
+            <Text color={DASH_CHROME_COLOR.stale}>↑ {window.above} more</Text>
+          ) : null}
           {shown.map((pane) => (
             <Card
               key={paneKey(pane)}
@@ -270,6 +330,9 @@ function App({ store, initial }: DashProps) {
               now={now}
             />
           ))}
+          {window.below > 0 ? (
+            <Text color={DASH_CHROME_COLOR.stale}>↓ {window.below} more</Text>
+          ) : null}
         </Box>
         <Box
           borderStyle="single"
@@ -281,13 +344,27 @@ function App({ store, initial }: DashProps) {
           <Text wrap="truncate-end">{glance}</Text>
         </Box>
       </Box>
-      <Text>
-        <Text bold>j/k</Text> select <Text bold>enter</Text> jump <Text bold>s</Text> sort:
-        <Text bold>{prefs.sort}</Text> <Text bold>f</Text> stale:
-        <Text bold>{prefs.hide_stale ? "off" : "on"}</Text> <Text bold>a</Text> crew:
-        <Text bold>{prefs.crew ? "on" : "off"}</Text> <Text bold>+/-</Text> preview{" "}
-        <Text bold>^r</Text> refresh <Text bold>q</Text> quit
-      </Text>
+      <Box>
+        <Hint chord="j/k" label="select" />
+        <Dot />
+        <Hint chord="^u/^d" label="page" />
+        <Dot />
+        <Hint chord="g/G" label="top/end" />
+        <Dot />
+        <Hint chord="enter" label="jump" />
+        <Dot />
+        <Hint chord="s" label="sort" value={prefs.sort} />
+        <Dot />
+        <Hint chord="f" label="stale" value={prefs.hide_stale ? "off" : "on"} />
+        <Dot />
+        <Hint chord="a" label="crew" value={prefs.crew ? "on" : "off"} />
+        <Dot />
+        <Hint chord="+/-" label="preview" />
+        <Dot />
+        <Hint chord="^r" label="refresh" />
+        <Dot />
+        <Hint chord="q" label="quit" />
+      </Box>
       {message ? <Text color="red">{message}</Text> : null}
     </Box>
   );

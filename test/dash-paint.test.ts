@@ -39,5 +39,8 @@ test("dash chrome uses Nerd Font glyphs and Catppuccin accents", () => {
     stale: "#f9e2af",
     furniture: "#6c7086",
     selectedFallback: "#b4befe",
+    accent: "#cba6f7",
+    text: "#cdd6f4",
+    info: "#89b4fa",
   });
 });
