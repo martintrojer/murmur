@@ -7,13 +7,18 @@
 One agent is blocked waiting on you. Which machine is it on? murmur answers
 that and jumps you there.
 
+**Talk to any agent without leaving the dashboard—even when it runs on another
+machine.** Press `i`, write a prompt, and send it straight to the selected tmux
+pane over SSH. Press `ctrl-e` to stop the agent. The dashboard stays open, so
+you can move between agents without moving between terminals.
+
 ## Surfaces
 
 | Command | Job |
 | --- | --- |
 | `murmur status` | Counts for a tmux status bar |
 | `murmur pick` | fzf jump list — type to narrow, enter jumps, `ctrl-a` / `--all` toggles crew |
-| `murmur dash` | Live cards + pane glance (screenshot above) |
+| `murmur dash` | Watch and talk to local or remote agents without leaving the dashboard |
 
 Orchestrated (`crew`) agents stay hidden unless they are `blocked` or `crashed`
 — their supervisor consumes anything else. Local jump is a window switch;
