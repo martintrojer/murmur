@@ -18,7 +18,7 @@ keystroke and jumps you to the agent, wherever it is running.
 That is captured from `headerRow` and `pickerRow` rather than typed by hand, so
 the column names are the ones the code prints. An idle `crew` row is deliberately
 absent: orchestrated agents are hidden unless they are `blocked` or `crashed`,
-since their supervisor consumes anything else. `M-a` or `--all` reveals them.
+since their supervisor consumes anything else. `ctrl-a` or `--all` reveals them.
 
 Pick a row, press enter. Local agents are a window switch; remote ones open over
 ssh.
@@ -322,10 +322,16 @@ this peer. Close it, then collect.
 bind -N "agent state picker" a display-popup -E -w 80% -h 60% "murmur pick"
 ```
 
-The picker is a jump list: enter jumps, typing narrows, and `M-a` toggles
+The picker is a jump list: enter jumps, typing narrows, and `ctrl-a` toggles
 orchestrated agents. Typing matches agent name, workstream or tmux session,
 host, and the state word, as literal substrings -- so `blocked` narrows to the
 blocked rows without a binding for it.
+
+### Dashboard
+
+Run `murmur dash` for a live dashboard with agent cards and pane glances. It
+uses Nerd Font glyphs and the Catppuccin Mocha palette, so configure your
+terminal with a Nerd Font. The footer lists the dashboard keys.
 
 `murmur status` prints per-state counts for a status bar. Everything else is
 `--help`.
