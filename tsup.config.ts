@@ -14,6 +14,9 @@ export default defineConfig({
   },
   clean: true,
   target: "node20",
+  esbuildOptions(options) {
+    options.jsx = "automatic";
+  },
   splitting: false,
   sourcemap: true,
   outDir: "dist",

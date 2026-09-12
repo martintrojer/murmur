@@ -22,6 +22,8 @@
     "resolveJsonModule": true,
     "isolatedModules": true,
     "verbatimModuleSyntax": true,
+    "jsx": "react-jsx",
+    "jsxImportSource": "react",
     "types": ["node"]
   },
   "include": ["src/**/*", "test/**/*"],
