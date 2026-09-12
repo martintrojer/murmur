@@ -6,6 +6,7 @@ import {
   fitFooterHints,
   formatFetchedAge,
   glanceNeedsRefresh,
+  glanceViewport,
   hintsWidth,
   moveIndex,
   paneFingerprint,
@@ -124,6 +125,12 @@ test("scrollLabel is silent when everything fits", () => {
   expect(scrollLabel({ first: 2, shown: 3, above: 2, below: 5, total: 10 })).toBe("↑2 3–5/10 ↓5");
   expect(scrollLabel({ first: 0, shown: 3, above: 0, below: 7, total: 10 })).toBe("1–3/10 ↓7");
   expect(scrollLabel({ first: 7, shown: 3, above: 7, below: 0, total: 10 })).toBe("↑7 8–10/10");
+});
+
+test("glanceViewport reserves a chrome row only when content overflows", () => {
+  expect(glanceViewport(5, 10)).toEqual({ visible: 8, chrome: false });
+  expect(glanceViewport(20, 10)).toEqual({ visible: 7, chrome: true });
+  expect(glanceViewport(0, 3)).toEqual({ visible: 1, chrome: false });
 });
 
 test("fitFooterHints drops low-priority items before wrapping", () => {

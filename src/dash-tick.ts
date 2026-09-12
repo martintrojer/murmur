@@ -89,6 +89,19 @@ export function scrollLabel(window: {
   return `${up}${from}\u2013${to}/${window.total}${down}`;
 }
 
+/**
+ * How many glance body lines fit in a bordered box, reserving one row for the
+ * scroll cue when the text is taller than the box.
+ */
+export function glanceViewport(
+  lineCount: number,
+  boxHeight: number,
+): { visible: number; chrome: boolean } {
+  const inner = Math.max(1, boxHeight - 2);
+  if (lineCount <= inner) return { visible: inner, chrome: false };
+  return { visible: Math.max(1, inner - 1), chrome: true };
+}
+
 export type FooterHint = {
   chord: string;
   /** Empty when the compact form drops the verb. */

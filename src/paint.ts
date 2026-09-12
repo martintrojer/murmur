@@ -17,7 +17,20 @@ export function glanceShare(placement: GlancePlacement, preview = 0.75): number 
   return placement === "bottom" ? 0.6 : preview;
 }
 
-const PREVIEW_MESSAGE_MAX = 300;
+/** Trailing capture-pane lines kept for a scrollable dash glance. */
+export const PREVIEW_PANE_TAIL_LINES = 2_000;
+
+export type PreviewOptions = {
+  /** How many trailing lines of capture-pane text to keep. */
+  paneTailLines?: number;
+};
+
+function tailLines(text: string, maxLines: number): string {
+  if (maxLines <= 0) return text;
+  const lines = text.split("\n");
+  if (lines.length <= maxLines) return text;
+  return lines.slice(-maxLines).join("\n");
+}
 
 // Same glyphs the tmux status bar and window labels use, so one symbol means
 // one thing in every surface. Ported from the dotfiles' _tmux_common.
@@ -328,6 +341,7 @@ export function previewText(
   // `needs_session` pays -- on the one path in murmur that cannot afford it.
   peers: Status["peers"],
   run?: GlanceRunner,
+  options: PreviewOptions = {},
 ): string {
   const state = renderState(agent);
   const colour = COLOUR[state] ?? "";
@@ -374,11 +388,9 @@ export function previewText(
   const gatedPeer = agent.local
     ? undefined
     : peers.find((peer) => peer.needs_session && peer.name === agent.host);
+  const paneTail = options.paneTailLines ?? PREVIEW_PANE_TAIL_LINES;
   const live = pane?.trimEnd()
-    ? [
-        `${DIM}\u2500\u2500 pane \u2500\u2500${RESET}`,
-        pane.trimEnd().slice(-PREVIEW_MESSAGE_MAX * 20),
-      ]
+    ? [`${DIM}\u2500\u2500 pane \u2500\u2500${RESET}`, tailLines(pane.trimEnd(), paneTail)]
     : [
         `${DIM}\u2500\u2500 pane \u2500\u2500${RESET}`,
         gatedPeer

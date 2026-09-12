@@ -29,13 +29,20 @@ import {
   fetchedText,
   fitFooterHints,
   glanceNeedsRefresh,
+  glanceViewport,
   moveIndex,
   paneFingerprint,
   scrollLabel,
 } from "../dash-tick.js";
 import { dashRows } from "../dash-view.js";
 import { tmux } from "../mux.js";
-import { glancePlacement, glanceShare, previewText, sessionNotice } from "../paint.js";
+import {
+  glancePlacement,
+  glanceShare,
+  PREVIEW_PANE_TAIL_LINES,
+  previewText,
+  sessionNotice,
+} from "../paint.js";
 import { type Status, status, statusWithCollect } from "../status.js";
 import { openStore, type Store } from "../store.js";
 import { age, oneLiner, type PaneView, RENDER_PRIORITY, renderState } from "../view.js";
@@ -230,13 +237,17 @@ function App({ store, initial }: DashProps) {
     const { selected: current, peers } = glanceRequestRef.current;
     if (!current) {
       setGlance("No agents");
+      setGlanceScroll(0);
       return;
     }
     // Local store changes can refresh each tick. Remote previews wait for a
     // selection or collect so their SSH capture cannot fire every second.
     if (selectionChanged || collectionChanged || (current.local && fingerprintChanged)) {
-      setGlance(previewText(store, current, peers));
-      setGlanceScroll(0);
+      // Pin to the end so the capture-pane fills the viewport; scroll up for facts.
+      setGlance(
+        previewText(store, current, peers, undefined, { paneTailLines: PREVIEW_PANE_TAIL_LINES }),
+      );
+      setGlanceScroll(Number.MAX_SAFE_INTEGER);
     }
   }, [selectedKey, collectRevision, selectedFingerprint, store]);
 
@@ -297,10 +308,14 @@ function App({ store, initial }: DashProps) {
     move,
     activatePane,
     glanceLineCount: glance.split("\n").length,
-    glanceVisibleLines: Math.max(
-      1,
-      (placement === "bottom" ? Math.max(5, bodyRows - cardHeight) : bodyRows) - 2,
-    ),
+    glanceVisibleLines: glanceViewport(
+      glance.split("\n").length,
+      glanceNodeRef.current && measureElement(glanceNodeRef.current).height > 0
+        ? measureElement(glanceNodeRef.current).height
+        : placement === "bottom"
+          ? Math.max(5, bodyRows - cardHeight)
+          : bodyRows,
+    ).visible,
   };
 
   useEffect(() => {
@@ -383,14 +398,17 @@ function App({ store, initial }: DashProps) {
     }
   });
 
+  const glanceBoxHeight = (() => {
+    const measured = glanceNodeRef.current ? measureElement(glanceNodeRef.current).height : 0;
+    if (measured > 0) return measured;
+    return placement === "bottom" ? Math.max(5, bodyRows - cardHeight) : bodyRows;
+  })();
   const glanceLines = glance.split("\n");
-  const glanceVisibleLines = Math.max(
-    1,
-    (placement === "bottom" ? Math.max(5, bodyRows - cardHeight) : bodyRows) - 2,
-  );
+  const glanceFrame = glanceViewport(glanceLines.length, glanceBoxHeight);
+  const glanceVisibleLines = glanceFrame.visible;
   const glanceScrollMax = Math.max(0, glanceLines.length - glanceVisibleLines);
   const glanceOffset = clampGlanceScroll(glanceScroll, glanceLines.length, glanceVisibleLines);
-  const glanceView = glanceLines.slice(glanceOffset, glanceOffset + glanceVisibleLines).join("\n");
+  const glanceViewLines = glanceLines.slice(glanceOffset, glanceOffset + glanceVisibleLines);
   const glanceLine = [...glanceLines]
     .reverse()
     .find((line) => line.trim())
@@ -469,18 +487,30 @@ function App({ store, initial }: DashProps) {
           borderStyle="single"
           flexDirection="column"
           width={placement === "right" ? `${Math.round(share * 100)}%` : "100%"}
-          height={placement === "bottom" ? Math.max(5, bodyRows - cardHeight) : undefined}
+          height={placement === "bottom" ? Math.max(5, bodyRows - cardHeight) : bodyRows}
           paddingX={1}
+          overflow="hidden"
         >
-          {glanceScrollMax > 0 ? (
-            <Text color={DASH_CHROME_COLOR.furniture} wrap="truncate-end">
-              {glanceOffset > 0 ? "↑ " : "  "}
+          {glanceFrame.chrome ? (
+            <Text color={DASH_CHROME_COLOR.stale} wrap="truncate-end">
+              {glanceOffset > 0 ? `↑ ${glanceOffset} more` : "↑ top"}
+              {" · "}
               {glanceOffset + 1}–{Math.min(glanceLines.length, glanceOffset + glanceVisibleLines)}/
               {glanceLines.length}
-              {glanceOffset < glanceScrollMax ? " ↓" : ""}
+              {" · "}
+              {glanceOffset < glanceScrollMax
+                ? `↓ ${glanceScrollMax - glanceOffset} more`
+                : "↓ end"}
             </Text>
           ) : null}
-          <Text wrap="truncate-end">{glanceView}</Text>
+          {glanceViewLines.map((line, slot) => {
+            const lineNo = glanceOffset + slot;
+            return (
+              <Text key={lineNo} wrap="truncate-end">
+                {line.length > 0 ? line : " "}
+              </Text>
+            );
+          })}
         </Box>
       </Box>
       <Footer columns={columns} prefs={prefs} />
