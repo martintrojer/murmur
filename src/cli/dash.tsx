@@ -4,10 +4,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { agentLabel, jumpToAgent, terminalText } from "../agents.js";
 import { ssh } from "../channel.js";
 import { COLLECT_FLOOR_MS } from "../collector.js";
+import { DASH_CHROME, DASH_CHROME_COLOR, DASH_COLOR, DASH_GLYPH } from "../dash-paint.js";
 import { type DashPrefs, type DashSort, loadDashPrefs, saveDashPrefs } from "../dash-prefs.js";
 import { dashRows } from "../dash-view.js";
 import { tmux } from "../mux.js";
-import { GLYPH, glancePlacement, glanceShare, previewText, sessionNotice } from "../paint.js";
+import { glancePlacement, glanceShare, previewText, sessionNotice } from "../paint.js";
 import { type Status, status, statusWithCollect } from "../status.js";
 import { openStore, type Store } from "../store.js";
 import { age, oneLiner, type PaneView, RENDER_PRIORITY, renderState } from "../view.js";
@@ -15,13 +16,6 @@ import { requireIdentity } from "./identity-guard.js";
 
 const REDRAW_MS = 1_000;
 const SORTS: DashSort[] = ["priority", "node", "age"];
-const ACCENT = {
-  crashed: "red",
-  blocked: "yellow",
-  done: "cyan",
-  running: "white",
-  idle: "gray",
-} as const;
 
 type DashProps = {
   store: Store;
@@ -59,7 +53,6 @@ function Card({
   glanceLine?: string;
 }) {
   const state = renderState(pane);
-  const colour = ACCENT[state];
   const stale = pane.freshness === "stale";
   const stream = pane.workstream ?? pane.session_name;
   const summary = oneLiner(pane, glanceLine);
@@ -68,17 +61,22 @@ function Card({
   return (
     <Box
       borderStyle={selected ? "bold" : "single"}
-      borderColor={selected ? colour : undefined}
+      borderColor={selected ? DASH_COLOR[state] : undefined}
       flexDirection="column"
       paddingX={1}
     >
-      <Text dimColor={stale} bold={selected} color={colour} wrap="truncate-end">
-        {GLYPH[state]} {agentLabel(pane)} {elapsed}
+      <Text bold color={DASH_COLOR[state]} wrap="truncate-end">
+        {DASH_GLYPH[state]} {agentLabel(pane)} {elapsed}
       </Text>
-      <Text dimColor={stale} wrap="truncate-end">
-        {pane.local ? "here" : `→ ${terminalText(pane.host)}`}
+      <Text wrap="truncate-end">
+        <Text color={pane.local ? DASH_CHROME_COLOR.here : DASH_CHROME_COLOR.remote}>
+          {pane.local
+            ? `${DASH_CHROME.here} here`
+            : `${DASH_CHROME.remote} ${terminalText(pane.host)}`}
+        </Text>
+        {pane.driver === "orchestrated" ? `  ${DASH_CHROME.crew}` : ""}
         {stream ? `  ${terminalText(stream)}` : ""}
-        {stale ? "  stale" : ""}
+        {stale ? <Text color={DASH_CHROME_COLOR.stale}> {DASH_CHROME.stale} stale</Text> : null}
       </Text>
       <Text dimColor={stale || !summary} wrap="truncate-end">
         {summary || " "}
@@ -223,9 +221,10 @@ function App({ store, initial }: DashProps) {
   return (
     <Box flexDirection="column" width={columns} height={terminalRows}>
       <Box gap={2}>
+        <Text color={DASH_CHROME_COLOR.furniture}>{DASH_CHROME.robot}</Text>
         {RENDER_PRIORITY.filter((state) => count(view, state) > 0).map((state) => (
-          <Text key={state} color={ACCENT[state]} bold>
-            {GLYPH[state]} {count(view, state)}
+          <Text key={state} color={DASH_COLOR[state]} bold>
+            {DASH_GLYPH[state]} {count(view, state)}
           </Text>
         ))}
         <Text dimColor>{fetchedText(view, now)}</Text>
@@ -257,9 +256,12 @@ function App({ store, initial }: DashProps) {
           <Text wrap="truncate-end">{glance}</Text>
         </Box>
       </Box>
-      <Text dimColor>
-        j/k select enter jump s sort f stale:{prefs.hide_stale ? "off" : "on"} a crew:
-        {prefs.crew ? "on" : "off"} +/- preview ^r refresh q quit
+      <Text>
+        <Text bold>j/k</Text> select <Text bold>enter</Text> jump <Text bold>s</Text> sort:
+        <Text bold>{prefs.sort}</Text> <Text bold>f</Text> stale:
+        <Text bold>{prefs.hide_stale ? "off" : "on"}</Text> <Text bold>a</Text> crew:
+        <Text bold>{prefs.crew ? "on" : "off"}</Text> <Text bold>+/-</Text> preview{" "}
+        <Text bold>^r</Text> refresh <Text bold>q</Text> quit
       </Text>
       {message ? <Text color="red">{message}</Text> : null}
     </Box>
