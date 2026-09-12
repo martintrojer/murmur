@@ -154,16 +154,17 @@ test("the picker binds only jump and the crew toggle", async () => {
     "ctrl-w",
     "ctrl-d",
     "ctrl-x",
+    "alt-a",
   ]) {
     expect(joined, gone).not.toContain(gone);
   }
   // The crew toggle survives: it is the one key that changes WHICH agents the
   // list holds, which no amount of typing can do.
-  expect(joined).toContain("alt-a");
+  expect(joined).toContain("ctrl-a");
 
-  // And the key legend is gone from the header, leaving the notice and the
-  // column labels -- the action and the grid, no furniture.
+  // Keep one line of furniture for the nonstandard population toggle.
   const header = captured[captured.indexOf("--header") + 1] ?? "";
+  expect(header).toContain("ctrl-a crew");
   expect(header).not.toContain("refresh");
   expect(header).not.toContain("filter:");
   expect(header).not.toContain("enter focus");
@@ -334,16 +335,16 @@ test("a cold remote jump can be cancelled after the warning", async () => {
   expect(jumped).toBe(false);
 });
 
-test("a crew row revealed by alt-a can actually be jumped to", async () => {
+test("a crew row revealed by ctrl-a can actually be jumped to", async () => {
   // The bug: `runPick` built its list ONCE, filtered by isVisible, and resolved
-  // fzf's answer against that filtered array. alt-a's reveal is a
+  // fzf's answer against that filtered array. ctrl-a's reveal is a
   // `reload(... pick --rows --all)` -- rows printed by a SUBPROCESS -- so the
   // parent's array never learned about the crew pane whose row fzf was now
   // displaying. find() returned undefined and the handler did a bare `return`:
   // enter did nothing, exit 0, no message.
   //
   // Drives the parent WITHOUT --all (the state the user is in when they press
-  // alt-a) and hands back the hidden pane's key, which is what fzf does after a
+  // ctrl-a) and hands back the hidden pane's key, which is what fzf does after a
   // reveal.
   agent("%1");
   agent("%9", "orchestrated");

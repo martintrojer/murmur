@@ -21,7 +21,7 @@ type PickOptions = { all?: boolean };
  * Injectable because everything interesting about the picker happens BETWEEN
  * those two calls -- which id fzf returns, and which agent that id resolves
  * to -- and with both hard-wired that stretch had no coverage at all. The crew
- * rows revealed by alt-a looked selectable but could not be jumped to for
+ * rows revealed by ctrl-a looked selectable but could not be jumped to for
  * exactly as long as this seam did not exist.
  */
 type PickDeps = {
@@ -81,7 +81,7 @@ function spawnCollect(self: string): void {
  *
  * Doubles as the toggle's state: fzf exposes the prompt to a binding through
  * $FZF_PROMPT and nothing else is mutable, so this is both the label a human
- * reads and the flag the alt-a transform branches on.
+ * reads and the flag the ctrl-a transform branches on.
  */
 const CREW_MARK = "crew ";
 
@@ -125,7 +125,9 @@ export async function runPick(
 
   if (agents.length === 0) {
     process.stdout.write(
-      hidden ? `No human agents  (+${hidden} crew — rerun with --all)\n` : "No agents\n",
+      hidden
+        ? `No human agents  (+${hidden} crew — press ctrl-a or rerun with --all)\n`
+        : "No agents\n",
     );
     return;
   }
@@ -188,15 +190,12 @@ export async function runPick(
         // FIRST, and only when it applies: the one header line that asks for an
         // action, so nothing static may precede it.
         sessionNotice(view.peers) ?? "",
-        // No key legend. Enter selects and typing narrows in every fzf there is,
-        // and three dim lines teaching that were furniture in a popup 60% tall --
-        // the notice above had to compete with them. `murmur dash` is the screen
-        // for anything richer than a jump.
+        "ctrl-a crew",
         headerRow(showHost),
       ]
         .filter(Boolean)
         .join("\n"),
-      // M-a toggles the POPULATION, which is what "all" means everywhere else in
+      // Ctrl-a toggles the POPULATION, which is what "all" means everywhere else in
       // murmur. It used to be the "clear the query" key, also labelled "all",
       // and that collision is what made it look broken: it emptied the query
       // instead of revealing the crew rows named two lines below. Clearing is
@@ -209,7 +208,7 @@ export async function runPick(
       // the prompt, the only mutable string fzf exposes to a binding. CREW_MARK
       // rides at the front of it: visible as a label, readable via $FZF_PROMPT.
       "--bind",
-      `alt-a:transform:[[ $FZF_PROMPT == "${CREW_MARK}"* ]] && echo "reload(${process.execPath} ${self} pick --rows)+change-prompt(${basePrompt})" || echo "reload(${process.execPath} ${self} pick --rows --all)+change-prompt(${CREW_MARK}${basePrompt})"`,
+      `ctrl-a:transform:[[ $FZF_PROMPT == "${CREW_MARK}"* ]] && echo "reload(${process.execPath} ${self} pick --rows)+change-prompt(${basePrompt})" || echo "reload(${process.execPath} ${self} pick --rows --all)+change-prompt(${CREW_MARK}${basePrompt})"`,
       "--no-select-1",
       "--no-exit-0",
     ],
@@ -225,7 +224,7 @@ export async function runPick(
   const [selectedHost, selected] = selection.split("\t");
   if (!selected) return;
   // A fresh read of the FULL list, not `view` and not `agents`. The rows fzf
-  // offered can have come from the alt-a reload subprocess, which
+  // offered can have come from the ctrl-a reload subprocess, which
   // collect into the same store, so a pane only they discovered is absent from
   // this process's launch snapshot -- and filtering is a presentation concern
   // that must not gate the action. Resolving against either made the freshest
@@ -292,7 +291,7 @@ export async function runPick(
 async function runRows(store: Store, options: PickOptions = {}): Promise<void> {
   const identity = requireIdentity();
   if (!identity) return;
-  // Unfloored: this backs the alt-a reload, which is a person asking now, and a
+  // Unfloored: this backs the ctrl-a reload, which is a person asking now, and a
   // reveal that skipped the fetch would be a key that silently does nothing.
   // The launch-time background collect is the floored one, in `spawnCollect`.
   const view = await statusWithCollect(store, identity);
