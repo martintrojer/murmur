@@ -1,5 +1,17 @@
 # Agent notes
 
+## Docs
+
+| Doc | Reach when |
+| --- | --- |
+| [README.md](README.md) | product surfaces, install one-liner, what murmur is not |
+| [docs/setup.md](docs/setup.md) | tmux clear hooks, `murmur notify` for Codex/Cursor, peers, doctor, jump overrides |
+| [SSH.md](SSH.md) | BatchMode, warm ControlMaster, `MaxSessions 1`, Eternal Terminal |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | activity / attention / freshness model, single-writer invariants, design costs, known gaps |
+
+Working specs under `docs/specs/` stay local and gitignored. Do not treat them as
+shipped truth; prefer ARCHITECTURE and the code.
+
 ## Always typecheck, lint and format clean
 
 Non-negotiable. `main` is clean at every commit; there is no "fix lint later"
@@ -22,7 +34,9 @@ npm run lint:fix   # biome check --write: fixes lint AND formatting
 
 ## npm registry proxy
 
-The dev shell can set `HTTPS_PROXY` and `https_proxy` to an unavailable local proxy. If `npm install` stalls or reports a proxy `503`, confirm the problem with:
+The dev shell can set `HTTPS_PROXY` and `https_proxy` to an unavailable local
+proxy. If `npm install` stalls or reports a proxy `503`, confirm the problem
+with:
 
 ```sh
 curl -I --connect-timeout 5 https://registry.npmjs.org/commander

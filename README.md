@@ -2,63 +2,32 @@
 
 **Every coding agent you have running, on every machine, in one list.**
 
-You have agents on your laptop, your desktop, and a box somewhere else. One is
-blocked waiting on you. Which one?
+![murmur dash — cards on the left, pane glance on the right](docs/dash.png)
 
-Without murmur you walk the machines to find out. murmur answers in one
-keystroke and jumps you to the agent, wherever it is running.
+One agent is blocked waiting on you. Which machine is it on? murmur answers
+that and jumps you there.
 
-```
-    state    agent                          stream        host           age / flags
-  ! blocked  review the auth change         api           → devbox       4m
-  ▶ running  Fix the picker filter          murmur          here
-  ✓ done     migrate the fixtures           api           → devbox       12m
-```
+## Surfaces
 
-That is captured from `headerRow` and `pickerRow` rather than typed by hand, so
-the column names are the ones the code prints. An idle `crew` row is deliberately
-absent: orchestrated agents are hidden unless they are `blocked` or `crashed`,
-since their supervisor consumes anything else. `ctrl-a` or `--all` reveals them.
+| Command | Job |
+| --- | --- |
+| `murmur status` | Counts for a tmux status bar |
+| `murmur pick` | fzf jump list — type to narrow, enter jumps, `ctrl-a` / `--all` toggles crew |
+| `murmur dash` | Live cards + pane glance (screenshot above) |
 
-Pick a row, press enter. Local agents are a window switch; remote ones open over
-ssh.
+Orchestrated (`crew`) agents stay hidden unless they are `blocked` or `crashed`
+— their supervisor consumes anything else. Local jump is a window switch;
+remote jump opens over ssh (or your `--jump-command`).
 
-## What it is
-
-- **A state layer over tmux.** tmux owns your panes; murmur owns the answer to
-  "what is every agent doing right now".
-- **Reported state, not scraped.** A pi extension reports from inside the agent,
-  so a crash is detected from a pid rather than guessed from output.
-- **Current state only.** Each node publishes one complete snapshot. No history
-  and nothing to replay, which is why a peer's answer is replaced in one write
-  and absence means absence.
-- **No daemon, no socket, no master.** Peers are pulled over ssh when you run a
-  command. Every node aggregates; none is special.
-- **Fast with one machine.** The picker paints from cache and never waits for a
-  network fetch. Zero peers is the common case and nothing about it is degraded.
-
-## What it is not
-
-- **Not an orchestrator.** It observes and connects, never places work. That is
-  [`mu`](https://github.com/martintrojer/mu)'s job.
-- **Not a remote terminal.** Glance at a pane or jump to it; there is no frame
-  streaming or resize negotiation. That deferral is most of why murmur is small.
-- **Not a multiplexer.** tmux stays. See
-  [ARCHITECTURE.md](ARCHITECTURE.md#why-not-something-else) for how murmur
-  relates to adjacent tools.
-
-## Requirements
-
-tmux, [pi](https://github.com/earendil-works/pi-coding-agent), `fzf`, and Node
-20+. For more than one machine: ssh access, and murmur installed on each.
-
-**Agents must run inside tmux**, on every machine. A tmux pane is how murmur
-addresses an agent, so a pi started in a plain terminal records nothing and
-never appears in the picker. That is deliberate: there would be no way to jump
-to it. Remote agents need tmux on the remote too, since the jump is
-`ssh -t <host> tmux attach`.
+`murmur dash` wants a [Nerd Font](https://www.nerdfonts.com/) and a Catppuccin
+Mocha terminal. Keys: `j`/`k` select, enter jump, click selects, double-click
+jumps, wheel scrolls the card rail or the glance, `s` cycles sort, `q` quits.
+`s` **node** sort is local cards first, then remotes A–Z.
 
 ## Install
+
+Needs tmux, [pi](https://github.com/earendil-works/pi-coding-agent), `fzf`, and
+Node 20+. Multi-machine: ssh access, murmur on each node.
 
 On every node that runs agents:
 
@@ -68,350 +37,41 @@ murmur init      # this node's identity
 murmur link pi   # install the agent-side extension
 ```
 
-`link pi` writes a one-line extension into `~/.pi/agent/extensions/` that
-re-exports this installation, so `npm install -g` is the whole upgrade and
-there is nothing to re-run. Running agents keep the old code until they
-restart, which is true of any extension change.
+Agents must run **inside tmux**. A pane is the address; without one there is
+nothing to jump to. Remote agents need tmux on the remote too — the jump is
+`ssh -t <host> tmux attach` (unless you override it).
 
-Re-run `link pi` only if the install path itself moves. `link pi --copy`
-inlines the extension instead, which pins it to the version that wrote it and
-does need re-linking after every upgrade — use it only if the extension has to
-keep working when the murmur install is gone.
+Add focus hooks so looking at a finished agent clears its badge — see
+[docs/setup.md](docs/setup.md#tmux-focus-hooks). Wire Codex / Cursor /
+opencode notify hooks in the same file.
 
-Order matters: without `murmur init` the extension loads and records nothing,
-because a node with no identity has nothing to publish state as. `link pi` says
-so if you skip it.
-
-Also on every node, in `.tmux.conf`, so a finished agent stops asking for
-attention once you look at it:
-
-```tmux
-set-hook -g after-select-pane      "run-shell -b 'murmur clear --pane #{pane_id}'"
-set-hook -g after-select-window    "run-shell -b 'murmur clear --pane #{pane_id}'"
-set-hook -g client-session-changed "run-shell -b 'murmur clear --pane #{pane_id}'"
-```
-
-These are per node and not optional. `murmur clear` is the only thing that
-acknowledges an attention request, and a node's own snapshot is what every peer
-reads — so a node without these hooks leaves its finished agents marked `done` in
-*every* peer's picker, not only its own status bar. Verify with `tmux show-hooks
--g`: `set-hook` accepts a hook name your tmux does not have and exits 0, so a
-wrong name fails silently.
-
-Focus can only ever cancel a request for attention. It cannot stop a running
-agent or alter anything the agent reported about itself, so there is no way to
-wire these hooks such that looking at a pane damages the agent in it.
-
-The pane id is passed explicitly because hooks run in the tmux server, where
-`$TMUX_PANE` is unset, and because the badge belongs to the window while "you
-looked at it" is true of one pane. Without it, a window holding an agent and a
-shell clears when you focus the shell.
-
-### Harnesses other than pi
-
-pi reports from inside itself, through the extension. codex, opencode, and the
-Cursor CLI have no such hook -- they can only run a command when something
-happens -- so they use `murmur notify`, which records an attention request for
-the pane it runs in.
-
-This path is attention only: no ownership, no `running`/`idle`, no crash
-detection. For those you need an in-process reporter, which only pi has today.
-
-#### Codex
-
-```toml
-# ~/.codex/config.toml
-notify = ["murmur", "notify", "--source", "codex"]
-```
-
-**No `sh -lc` wrapper, and that is load-bearing.** Codex appends the event JSON
-as one more argument, and `sh -lc '<script>' <arg>` assigns that argument to
-`$0` rather than `$1` — so a wrapped hook swallows the payload and murmur never
-sees which event fired. Exec murmur directly, or if you need a shell, give it a
-placeholder and forward explicitly:
-
-```toml
-notify = ["/bin/sh", "-lc", "exec murmur notify --source codex \"$@\"", "codex-notify"]
-```
-
-The payload is what decides the kind. Codex fires exactly one event,
-`agent-turn-complete` — the turn ended and the agent is waiting for you — which
-murmur records as `done`, the same fact pi's extension reports. opencode's
-`session.idle` means the same thing. **An event murmur does not recognise is
-recorded as `blocked`**, so a harness murmur has never heard of still puts a row
-in front of you rather than filing it as handled.
-
-Drop `--title Codex` if you have it. The message now falls back to the payload's
-`last-assistant-message`, so a row says what the agent actually did; a title
-pins every row to the harness name, which the `source` column already carries.
-
-The same fields may arrive as a JSON object on stdin instead, which is
-opencode's plugin form. argv is preferred when both are present, and flags still
-beat the payload, so `--event-type` can pin the meaning of an event murmur does
-not know.
-
-#### Cursor CLI
-
-Cursor runs hooks from `~/.cursor/hooks.json` (user) or `.cursor/hooks.json`
-(project). The `stop` hook fires when a turn ends and writes JSON on stdin —
-`hook_event_name` plus `status` (`completed`, `aborted`, or `error`). murmur
-reads that shape directly:
-
-```json
-{
-  "version": 1,
-  "hooks": {
-    "stop": [
-      {
-        "command": "murmur notify --source cursor"
-      }
-    ]
-  }
-}
-```
-
-`status: completed` becomes `done`; `aborted` or `error` becomes `blocked`. The
-agent must run inside tmux so `$TMUX_PANE` names the pane. Interactive `agent`
-sessions are the target; non-interactive `agent -p` has been observed to omit
-`stop`, so those runs stay invisible on this path.
-
-This is not the same depth as pi. Cursor only offers out-of-process hooks, so
-murmur cannot claim the pane or report activity from them.
-
-**A hook is not an interactive shell, so check that `murmur` resolves in it.**
-A notify hook inherits the PATH of whatever launched the harness, and `sh -l`
-does not fix that -- `/bin/sh` is not your login shell and does not read your
-zsh profile. A harness started from a terminal inherits a PATH with your npm
-prefix on it and works; one started by a launcher, a daemon or a GUI may not,
-and the failure is silent because a notify hook's output goes nowhere. Verify
-from inside the harness, not from your terminal:
+### Watch more than one machine
 
 ```bash
-murmur notify --source probe --message reachable && murmur status
-# then undo it, or the pane stays badged:
-murmur clear --pane "$TMUX_PANE"
-```
-
-The probe is a real attention request: it names no event, so it records
-`blocked` and badges the window, which is what makes it a genuine test of the
-path. `murmur clear` is what takes it back, and focusing the pane does the same
-if you have the hooks above installed.
-
-If `murmur` is not reachable there, give the hook the absolute path
-(`command -v murmur` from your shell) rather than relying on PATH.
-
-`notify` is the one path where a process that does not own a pane may write
-about it, and it is narrow by construction rather than by convention: an
-attention request has no field for an agent id, a pid, an activity or any owner
-metadata, so it cannot make a claim about a process even by mistake. It says
-`done` or `blocked` and nothing else — never `crashed`, which needs the pid only
-reconciliation holds, and never an activity. Outside tmux it records nothing and
-exits 0, so it cannot break the caller's own exit code.
-
-A pane reached only this way — a codex or Cursor agent murmur never
-instrumented — is a full row in the list: it shows up, it is filterable, and
-enter jumps to it.
-
-Then, on whichever machine you want to watch from, add the peers and bind the
-picker to a key:
-
-```bash
-murmur peer list         # your peers, and when each was last seen
-murmur peer list --all   # also ssh hosts that could become peers
-murmur peer add devbox   # an ssh target; identity is discovered
-murmur doctor            # survey each peer over ssh: what only a fleet view shows
-murmur doctor --topology # also probe who can reach whom, and compute hub options
-```
-
-`peer list` reads local state: what you configured, and when you last heard from
-it. `doctor` dials out and asks each peer about *itself* — the only way to see
-what no local surface can: **membership is per node, so peering a machine does
-not mean it peers you.** If it does not, its picker cannot see your agents.
-
-`doctor` writes nothing and repairs nothing; it prints the commands. Exit 0 for
-observations, 1 only for a real problem, so it is safe in a script.
-
-```
-$ murmur doctor
-Surveyed 4 peers, 4 answered.
-5 observations, nothing broken.
-
-Not visible to the fleet
-  mtrojer-mac  none of the 4 surveyed peers can see this node
-
-One-way peering
-  These do not peer this node, so their pickers cannot see its agents.
-  bubba     does not peer mtrojer-mac
-  gardenpc  does not peer mtrojer-mac
-
-Do this
-  ssh bubba murmur peer add mtrojer-mac
-  ssh gardenpc murmur peer add mtrojer-mac
-```
-
-Suggestions name this node as it calls itself, and that name may not resolve from
-the peer's side — hence "check", not "run for you". `peer add` accepts a target
-that does not answer yet and discovers identity on the first collect, so trying
-costs nothing.
-
-`--topology` is opt-in: it costs one dial per ordered pair (4 peers is 20) where
-the survey costs one per peer. Plain `doctor` answers "is my fleet mutual?";
-`--topology` answers "what shapes are possible here?", which you ask once while
-setting up.
-
-```
-$ murmur doctor --topology
-Reachability  20 ordered pairs probed across 5 nodes
-               REACHES                 CANNOT REACH
-  mtrojer-mac  all 4                   -
-  bubba        -                       mtrojer-mac gardenpc linuxpc macmini
-  linuxpc      gardenpc macmini        mtrojer-mac bubba
-  macmini      bubba gardenpc linuxpc  mtrojer-mac
-
-Hub  linuxpc  serves {linuxpc, macmini}, leaves out mtrojer-mac, bubba, gardenpc
-```
-
-Which node *can* hub is arithmetic on that matrix, not a preference. When none
-qualifies, nothing is recommended and the partition is reported — a hub half the
-fleet cannot reach is worse than no hub. A pair whose target was not
-demonstrably up reads `unknown`, not unreachable: a sleeping laptop and a
-firewall need different fixes.
-
-A star also costs something the output states every time it names one: spokes see
-the hub and the hub sees every spoke, but **spokes do not see each other**, since
-`export` publishes local panes only.
-
-Nodes being asleep or switched off is the normal state of a fleet, so nothing
-warns about it on a polling path: `murmur status` and `murmur pick` stay silent
-whatever the peers are doing. `murmur peer list` has a LAST SEEN column, and
-`murmur collect` -- which you run deliberately -- prints one line per peer it
-could not reach.
-
-## Jumping to a host that caps ssh sessions
-
-A peer carries two ways to reach it. `target` is for a *command* and is always
-ssh: it is what the collector uses. The **jump command** is for a *human*, and
-need not be ssh at all.
-
-```bash
-murmur peer set dev --jump-command 'et dev -c "tmux attach -t {pane}"'
-```
-
-murmur substitutes `{pane}` and runs the rest unparsed, so the value can be a
-site wrapper with its own flags. The default reproduces
-`ssh -t <target> tmux attach`, so a peer you never configure behaves as before.
-
-This matters where an sshd sets `MaxSessions 1`. There, an interactive `ssh`
-holds the host's only session channel for as long as you sit in it, so your own
-jump blocks the collector that would have shown you the agent -- and ssh reports
-it as `Permission denied (keyboard-interactive)`, which reads as a credentials
-problem. Eternal Terminal holds no ssh session at all, so a jump through it
-costs the capped slot nothing. Measured on such a host: with a nested `tmux
-attach` live over ET, `ssh <host> true` and a concurrent `murmur collect` both
-succeeded throughout.
-
-When a collect does hit that wall, murmur now names the cause rather than
-repeating ssh's guess:
-
-```
-murmur: dev: ssh session limit reached -- pane %210 is your own attachment to
-this peer. Close it, then collect.
-```
-
-```tmux
+murmur peer add devbox
+murmur doctor            # is peering mutual?
 bind -N "agent state picker" a display-popup -E -w 80% -h 60% "murmur pick"
 ```
 
-The picker is a jump list: enter jumps, typing narrows, and `ctrl-a` toggles
-orchestrated agents. Typing matches agent name, workstream or tmux session,
-host, and the state word, as literal substrings -- so `blocked` narrows to the
-blocked rows without a binding for it.
+Peering is one-way until both sides add each other. Hard ssh cases (second
+factor / `BatchMode`, `MaxSessions 1`, Eternal Terminal): [SSH.md](SSH.md).
 
-### Dashboard
+## What it is / is not
 
-Run `murmur dash` for a live dashboard with agent cards and pane glances. It
-uses Nerd Font glyphs and the Catppuccin Mocha palette, so configure your
-terminal with a Nerd Font. The footer lists the dashboard keys.
+- **Is:** a state layer over tmux — reported from inside the agent (not scraped
+  from pane output), pulled peer-to-peer over ssh. No daemon. Current snapshot
+  only; a peer answer is replaced whole, and absence means absence.
+- **Is not:** an orchestrator ([`mu`](https://github.com/martintrojer/mu)
+  places work), a remote terminal, or a multiplexer replacement.
 
-`murmur status` prints per-state counts for a status bar. Everything else is
-`--help`.
+## Docs
 
-## Jumping to a remote agent
+| Doc | For |
+| --- | --- |
+| [docs/setup.md](docs/setup.md) | Hooks, harness notify, peers, doctor, jump |
+| [SSH.md](SSH.md) | Auth, session caps, control masters |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | Model, design choices, gaps |
+| [AGENTS.md](AGENTS.md) | Repo gate for agents working on murmur |
 
-A remote jump runs `ssh -t <host> tmux attach` in its own local tmux session,
-named after the peer with a trailing `~`. That session sets two options on
-itself, which is why it does not feel like nested tmux:
-
-- `status off` — the remote's bar is the only one on screen.
-- `prefix None` — `^b` goes straight to the remote. No `^b b` to learn.
-
-Both are per-session, so your other sessions are unaffected. Leaving the remote
-(inner `^b d`, the session ending, or the ssh dropping) returns you to the window
-you jumped from and destroys the wrapper. Jumping to the same host twice reuses
-one session.
-
-On a host that caps sessions per connection, a jump holds the one slot for as
-long as you stay — so that peer stops collecting until you detach, and a jump
-attempted while the slot is busy fails outright. Peek and back out; see
-[SSH.md](SSH.md).
-
-The tradeoff: inside the wrapper the local tmux has no prefix, so you cannot
-reach it. For an escape hatch, bind one key in the root table:
-
-```tmux
-# Alt-Escape detaches out of a murmur wrapper session, and does nothing
-# elsewhere. Deliberately not M-b or another Alt letter: a root-table binding
-# is consumed before any pane, so it would eat the picker's own M-b / M-w /
-# M-d / M-x filters -- the same class of collision that made ^b useless there.
-bind -n M-Escape if-shell -F '#{m:*~,#{session_name}}' detach-client
-```
-
-Outside tmux none of this applies: `murmur pick` runs the ssh directly, which is
-already full-screen, and you land back at your shell prompt on exit.
-
-## Status
-
-**0.2.4.** In daily use on one machine and verified across a five-peer fleet
-over real ssh, including a host that demands a second factor per connection. It
-is new and not battle-tested. The known gaps and the accepted limitations are
-listed at the end of [ARCHITECTURE.md](ARCHITECTURE.md#known-gaps).
-
-**A host that demands interactive auth needs a master session open.** murmur
-never prompts — every ssh it runs sets `BatchMode=yes` — so a machine that
-refuses an unattended login is only collectable while an authenticated
-connection already exists for murmur to ride:
-
-```sh
-ssh -MNf -S '~/.ssh/control/%r@%h:%p' dev   # answer the second factor once
-```
-
-While that master lives, collects cost ~10ms. While it does not, the peer is
-skipped rather than dialled on every tick, its cached rows still list with their
-real age, and the picker header names it with the command that fixes it.
-
-[SSH.md](SSH.md) covers the rest: why each flag is there, what to do on a host
-that caps sessions per connection (`MaxSessions 1`, where the error reads like a
-credentials failure and is not), why Eternal Terminal pairs well with murmur,
-and how to recover a wedged master.
-
-**All nodes must speak the same snapshot format.** The format is versioned and a
-mismatch is rejected rather than guessed at, so a node on a different snapshot
-version is reported as reachable-but-broken with the reason on it. Patch versions
-interoperate freely — 0.2.0 and 0.2.4 both speak snapshot 1 — and `murmur peer
-list` shows each peer's version, so a bad pairing is visible before you start
-debugging it. Upgrading the fleet together is still the simplest way to stay out
-of it.
-
-## Documentation
-
-[ARCHITECTURE.md](ARCHITECTURE.md): the three independent facts the model rests
-on, the design choices and what they cost, what murmur deliberately cannot do,
-and what is unfinished.
-
-[SSH.md](SSH.md): reaching a peer when plain ssh is not enough — master
-sessions, hosts that cap sessions per connection, Eternal Terminal, and
-recovering a wedged control socket.
-
----
-
-*A murmuration: many independent agents, no leader, coherent from a distance.*
+**0.2.6.** In daily use; not battle-tested. Known gaps live at the end of
+[ARCHITECTURE.md](ARCHITECTURE.md#known-gaps).

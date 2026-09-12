@@ -21,7 +21,7 @@ pi agent ──in-process── murmur store ── state.db   (one per node)
                                             │
                                     ssh murmur export
                                             │
-                                collector ── view ── picker
+                                collector ── view ── status / pick / dash
                                                        │
                                      jump: local switch, or ssh -t
 ```
@@ -31,6 +31,10 @@ panes. `murmur export` prints that state as a single complete JSON document — 
 **snapshot**. Any node pulls its peers' snapshots over ssh, caches one per peer,
 and renders the union as an attention-sorted list. No daemon, no listening
 socket, no master node.
+
+Three paint surfaces share that list: `status` (counts), `pick` (fzf jump),
+`dash` (cards + pane glance). Jump is the same whether you left from pick or
+dash.
 
 murmur observes and connects. It does not place work. That is an orchestrator's
 job, and mixing the two is how you end up owning scheduling, credentials and
@@ -503,7 +507,11 @@ crash.
 `paneViews(store, identity, now)` builds `PaneView[]` from `store.localPanes()`
 and each cached peer snapshot, through one mapping function. `renderState`
 picks one word, `viewSort` orders the list, and `RENDER_PRIORITY` is the single
-ordering table both the status bar and the picker import rather than restating.
+ordering table `status`, `pick`, and `dash` import rather than restating.
+
+`dash` can reorder for display (`priority` is `viewSort`; `node` is local then
+host A–Z; `age` is freshest first). Those toggles live in the dash UI only. They
+do not change `RENDER_PRIORITY` or what `status` / `pick` show.
 
 `identity` is required and non-null, because every caller is a command that
 already fails without one. Optional-chaining it is what previously classed every
@@ -633,23 +641,23 @@ murmur replaced a 1500-line script that was the daily local tool. Zero peers is
 therefore the common case:
 
 - the extension claims its pane and reports activity
-- the status bar and picker read `localPanes()` through the same mapping a peer
+- status, pick, and dash read `localPanes()` through the same mapping a peer
   snapshot goes through
 - the collector, whenever it runs, iterates the peer list, finds nothing, and
   reconciles once
 
-The two surfaces differ in *when* that collect happens, and only one of them is
-on a paint:
+The surfaces differ in *when* that collect happens:
 
-- **the picker never waits for one.** It paints from the cached read
+- **pick never waits for one.** It paints from the cached read
   (`status(store, identity)`) and starts a collect in a DETACHED child
   afterwards, for the next invocation. See `spawnCollect` in `src/cli/pick.ts`
   and the commit that made it so, "paint the picker from cache, collect behind
   it, not before it".
-- **the status bar collects inline**, under `COLLECT_FLOOR_MS`, before it reads.
-  It is the one surface that passes a floor, because tmux re-runs it every
-  `status-interval` per attached client and a repaint is not a reason to reach a
-  machine.
+- **dash paints from cache too**, then refreshes on a `COLLECT_FLOOR_MS`
+  interval while it stays open (`src/cli/dash.tsx`).
+- **status collects inline**, under `COLLECT_FLOOR_MS`, before it reads. tmux
+  re-runs it every `status-interval` per attached client; a repaint is not a
+  reason to reach a machine.
 
 No network, no ssh, no daemon, no added latency. Federation is strictly
 additive: a loop over an empty array. First paint with zero peers measured at
@@ -761,13 +769,13 @@ after 0.2.1 given that `parseSnapshot` rejects a mismatched version outright.
 Surveying over ssh needs no format change and no fleet-wide upgrade, and it is
 honest about what it is: a question asked now, not a fact murmur stores.
 
-**Only `collect` could ever be relayed, which is why there is no broker.** Three
-surfaces need a path to a pane's host, and they are not alike:
+**Only `collect` could ever be relayed, which is why there is no broker.** The
+paths to a pane's host are not alike:
 
 | surface | needs |
 |---|---|
 | collect | `ssh <target> murmur export` |
-| glance (the picker's preview) | `ssh <target> tmux capture-pane` |
+| glance (pick preview / dash pane glance) | `ssh <target> tmux capture-pane` |
 | jump | `ssh <target>`, interactively |
 
 Glance and jump are inherently point-to-point: a captured pane and an interactive
@@ -791,9 +799,9 @@ so heuristics are where the tests go.
 agent an orchestrator placed want opposite treatment: when the orchestrated one
 finishes, its supervisor consumes the result and nobody needs to acknowledge
 anything. Same facts, opposite attention. So an orchestrated agent raises no
-`done` at all, and its rows are hidden from the picker and the status bar unless
-its attention includes `blocked` or `crashed` — the two kinds only a human can
-answer. That list is `NEEDS_HUMAN`, shared by both surfaces, because it was two
+`done` at all, and its rows are hidden from status, pick, and dash unless its
+attention includes `blocked` or `crashed` — the two kinds only a human can
+answer. That list is `NEEDS_HUMAN`, shared by every surface, because it was two
 literals in two files and that is how a row needing a human became one a human
 could not see.
 

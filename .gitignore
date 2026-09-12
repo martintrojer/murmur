@@ -5,8 +5,9 @@ dist/
 # Editor and tool scratch files (reflow buffers, temp drafts).
 .m-*
 
-# Working documents, not shipped artifacts. The spec and the implementation plan
-# were how the design got settled and executed; ARCHITECTURE.md is what survives
-# of them. Kept on disk because the reasoning is still useful locally, untracked
-# because a spec that stops matching the code is worse than no spec.
-docs/
+# Working documents, not shipped artifacts. Specs and plans stay local;
+# ARCHITECTURE.md is what survives of them. Shipped how-tos and the README
+# screenshot are exceptions below. Use `docs/*` (not `docs/`) so negations work.
+docs/*
+!docs/setup.md
+!docs/dash.png
