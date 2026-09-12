@@ -9,7 +9,7 @@ export const DASH_GLYPH: Record<RenderState, string> = {
   crashed: "\uf057", // nf-fa-times_circle
   blocked: "\uf075", // nf-fa-comment
   done: "\uf058", // nf-fa-check_circle
-  running: "\uf013", // nf-fa-cog
+  running: "\uf04b", // nf-fa-play
   idle: "\uf186", // nf-fa-moon_o
 };
 

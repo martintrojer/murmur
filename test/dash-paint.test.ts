@@ -7,7 +7,7 @@ test("every render state has its single-codepoint Nerd Font glyph", () => {
     crashed: "\uf057",
     blocked: "\uf075",
     done: "\uf058",
-    running: "\uf013",
+    running: "\uf04b",
     idle: "\uf186",
   });
   for (const state of RENDER_PRIORITY) {
