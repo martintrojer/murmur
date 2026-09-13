@@ -1,6 +1,52 @@
 import type { Status } from "./status.js";
 import { age, type PaneView } from "./view.js";
 
+/** Cache key for a pane's captured summary. Pane ids are unique per node only. */
+export function summaryKey(pane: PaneView): string {
+  return `${pane.host_id}:${pane.pane}`;
+}
+
+/**
+ * Which visible cards get their own capture for the summary line.
+ *
+ * LOCAL ONLY, and that is the whole rule. A local capture is a ~2ms
+ * `capture-pane` against the tmux server on this machine; a remote one is an
+ * ssh, measured at ~1.5s to fail against an unreachable peer. Capturing every
+ * visible remote card on each redraw would put the dash's one-second tick
+ * behind a network round-trip per row -- the same cost `glance` already refuses
+ * to pay for the preview, which is why it fetches the selected pane only.
+ *
+ * The selected pane is excluded even when local: the preview has already
+ * captured it, and `cardSummary` reuses that text rather than capturing twice.
+ */
+export function summaryTargets(visible: PaneView[], selected?: PaneView): PaneView[] {
+  const selectedKey = selected ? summaryKey(selected) : null;
+  return visible.filter((pane) => pane.local && summaryKey(pane) !== selectedKey);
+}
+
+/**
+ * The glance text a card's summary line is derived from, or undefined.
+ *
+ * Two sources, and the per-card capture wins where it exists. The selected
+ * pane's glance is only usable for the SELECTED card -- it is that pane's
+ * output, and showing it on another row would put one agent's state on
+ * another's card, which is worse than a blank line.
+ *
+ * The selected pane reads from the glance rather than the capture map so a
+ * remote selection still gets a summary: `summaryTargets` skips remotes, but
+ * the preview paid for that one ssh already.
+ */
+export function cardSummary(
+  pane: PaneView,
+  selected: PaneView | undefined,
+  captures: Map<string, string>,
+  selectedGlance: string | undefined,
+): string | undefined {
+  const own = captures.get(summaryKey(pane));
+  if (own !== undefined) return own;
+  return selected && summaryKey(pane) === summaryKey(selected) ? selectedGlance : undefined;
+}
+
 export function paneFingerprint(pane: PaneView): string {
   return JSON.stringify([
     pane.host_id,

@@ -1,5 +1,6 @@
 import { expect, test } from "vitest";
 import {
+  cardSummary,
   cardWindow,
   dashFooterHints,
   dashNavigation,
@@ -12,6 +13,7 @@ import {
   moveIndex,
   paneFingerprint,
   scrollLabel,
+  summaryTargets,
 } from "../src/dash-tick.js";
 import { asPaneId, asSessionId, asWindowId } from "../src/ids.js";
 import type { Status } from "../src/status.js";
@@ -183,4 +185,58 @@ test("navigation keys map to the active region", () => {
   expect(dashNavigation("preview", "pageDown", 4, 2)).toEqual({ type: "preview", offset: 2 });
   expect(dashNavigation("preview", "home", 4, 2)).toEqual({ type: "preview-edge", edge: "top" });
   expect(dashNavigation("cards", "end", 4, 2)).toEqual({ type: "cards-edge", edge: "bottom" });
+});
+
+/**
+ * Which cards get their own glance for the summary line.
+ *
+ * The card summary used to be passed only for the SELECTED pane, so the model /
+ * effort / context line appeared on one card and every other card showed a
+ * blank third row. The fact is per-agent and wanted on all of them.
+ *
+ * Local only, and that is the whole rule: a local capture is a ~2ms
+ * `capture-pane` against the tmux server on this machine, while a remote one is
+ * an ssh -- measured at ~1.5s to fail against an unreachable peer. Capturing
+ * every visible remote card once a second would put the dash's redraw behind a
+ * network round-trip per row, which is the cost control `glance` already pays
+ * for the preview.
+ */
+test("card summaries are captured for visible local panes only", () => {
+  const here = pane({ pane: asPaneId("%1") });
+  const there = pane({ pane: asPaneId("%2"), local: false, host: "bubba" });
+  const alsoHere = pane({ pane: asPaneId("%3") });
+
+  expect(summaryTargets([here, there, alsoHere])).toEqual([here, alsoHere]);
+  expect(summaryTargets([there])).toEqual([]);
+  expect(summaryTargets([])).toEqual([]);
+});
+
+test("the selected remote pane still gets a summary, from the preview it already paid for", () => {
+  // The preview's glance is fetched for the selected pane regardless, so the
+  // card can reuse that text for free. This keeps the one remote card a reader
+  // is actually looking at from being the only blank one.
+  const there = pane({ pane: asPaneId("%2"), local: false, host: "bubba" });
+  expect(summaryTargets([there], there)).toEqual([]);
+  expect(cardSummary(there, there, new Map(), "model-x · medium · 5%")).toBe(
+    "model-x · medium · 5%",
+  );
+});
+
+test("a card summary prefers its own capture over the selected pane's glance", () => {
+  // Two sources, and the per-card one wins where it exists: the selected
+  // pane's glance belongs to the selected pane, and using it for another card
+  // would show one agent's state on another's row.
+  const here = pane({ pane: asPaneId("%1") });
+  const other = pane({ pane: asPaneId("%3") });
+  const captures = new Map([
+    [`${here.host_id}:${here.pane}`, "mine · high · 1%"],
+    [`${other.host_id}:${other.pane}`, "theirs · low · 2%"],
+  ]);
+
+  expect(cardSummary(here, other, captures, "selected glance")).toBe("mine · high · 1%");
+  expect(cardSummary(other, other, captures, "selected glance")).toBe("theirs · low · 2%");
+  // No capture and not selected: nothing to say rather than another pane's line.
+  expect(cardSummary(pane({ pane: asPaneId("%9") }), other, captures, "selected glance")).toBe(
+    undefined,
+  );
 });
