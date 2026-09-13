@@ -92,17 +92,34 @@ export function wants(
  * Returns null when the line is not a footer, so the caller keeps the original.
  */
 function piFooter(line: string): string | null {
-  // Context first, and it anchors the match: `10.5%/800k`. The budget is what
-  // separates this from any line with a percentage in it.
-  const context = /(\d+(?:\.\d+)?)%\/\d+(?:\.\d+)?[kKmM]\b/.exec(line);
+  // ANCHORED at the start, which is the whole defence against false positives.
+  //
+  // This used to search for `<pct>%/<budget>` anywhere in the line and treat
+  // everything after it as the model tail. Any line that happened to contain
+  // that pair plus a slash then read as a footer -- a diff of this file did it,
+  // rendering `- const pct = 50.0%/800k (auto) anthropic/x • y` as
+  // `x · y · 50.0%`: a plausible model that does not exist, shown on a card
+  // where a reader would believe it.
+  //
+  // A real footer begins with its counters (`↑15M ↓533k R323M CH99.8% $247.838`)
+  // or, before the first turn, with the percentage itself. Anything else in
+  // front of them means this is a line ABOUT a footer, not one.
+  const context =
+    /^(?:[\u2191\u2193][\d.]+[kKmM]?\s+|R[\d.]+[kKmM]?\s+|CH[\d.]+%\s+|\$[\d.]+\s+)*(\d+(?:\.\d+)?)%\/\d+(?:\.\d+)?[kKmM]\b/.exec(
+      line,
+    );
   if (!context) return null;
   // Then the model tail, which must sit AFTER the context for this to be a
   // footer rather than a coincidence. `provider/model` with an optional
   // ` • effort`; the provider can carry more than one segment
   // (`meta-openai/gpt-5.6-sol`), so the model is the last path segment.
+  // Every parenthetical, not the first. Stripping one left a second in place,
+  // which failed the model match and dropped the condensation entirely -- so a
+  // footer format change would silently restore the raw token-counter line this
+  // function exists to replace.
   const tail = line
     .slice(context.index + context[0].length)
-    .replace(/\s*\([^)]*\)\s*/, " ")
+    .replace(/\s*\([^)]*\)\s*/g, " ")
     .trim();
   const model = /^(\S*\/)?([\w.-]+)(?:\s*•\s*([\w.-]+))?$/.exec(tail);
   if (!model) return null;

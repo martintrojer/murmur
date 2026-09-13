@@ -191,3 +191,63 @@ test("a reported agent needs no glance at all", () => {
     "m · max · 1.0%",
   );
 });
+
+// --- what the scraper must and must not match ---------------------------
+
+test("a diff or log line quoting a footer is not treated as one", () => {
+  // Found by running the scraper against every real footer on the author's
+  // machine and then probing the edges it did not cover.
+  //
+  // The anchor was the `<pct>%/<budget>` pair, and everything AFTER it was taken
+  // as the model tail -- so any line that happened to contain that pair plus a
+  // slash read as a status footer. A diff of this very file did it: the line
+  // `-  const pct = 50.0%/800k (auto)  anthropic/x • y` rendered as
+  // `x · y · 50.0%`, a plausible-looking model that does not exist.
+  //
+  // The fix anchors the whole line, not a substring: a real footer BEGINS with
+  // its counters or its percentage, so anything before them disqualifies it.
+  const agent = view();
+  for (const line of [
+    "-  const pct = 50.0%/800k (auto)  anthropic/x • y",
+    '+  expect(summary).toBe("1.0%/800k (auto) anthropic/y • low")',
+    "log: rebuilt at 50.0%/800k (auto) via anthropic/x • y",
+  ]) {
+    expect(oneLiner(agent, line), line).toBe(line);
+  }
+});
+
+test("a footer with a trailing parenthetical is still a footer", () => {
+  // `(auto)` is stripped as noise, and stripping it left any SECOND
+  // parenthetical in place -- which then failed the model match and dropped the
+  // whole condensation, showing the raw counter line instead. Two parentheticals
+  // is not a shape pi emits today, but the failure mode was silent: a footer
+  // format change would quietly restore the token-counter card this condensing
+  // exists to replace.
+  const agent = view();
+  expect(oneLiner(agent, "1.0%/800k (auto) (x)   anthropic/claude-opus-5 • medium")).toBe(
+    "claude-opus-5 · medium · 1.0%",
+  );
+});
+
+test("the real footer shapes on this machine all condense", () => {
+  // Captured from live panes across both model families, plus the two variants
+  // the live set did not cover: a session before its first turn, and a footer
+  // with no thinking level.
+  const agent = view();
+  const cases: [line: string, expected: string][] = [
+    [
+      "↑15M ↓533k R323M CH99.8% $247.838 19.1%/800k (auto)   anthropic/claude-opus-5 • medium",
+      "claude-opus-5 · medium · 19.1%",
+    ],
+    [
+      "↑344k ↓23k R4.6M CH99.1% $4.717 15.1%/850k (auto)   meta-openai/gpt-5.6-sol • medium",
+      "gpt-5.6-sol · medium · 15.1%",
+    ],
+    // A session that has not taken a turn yet: no counters at all, so the line
+    // BEGINS with the percentage.
+    ["0.0%/850k (auto)   meta-openai/gpt-5.6-sol • medium", "gpt-5.6-sol · medium · 0.0%"],
+    // No thinking level reported, so the effort segment is simply absent.
+    ["0.0%/850k (auto)   meta-openai/gpt-5.6-sol", "gpt-5.6-sol · 0.0%"],
+  ];
+  for (const [line, expected] of cases) expect(oneLiner(agent, line), line).toBe(expected);
+});
