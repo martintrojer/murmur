@@ -370,7 +370,7 @@ where the system interpreter is least yours to touch.
 
 ```jsonc
 {
-  "murmur_snapshot": 1,
+  "murmur_snapshot": 2,
   "host_id": "1d2ee96e-3a94-41b2-90fa-5f1ee2f04276",  // from identity.json
   "display_name": "mtrojer-mac",
   "murmur_version": "0.2.4",         // read from package.json, never restated
@@ -391,6 +391,27 @@ where the system interpreter is least yours to touch.
         "role": null,
         "cli": "pi",
         "driver": "orchestrated",
+        // Runtime: what the agent is running WITH, as the agent reports it.
+        // Every field nullable -- a harness that knows none of this says so.
+        "model": "claude-opus-5",      // leaf only; the vendor is `provider`
+        "provider": "anthropic",
+        "effort": "medium",            // pi's ThinkingLevel, a closed set
+        "provider_effort": "medium",   // what the provider APPLIED, when it says
+        "context_pct": 11.7,
+        "context_tokens": 93600,
+        "context_window": 800000,
+        // Tokens and money, nullable as a UNIT: an agent that has completed no
+        // turn has no usage, which is not the same as zero.
+        "usage": {
+          "input": 213000, "output": 55000,
+          "cache_read": 4100000, "cache_write": 12000,
+          "cache_write_1h": 500,         // Anthropic only; null elsewhere
+          "reasoning": 9000,             // subset of output; provider-dependent
+          "total_tokens": 4380000,
+          "cost_input": 1.2, "cost_output": 2.4,
+          "cost_cache_read": 0.41, "cost_cache_write": 0.6,
+          "cost_total": 4.61
+        },
         "claimed_at": 1788105600000,
         "updated_at": 1788105690000
       },
@@ -415,6 +436,24 @@ Rules, each of which a reader depends on:
    diffs cleanly; readers sort for themselves.
 5. `generated_at` is the *producing* node's clock. What it is not is when the
    reader fetched it — see freshness below.
+6. **Runtime fields are reported, never inferred.** They come from the owning
+   agent via its harness extension, on the events that move each one: a model
+   change, an effort change, a completed turn. murmur does not derive them, does
+   not compute one from another, and above all does not read them out of the
+   pane. A dashboard card that needs them draws from collected state, which is
+   why it works for a remote agent at all.
+
+   The pane scraper (`piFooter`) survives as a *display* fallback for the one
+   selected card, and only there. It produces a string for a human, never values
+   for a row, and nothing it produces enters a snapshot. Scraped figures are
+   rounded for a terminal (`↑836k`, not `836123`), so writing them would
+   manufacture precision murmur never had and no reader could tell a report from
+   a guess.
+7. **`usage` is nullable as a unit.** It arrives as one bundle per turn — one
+   clock, one provenance — so a partial write could pair this turn's cost with
+   last turn's tokens. An agent that has completed no turn has no usage, which
+   is a different claim from zero. Nothing renders these figures yet; they are
+   carried so that a later display costs no wire change.
 
 `buildLocalSnapshot` reconciles before it reads, which is what makes the
 document authoritative: a snapshot built from unreconciled rows would publish
@@ -422,18 +461,27 @@ agents whose panes are gone, and a reader has no way to tell.
 
 **Validation is total and strict**, and happens before storage.
 `parseSnapshot` rejects an unknown key, a missing key, a wrong type, a
-`murmur_snapshot` other than `1`, an unknown `activity`, `driver` or `kind`, a
+`murmur_snapshot` other than `2`, an unknown `activity`, `driver`, `kind` or
+`effort`, a `context_pct` outside 0..100, a negative token count or cost, a
 duplicate pane, and a pane that is neither an agent nor an attention. Nothing is
 coerced, defaulted or carried through. The error names the first failing path
 (`panes[3].attention[0].kind`), and the collector turns it into a failed fetch:
 a peer that answers with a bad document is **reachable but broken** and visibly
 so, not silently stale.
 
-**Forward compatibility is not offered**, and that is the honest report rather
-than a shortcut. A higher `murmur_snapshot` is rejected like any other wrong
-value, because a reader that carried fields it did not understand would be
-guessing about state a human acts on. A version mismatch is an operator-visible
-pairing problem: upgrade the other node.
+**Compatibility is offered in neither direction**, and that is the honest report
+rather than a shortcut. A higher `murmur_snapshot` is rejected like any other
+wrong value, because a reader that carried fields it did not understand would be
+guessing about state a human acts on — and a LOWER one is rejected for the
+mirror reason: the fields an older document omits are exactly the ones the newer
+version added, so accepting it means rendering an agent as though it reported
+nothing. A version mismatch is an operator-visible pairing problem: upgrade the
+other node.
+
+The number lives in one place, `SNAPSHOT_VERSION` in `types.ts`. It was once
+four literals — in the type, in `buildLocalSnapshot`, in the validator and again
+in `peer.ts` — and the copy in `peer.ts` is why a bump made `peer list` report
+every correctly upgraded peer as incompatible.
 
 ### Collecting
 
@@ -778,6 +826,16 @@ paths to a pane's host are not alike:
 | collect | `ssh <target> murmur export` |
 | glance (pick preview / dash pane glance) | `ssh <target> tmux capture-pane` |
 | jump | `ssh <target>`, interactively |
+
+**A card renders only from collected state; a capture serves one selected pane.**
+This is a rule, arrived at by breaking it. An earlier build captured a pane per
+visible card so every card could show its agent's model and context. It worked
+locally and could never work remotely: a capture per remote row is an ssh per row
+per repaint, so the feature was permanently half a feature, and the missing half
+is the one murmur exists for. It was reverted in favour of agents reporting those
+fields, which every card then draws for free, local or remote. The selected pane
+keeps its on-demand capture — a human moved the cursor there and asked for it,
+which is the same bargain the preview already makes.
 
 Glance and jump are inherently point-to-point: a captured pane and an interactive
 session cannot be served by a third party holding neither. So a relay could only

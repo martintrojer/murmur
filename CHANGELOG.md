@@ -3,6 +3,34 @@
 Notable changes per release. Written for someone deciding whether to upgrade,
 so it says what changed for a user rather than listing every commit.
 
+## 0.4.0
+
+**Not wire-compatible with 0.3.x. Every node must be upgraded together.** The
+snapshot format is now version 2, and murmur deliberately offers compatibility
+in neither direction: a peer on a different version reads as reachable but
+broken, naming the mismatch, rather than silently guessing at fields it does not
+understand. Upgrade with `npm i -g @martintrojer/murmur` on every node, then
+restart each agent so it re-reports.
+
+**Agents report what they are running with, instead of murmur reading it off the
+screen.** A pi agent now reports its model, provider, effort level, context
+usage, token counts and cost, on the events that move each one — a model change,
+an effort change, a completed turn. No polling.
+
+The dashboard card shows `claude-opus-5 · medium · 11.7%`, and shows it for
+**remote** agents as well as local ones, because the figures travel in the
+snapshot the collector already fetches. No card runs a terminal capture to
+display it. Agents without the extension keep the previous behaviour on the
+selected card.
+
+Token and cost figures are carried but not yet displayed anywhere. They are in
+`murmur export` and `status --json` today, so a later display costs no
+coordinated upgrade.
+
+**Fixed: `peer list` would have called every correctly upgraded peer
+incompatible.** The snapshot version existed as four separate literals, one of
+them private to the peer-list renderer. It is now a single constant.
+
 ## 0.3.2
 
 Wire-compatible with 0.3.x and 0.2.x: the snapshot format is unchanged at
