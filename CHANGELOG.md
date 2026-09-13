@@ -3,6 +3,32 @@
 Notable changes per release. Written for someone deciding whether to upgrade,
 so it says what changed for a user rather than listing every commit.
 
+## 0.4.2
+
+Wire-compatible with 0.4.x: the snapshot format is unchanged at version 2.
+
+**Fixed: `murmur dash` grew without bound and had to be restarted.** Reported at
+2GB after five and a half hours of being left open, and reproduced at roughly
+200MB an hour.
+
+The retention is not murmur's own. It is native rather than JavaScript memory,
+and it comes from the terminal UI library allocating a layout node per element
+and freeing it on the next render -- work that is not returned to the operating
+system. The same signature is reported against several other terminal agents
+built on the same library.
+
+What murmur controls is how much it asks of it, which is now considerably less.
+The redraw tick is three seconds rather than one, since nothing on screen
+needed a faster clock and peer data refreshes every thirty seconds anyway. The
+pane glance is drawn as one block instead of one element per line. Glance and
+card text is cut to the visible width before it is measured rather than when it
+is painted.
+
+The dash now settles at about 250MB and stays there; a ten-minute run moved 4MB
+across its last seven minutes. This does not eliminate the underlying growth,
+which is upstream, but it bounds it -- the practical difference being whether
+you can leave the dashboard open all day.
+
 ## 0.4.1
 
 Wire-compatible with 0.4.0: the snapshot format is unchanged at version 2, so no
