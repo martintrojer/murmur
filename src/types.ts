@@ -61,13 +61,27 @@ export type Location = {
  * `member()`-validated on the wire, the same way `activity` and `driver` are.
  * A display variant like "Medium" is a broken peer rather than a value to
  * coerce.
+ *
+ * A VALUE with the type derived from it, not a hand-written union, because four
+ * places enforce this vocabulary: this type, the wire validator, the producer's
+ * filter, and the SQLite CHECK. Written out four times it drifts, and the three
+ * failures look nothing alike -- the producer silently drops a valid report, the
+ * validator rejects a good peer snapshot, the store rejects a local write. This
+ * repo has already paid for a duplicated protocol rule once: `SNAPSHOT_VERSION`
+ * was four literals, and the copy in `peer.ts` made `peer list` call every
+ * correctly upgraded peer incompatible.
+ *
+ * The schema is the one unavoidable second spelling, since SQL is a string and
+ * cannot import. `test/architecture.test.ts` fails if a THIRD appears.
  */
-export type Effort = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+export const EFFORTS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+
+export type Effort = (typeof EFFORTS)[number];
 
 /**
  * Tokens and money for one agent's session, as the provider reported them.
  *
- * A SUB-OBJECT rather than twenty more columns, and nullable as a unit. Three
+ * A SUB-OBJECT rather than twelve more columns, and nullable as a unit. Three
  * reasons, in order of how much they cost when ignored:
  *
  * 1. It arrives as a bundle. pi hands over one `Usage` object per turn, so
@@ -76,11 +90,13 @@ export type Effort = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "
  *    nobody could interpret.
  * 2. Absence is a real state. An agent that has not completed a turn has no
  *    usage at all, which is different from having zero tokens, and flat columns
- *    would have to spell that with twenty nulls.
+ *    would have to spell that with twelve nulls.
  * 3. Nothing renders it yet. These are for a display concern that does not
- *    exist: the card draws `AgentRuntime`'s three fields. Carrying the numbers
- *    now means the next display option costs no wire change, which is the whole
- *    argument for collecting them early.
+ *    exist: the card draws `model`, `effort` and `context_pct` only. Carrying
+ *    the numbers now means the next display option costs no wire change, which
+ *    is the whole argument for collecting them early -- and the wire is not
+ *    compatible across versions, so adding a field later costs a coordinated
+ *    upgrade of every node in the fleet.
  *
  * `cache_write_1h` and `reasoning` are optional WITHIN the object because only
  * some providers report them -- Anthropic splits cache retention, and a
@@ -112,10 +128,11 @@ export type AgentUsage = {
  * session, workstream, role, cli, driver -- and `claimAgent` is its only
  * writer. Nothing in it changes for the life of the process.
  *
- * These three change repeatedly, from three different events, and `claimAgent`
- * never sees them. Folding them in would mean a "metadata" type half of whose
- * fields are live state, and the next reader could not tell which half they
- * were holding.
+ * These fields change repeatedly, from four report sites -- a model change, an
+ * effort change, a completed turn, and a resumed session -- and `claimAgent`
+ * never sees any of them. Folding them in would mean a "metadata" type half of
+ * whose fields are live state, and the next reader could not tell which half
+ * they were holding.
  *
  * All nullable: a bare shell, codex, or a notify-only harness reports none of
  * them, and an agent that cannot report one must not be forced to invent it.

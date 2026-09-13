@@ -67,9 +67,12 @@ factor / `BatchMode`, `MaxSessions 1`, Eternal Terminal): [SSH.md](SSH.md).
 
 ## What it is / is not
 
-- **Is:** a state layer over tmux — reported from inside the agent (not scraped
-  from pane output), pulled peer-to-peer over ssh. No daemon. Current snapshot
-  only; a peer answer is replaced whole, and absence means absence.
+- **Is:** a state layer over tmux — reported from inside the agent, pulled
+  peer-to-peer over ssh. No daemon. Current snapshot only; a peer answer is
+  replaced whole, and absence means absence. Nothing murmur stores or sends is
+  read out of a terminal; the one exception is cosmetic, and the dashboard
+  labels it: for an agent that reports no model or context, the selected card
+  falls back to summarising that pane's own output.
 - **Is not:** an orchestrator ([`mu`](https://github.com/martintrojer/mu)
   places work), a remote terminal, or a multiplexer replacement.
 

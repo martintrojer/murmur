@@ -99,12 +99,12 @@ test("a never-collected peer is unknown and is NOT a mismatch", () => {
 
 test("only a snapshot-version mismatch is flagged; a murmur version is shown plainly", () => {
   // Drawn from what the code enforces. `parseSnapshot` rejects any
-  // `murmur_snapshot` other than 1, so state genuinely does not flow -- a
-  // behavioural fact, and the only thing marked.
+  // `murmur_snapshot` other than `SNAPSHOT_VERSION`, so state genuinely does
+  // not flow -- a behavioural fact, and the only thing marked.
   //
-  // A differing murmur version is not. Two nodes on snapshot 1 running 0.1.3 and
-  // 0.2.0 interoperate, so marking it would fire on every patch release and
-  // train the operator to ignore the column.
+  // A differing murmur version is not. Two nodes on the same snapshot version
+  // running 0.1.3 and 0.2.0 interoperate, so marking it would fire on every
+  // patch release and train the operator to ignore the column.
   expect(cell({ murmur_version: "0.1.3", snapshot_version: SNAPSHOT_VERSION })).toEqual({
     text: "0.1.3",
     incompatible: false,
@@ -127,7 +127,7 @@ test("only a snapshot-version mismatch is flagged; a murmur version is shown pla
   });
 
   // The number appears ONLY when it is the problem, or every row would read
-  // "0.1.4 (snapshot 1)" and the signal would be lost in the noise.
+  // "0.1.4 (snapshot 2)" and the signal would be lost in the noise.
   expect(cell({ murmur_version: "0.1.4", snapshot_version: SNAPSHOT_VERSION }).text).not.toContain(
     "snapshot",
   );

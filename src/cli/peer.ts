@@ -56,11 +56,14 @@ export function lastSeen(fetchedAt: number | null, now: number): string {
  * Drawn from what the code enforces rather than from taste:
  *
  *   - a differing SNAPSHOT VERSION is a hard incompatibility, because
- *     `parseSnapshot` rejects anything but 1 and state genuinely does not flow.
- *     A fact about behaviour, and the only thing marked.
- *   - a differing murmur version is worth SHOWING and no more. Two nodes on
- *     snapshot 1 running 0.1.3 and 0.2.0 interoperate fine, and marking that
- *     would cry wolf on every patch release.
+ *     `parseSnapshot` rejects anything but `SNAPSHOT_VERSION` and state
+ *     genuinely does not flow. A fact about behaviour, and the only thing
+ *     marked. Written as the constant rather than the number on purpose: a copy
+ *     of the literal here is what made `peer list` call every correctly
+ *     upgraded peer incompatible when the version last changed.
+ *   - a differing murmur version is worth SHOWING and no more. Two nodes on the
+ *     same snapshot version running 0.1.3 and 0.2.0 interoperate fine, and
+ *     marking that would cry wolf on every patch release.
  *
  * A peer never heard from is `unknown`, not a mismatch: absence of information
  * is not evidence of incompatibility, and a sleeping peer is the common case.

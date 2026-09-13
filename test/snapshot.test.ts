@@ -487,6 +487,22 @@ test("murmur export on an uninitialised node refuses instead of minting a node",
  * their documents inline to make each rejection readable beside its reason, and
  * a shared builder would hide which field the case is actually about.
  */
+/** A valid usage bundle, for tests that vary one field of it. */
+const VALID_USAGE = {
+  input: 213_000,
+  output: 55_000,
+  cache_read: 4_100_000,
+  cache_write: 12_000,
+  total_tokens: 4_380_000,
+  cache_write_1h: 500,
+  reasoning: 9_000,
+  cost_input: 1.2,
+  cost_output: 2.4,
+  cost_cache_read: 0.41,
+  cost_cache_write: 0.6,
+  cost_total: 4.61,
+};
+
 function agentDocument(runtime: Record<string, unknown>): string {
   return JSON.stringify({
     murmur_snapshot: 2,
@@ -517,9 +533,10 @@ function agentDocument(runtime: Record<string, unknown>): string {
           usage: null,
           claimed_at: 1,
           updated_at: 1,
-          // Spread LAST, and the three fields under test are deliberately NOT
-          // defaulted above, so a caller can omit one to check that absent is
-          // rejected rather than quietly defaulted.
+          // Spread LAST, and `model`, `effort` and `context_pct` are
+          // deliberately NOT defaulted above, so a caller can omit one to check
+          // that absent is rejected rather than quietly defaulted. The other
+          // runtime fields are defaulted here because no test varies them.
           ...runtime,
         },
         attention: [],
@@ -552,7 +569,7 @@ test("the runtime fields round-trip", () => {
   });
 });
 
-test("all three runtime fields are nullable", () => {
+test("every runtime field is nullable", () => {
   // A bare shell, codex, or a notify-only harness reports none of them, and an
   // agent that cannot report one must not be forced to invent it. `context_pct`
   // is null in one more case: pi returns a null percent right after compaction,
@@ -628,4 +645,50 @@ test("an agent missing a runtime field is rejected, not defaulted", () => {
   expect(() => parseSnapshot(agentDocument({ model: null, effort: null }))).toThrow(
     "missing key context_pct",
   );
+});
+
+test("a negative token count or cost is rejected, per field", () => {
+  // Found by mutation: widening `quantity`'s lower bound from 0 to -1 left the
+  // whole suite green, because the usage tests only ever round-tripped VALID
+  // bundles. A peer could publish impossible negative tokens or dollars and
+  // murmur would accept, store and re-serve them as trusted state.
+  //
+  // Table-driven over every numeric field, because the guard is applied
+  // per-field and a single spot-check would not notice one of the twelve using
+  // the wrong helper.
+  const numeric = [
+    "input",
+    "output",
+    "cache_read",
+    "cache_write",
+    "total_tokens",
+    "cache_write_1h",
+    "reasoning",
+    "cost_input",
+    "cost_output",
+    "cost_cache_read",
+    "cost_cache_write",
+    "cost_total",
+  ] as const;
+
+  for (const field of numeric) {
+    const document = agentDocument({
+      model: "m",
+      effort: "low",
+      context_pct: 1,
+      usage: { ...VALID_USAGE, [field]: -1 },
+    });
+    expect(() => parseSnapshot(document), field).toThrow(SnapshotInvalidError);
+    // Named by path, so an operator reading `peer list` learns which field the
+    // other node got wrong rather than "invalid snapshot".
+    expect(() => parseSnapshot(document), field).toThrow(`usage.${field}`);
+  }
+
+  // Zero stays valid everywhere: a turn that read no cache and cost nothing
+  // measurable is an ordinary turn, not a broken report.
+  const zeroed = Object.fromEntries(numeric.map((field) => [field, 0]));
+  expect(
+    parseSnapshot(agentDocument({ model: "m", effort: "low", context_pct: 1, usage: zeroed }))
+      .panes[0]?.agent?.usage,
+  ).toMatchObject({ input: 0, cost_total: 0 });
 });
