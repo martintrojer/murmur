@@ -272,3 +272,26 @@ test("a gated peer's preview says why, and names the command", () => {
   expect(text).toContain(warmSocketCommand("dev"));
   expect(text).not.toContain("pane gone");
 });
+
+test("a tab in captured pane text is expanded, not passed through", () => {
+  // A tab is one byte and eight columns. `string-width` scores it 2, so ink's
+  // `truncate-end` measured a line as fitting, handed it whole to the terminal,
+  // and the terminal advanced to the next tab stop -- overflowing the box,
+  // wrapping, and shifting every row below it. Tabs are ordinary in pane output
+  // (`git status`, `make`, `cat -t`-less logs), so the dash mis-rendered on
+  // normal content.
+  //
+  // Expanded to the 8-column stops the terminal would have used, so table-ish
+  // output keeps its columns, and measurable width now equals painted width.
+  store.addPeer("bubba", "bubba.example");
+  store.replacePeerSnapshot("bubba", {
+    ok: true,
+    at: Date.now(),
+    snapshot: remoteSnapshot([remotePane("%9")]),
+  });
+
+  const { text } = preview("%9", "REMOTE", "ab\tcd\tefghi\tj");
+
+  expect(text).not.toContain("\t");
+  expect(text).toContain("ab      cd      efghi   j");
+});

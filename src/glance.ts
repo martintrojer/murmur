@@ -19,6 +19,39 @@ import type { PaneView } from "./view.js";
 
 const GLANCE_LINES = 40;
 
+/** Terminal default tab stop, and what a pane's own output was laid out for. */
+const TAB_WIDTH = 8;
+
+/**
+ * Expand tabs to spaces, per line, at the terminal's 8-column stops.
+ *
+ * A tab is one character and up to eight columns. Every width-aware consumer
+ * here -- ink's `truncate-end`, via `string-width` -- scores it as 2, so a line
+ * measured as fitting the glance box was advanced by the terminal to the next
+ * tab stop, overflowed, wrapped, and pushed every row below it down. Tabs are
+ * ordinary in pane output (`git status`, `make`, most log formats), so the dash
+ * mis-rendered on unremarkable content.
+ *
+ * Expanded rather than stripped or replaced 1:1, because the columns are the
+ * point of a tab: collapsing them would shear exactly the table-shaped output
+ * that uses them. Counted per line, since a tab stop is measured from the start
+ * of the row.
+ */
+export function expandTabs(text: string, width = TAB_WIDTH): string {
+  if (!text.includes("\t")) return text;
+  return text
+    .split("\n")
+    .map((line) => {
+      let out = "";
+      for (const character of line) {
+        if (character === "\t") out += " ".repeat(width - (out.length % width));
+        else out += character;
+      }
+      return out;
+    })
+    .join("\n");
+}
+
 /**
  * The one ssh a glance runs, injectable for the same reason `agents.ts` has
  * `Runner`: without a seam the remote branch cannot be tested without a second
@@ -40,7 +73,10 @@ export function glance(
   lines = GLANCE_LINES,
   run: GlanceRunner = sshRunner,
 ): string | null {
-  if (agent.local) return tmux.capture(agent.pane, lines);
+  if (agent.local) {
+    const local = tmux.capture(agent.pane, lines);
+    return local === null ? null : expandTabs(local);
+  }
 
   const resolved = peerForHost(store, agent.host_id);
   if (!resolved) return null;
@@ -75,15 +111,9 @@ export function glance(
     // The trust boundary is a peer the operator configured, which is why this
     // was never urgent; the posture is safety by construction, and the tested
     // helper every other ssh path already uses was one import away.
-    return run(target, [
-      "tmux",
-      "capture-pane",
-      "-p",
-      "-t",
-      shellQuote(agent.pane),
-      "-S",
-      `-${lines}`,
-    ]);
+    return expandTabs(
+      run(target, ["tmux", "capture-pane", "-p", "-t", shellQuote(agent.pane), "-S", `-${lines}`]),
+    );
   } catch {
     // Cold socket, dead tmux, gone pane. The preview says so rather than the
     // picker failing.
