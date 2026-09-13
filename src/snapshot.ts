@@ -4,13 +4,12 @@ import type {
   AgentUsage,
   AttentionKind,
   Driver,
-  Effort,
   Snapshot,
   SnapshotAgent,
   SnapshotAttention,
   SnapshotPane,
 } from "./types.js";
-import { SNAPSHOT_VERSION } from "./types.js";
+import { EFFORTS, SNAPSHOT_VERSION } from "./types.js";
 
 /**
  * A peer answered, and what it said is not a snapshot.
@@ -106,7 +105,6 @@ function member<T extends string>(value: unknown, path: string, allowed: readonl
 }
 
 const ACTIVITIES: readonly Activity[] = ["running", "stopped"];
-const EFFORTS: readonly Effort[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 const DRIVERS: readonly Driver[] = ["human", "orchestrated"];
 const KINDS: readonly AttentionKind[] = ["done", "blocked", "crashed"];
 

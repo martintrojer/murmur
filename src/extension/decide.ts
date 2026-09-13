@@ -1,4 +1,4 @@
-import type { AgentRuntime, Driver } from "../types.js";
+import { type AgentRuntime, type Driver, EFFORTS } from "../types.js";
 
 /**
  * pi's three events, in the order verified at runtime against pi 0.84.3 (not
@@ -40,15 +40,15 @@ export function driverFromEnv(env: NodeJS.ProcessEnv): Driver {
 /**
  * pi's thinking levels, as murmur's `Effort` values.
  *
- * A local copy of the closed set rather than an import from pi: murmur must not
- * depend on pi to build, which is the same reason `ExtensionAPI` is declared
+ * From murmur's own `EFFORTS` tuple rather than an import from pi: murmur must
+ * not depend on pi to build, which is the same reason `ExtensionAPI` is declared
  * instead of imported. The cost is that a level pi adds later is unknown here --
  * and dropping it is correct, because `effort` is CHECK-constrained in the
  * schema and `member()`-validated on the wire, so an unrecognised value would
  * fail the WHOLE document for every peer collecting this node. Dropped at the
  * source, the blast radius is one field.
  */
-const EFFORTS = new Set<string>(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+const KNOWN_EFFORTS = new Set<string>(EFFORTS);
 
 /** The subset of pi's ExtensionContext this file reads. All optional. */
 export type RuntimeContext = {
@@ -119,7 +119,7 @@ export function runtimeFromContext(ctx: RuntimeContext | undefined): Partial<Age
     runtime.model = cut === -1 ? ctx.model.id : ctx.model.id.slice(cut + 1);
     runtime.provider = cut === -1 ? ctx.model.provider : ctx.model.id.slice(0, cut);
   }
-  if (ctx.thinkingLevel !== undefined && EFFORTS.has(ctx.thinkingLevel)) {
+  if (ctx.thinkingLevel !== undefined && KNOWN_EFFORTS.has(ctx.thinkingLevel)) {
     runtime.effort = ctx.thinkingLevel as AgentRuntime["effort"];
   }
   if (ctx.getContextUsage) {

@@ -60,3 +60,33 @@ test("no source file writes crashed attention outside the store", () => {
 
   expect(offenders).toEqual([]);
 });
+
+test("the effort vocabulary is spelled once", () => {
+  // A closed protocol vocabulary written out more than once drifts, and this
+  // repo has already paid for that: `SNAPSHOT_VERSION` existed as four literals
+  // and the copy in `peer.ts` made `peer list` report every correctly upgraded
+  // peer as incompatible.
+  //
+  // `effort` had the same shape -- the type, the wire validator, the producer's
+  // filter and the SQLite CHECK each listed the seven levels independently.
+  // Drift there is worse than cosmetic: the producer would silently drop a valid
+  // pi report, or the validator would reject an otherwise good peer snapshot,
+  // and the three failures look nothing alike.
+  //
+  // Checked by counting the LITERALS rather than by comparing lists: a
+  // comparison would pass while four identical copies sat in four files, which
+  // is the state this guards against.
+  const offenders = sourceFiles()
+    .filter((path) => {
+      const source = readFileSync(path, "utf8");
+      // `xhigh` is the distinctive member: it appears in no other vocabulary in
+      // this codebase, so a file containing it is spelling the effort list.
+      return /["']xhigh["']/.test(source);
+    })
+    .sort();
+
+  // ONE spelling now. The schema's CHECK clause is generated from the same
+  // tuple, so SQL being unable to import costs a template interpolation rather
+  // than a second list to keep in step.
+  expect(offenders).toEqual([join("src", "types.ts")]);
+});

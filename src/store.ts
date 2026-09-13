@@ -28,7 +28,7 @@ import type {
   SnapshotAttention,
   SnapshotPane,
 } from "./types.js";
-import { ATTENTION_PRIORITY, SNAPSHOT_VERSION } from "./types.js";
+import { ATTENTION_PRIORITY, EFFORTS, SNAPSHOT_VERSION } from "./types.js";
 import { MURMUR_VERSION } from "./version.js";
 
 /**
@@ -39,6 +39,21 @@ import { MURMUR_VERSION } from "./version.js";
  * there is no additive path to forget to use.
  */
 const SCHEMA_USER_VERSION = 5;
+
+/**
+ * The effort vocabulary as a SQL value list, generated from the one tuple.
+ *
+ * SQL is a string and cannot import, so the schema would otherwise be a second
+ * hand-written spelling of a closed protocol vocabulary -- the shape that has
+ * already cost this repo once, when `SNAPSHOT_VERSION` was four literals and the
+ * copy in `peer.ts` made `peer list` call every upgraded peer incompatible.
+ *
+ * Interpolating into DDL is safe here and only here: `EFFORTS` is a
+ * compile-time `as const` tuple of identifiers this file owns, never input. The
+ * quote escaping is belt-and-braces against a future member with an apostrophe,
+ * which would otherwise end the literal and change the statement's meaning.
+ */
+const EFFORT_SQL_LIST = EFFORTS.map((effort) => `'${effort.replaceAll("'", "''")}'`).join(", ");
 
 /**
  * The columns `setRuntime` may write, as an allowlist.
@@ -99,8 +114,7 @@ const SCHEMA = `
     -- Validated by parseUsage on the way in and out, so the opacity is at rest
     -- only -- nothing trusts this text without parsing it.
     usage        TEXT,
-    effort       TEXT    CHECK (effort IS NULL OR effort IN
-                          ('off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max')),
+    effort       TEXT    CHECK (effort IS NULL OR effort IN (${EFFORT_SQL_LIST})),
     context_pct  REAL    CHECK (context_pct IS NULL OR (context_pct >= 0 AND context_pct <= 100)),
     claimed_at   INTEGER NOT NULL,
     updated_at   INTEGER NOT NULL
