@@ -365,6 +365,12 @@ test("the store exposes no reader-side mutation of remote state", () => {
   // of this local pane died", which is reconciliation's conclusion about this
   // node's own panes. It exists separately from `requestAttention` precisely so
   // that `crashed` cannot be requested by an external caller.
+  //
+  // `setRuntime` is local and owner-gated for the same reason `setActivity` is:
+  // it is keyed on `agent_id` AND `owner_pid`, so it can only ever restate what
+  // THIS node's own agent reports about itself. There is deliberately no
+  // counterpart for a remote agent's runtime -- those arrive inside a peer's
+  // snapshot, which `replacePeerSnapshot` takes whole.
   expect(Object.keys(store()).sort()).toEqual([
     "acknowledgePane",
     "addPeer",
@@ -381,6 +387,7 @@ test("the store exposes no reader-side mutation of remote state", () => {
     "requestAttention",
     "setActivity",
     "setPeerJumpCommand",
+    "setRuntime",
   ]);
 });
 

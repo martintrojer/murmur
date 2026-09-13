@@ -258,6 +258,27 @@ export type ActivityUpdate = {
   now?: number;
 };
 
+/**
+ * A runtime report from an agent about itself.
+ *
+ * `Partial`, because the fields arrive from three different pi events -- a model
+ * change, an effort change, a completed turn -- and a call that had to pass all
+ * of them would force the producer to invent the ones it did not just learn.
+ * Re-asserting a stale model on a context update is the bug this shape prevents.
+ *
+ * Only the keys PRESENT are written, so an explicit `null` (pi reports one for
+ * the context percent right after a compaction) is distinct from omission.
+ *
+ * Keyed on `agent_id` AND `owner_pid`, the same gate `ActivityUpdate` uses: a
+ * pi nested in an agent's pane inherits $TMUX_PANE and must not be able to
+ * report as the agent that owns it.
+ */
+export type RuntimeUpdate = Partial<AgentRuntime> & {
+  agent_id: string;
+  owner_pid: number;
+  now?: number;
+};
+
 export type AgentRelease = { agent_id: string; owner_pid: number };
 
 /**

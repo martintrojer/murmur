@@ -13,6 +13,7 @@ import type {
   ActivityUpdate,
   AgentClaim,
   AgentRelease,
+  AgentRuntime,
   AttentionKind,
   AttentionRequest,
   ClaimResult,
@@ -21,6 +22,7 @@ import type {
   PeerFetch,
   PeerRecord,
   ReconcileSummary,
+  RuntimeUpdate,
   Snapshot,
   SnapshotAgent,
   SnapshotAttention,
@@ -37,6 +39,24 @@ import { MURMUR_VERSION } from "./version.js";
  * there is no additive path to forget to use.
  */
 const SCHEMA_USER_VERSION = 5;
+
+/**
+ * The columns `setRuntime` may write, as an allowlist.
+ *
+ * The SET clause is built from this and intersected with the caller's keys, so
+ * the statement text is assembled from constants only and a caller cannot name a
+ * column -- the reason this is a literal list rather than `Object.keys(update)`.
+ */
+const RUNTIME_COLUMNS = [
+  "model",
+  "provider",
+  "effort",
+  "provider_effort",
+  "context_pct",
+  "context_tokens",
+  "context_window",
+  "usage",
+] as const satisfies readonly (keyof AgentRuntime)[];
 
 /**
  * How long to wait for another process's reset before stealing its lock.
@@ -129,6 +149,15 @@ export interface Store {
   // --- agent lifecycle: owner-only, pid-gated -----------------------------
   claimAgent(claim: AgentClaim): ClaimResult;
   setActivity(update: ActivityUpdate): boolean;
+  /**
+   * Record what the agent is running with. Owner-gated, partial.
+   *
+   * Separate from `setActivity` because these are different claims by the same
+   * owner: activity is what the process is doing, runtime is what it is doing it
+   * with. One call that carried both would have to be given every field on every
+   * event, and three of pi's four report sites know only one of them.
+   */
+  setRuntime(update: RuntimeUpdate): boolean;
   releaseAgent(release: AgentRelease): boolean;
 
   // --- attention: pane-addressed, no agent authority ----------------------
@@ -598,6 +627,26 @@ export function openStore(): Store {
   `);
   const selectAgents = database.prepare("SELECT * FROM agents");
   const selectAttention = database.prepare("SELECT * FROM attention");
+  /**
+   * One prepared statement per SET shape, cached.
+   *
+   * There are only a handful of real shapes -- one per pi report site -- so this
+   * settles after the first few turns instead of re-planning identical SQL
+   * forever. The assignment list is built from a FIXED column allowlist in
+   * `setRuntime`, never from caller keys, so no input reaches the statement text.
+   */
+  const runtimeStatements = new Map<string, ReturnType<typeof database.prepare>>();
+  const runtimeStatement = (assignments: string) => {
+    const cached = runtimeStatements.get(assignments);
+    if (cached) return cached;
+    const prepared = database.prepare(
+      `UPDATE agents SET ${assignments}, updated_at = @updated_at
+         WHERE agent_id = @agent_id AND owner_pid = @owner_pid`,
+    );
+    runtimeStatements.set(assignments, prepared);
+    return prepared;
+  };
+
   const setActivityByPane = database.prepare(
     "UPDATE agents SET activity = ?, updated_at = ? WHERE pane = ?",
   );
@@ -817,6 +866,36 @@ export function openStore(): Store {
   return {
     claimAgent,
     reconcileLocal,
+
+    setRuntime(update) {
+      // Built from the keys actually PRESENT, so an explicit null is written and
+      // an absent key is left alone. COALESCE would have been shorter and cannot
+      // express the first case -- which is the one pi hits after every
+      // compaction, when the context percent legitimately becomes unknown.
+      const columns = RUNTIME_COLUMNS.filter((column) => column in update);
+      // Reachable, not defensive: an older pi offers none of the members, so the
+      // producer's `runtimeFromContext` returns {} and passes it straight here. A
+      // SET clause built from zero columns is a syntax error.
+      if (columns.length === 0) return false;
+      const assignments = columns.map((column) => `${column} = @${column}`).join(", ");
+      const values: Record<string, string | number | null> = {
+        agent_id: update.agent_id,
+        owner_pid: update.owner_pid,
+        updated_at: update.now ?? Date.now(),
+      };
+      for (const column of columns) {
+        const value = update[column];
+        // The bundle is one JSON column: it is nullable as a unit and no query
+        // looks inside it. Serialised here rather than by the caller, so no
+        // producer has to know the storage shape.
+        values[column] =
+          column === "usage" && value != null ? JSON.stringify(value) : (value as never);
+      }
+      // Prepared per shape and cached: there are a handful of real combinations
+      // (one per event), so this settles after the first few turns rather than
+      // re-planning identical SQL forever.
+      return runtimeStatement(assignments).run(values).changes === 1;
+    },
 
     setActivity(update) {
       // Both key components are required, so a write from a REPLACED owner

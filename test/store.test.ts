@@ -50,6 +50,19 @@ function location(pane = "%1", over: Partial<Location> = {}): Location {
   };
 }
 
+/**
+ * Claim a pane and return the agent id, failing loudly if the claim was refused.
+ *
+ * `ClaimResult` is a union whose `refused` arm carries no id, so a test that
+ * reached for `.agent_id` on it would not typecheck -- and one that defaulted
+ * the id would silently assert against a row nothing wrote.
+ */
+function claimedId(s: Store, pane = "%1"): string {
+  const claim = s.claimAgent({ location: location(pane), owner_pid: process.pid, meta: meta() });
+  if (claim.outcome === "refused") throw new Error(`claim refused by pid ${claim.held_by_pid}`);
+  return claim.agent_id;
+}
+
 function meta(over: Partial<AgentMeta> = {}): AgentMeta {
   return {
     agent_name: "worker-1",
@@ -834,4 +847,102 @@ test("a rebuild with nothing to lose stays quiet", () => {
   // warning on every fresh upgrade would be noise that teaches people to ignore
   // the one that matters.
   expect(warnings.join("")).toBe("");
+});
+
+// --- runtime fields: owner-gated, partial writes -------------------------
+
+/**
+ * `setRuntime` is `Partial`, and that is the whole shape of the problem.
+ *
+ * The fields arrive from three different pi events -- a model change, an effort
+ * change, a completed turn -- so a call that had to pass all of them would force
+ * the producer to invent the ones it did not just learn. Re-asserting a stale
+ * model on a context update is exactly the bug the partial shape prevents.
+ */
+test("setRuntime writes only the keys it is given", () => {
+  const s = store();
+  const id = claimedId(s);
+
+  expect(s.setRuntime({ agent_id: id, owner_pid: process.pid, model: "claude-opus-5" })).toBe(true);
+  expect(s.setRuntime({ agent_id: id, owner_pid: process.pid, context_pct: 11.7 })).toBe(true);
+
+  // The model survived a context-only update. A partial write must not blank the
+  // fields it was not given.
+  expect(s.localPanes()[0]?.agent).toMatchObject({
+    model: "claude-opus-5",
+    context_pct: 11.7,
+    effort: null,
+  });
+});
+
+test("setRuntime can write an explicit null", () => {
+  // Not the same as omitting the key. pi reports a null context percent right
+  // after a compaction, and the card must lose the stale number rather than keep
+  // showing a percentage from before the context was cleared.
+  const s = store();
+  const id = claimedId(s);
+
+  s.setRuntime({ agent_id: id, owner_pid: process.pid, context_pct: 42 });
+  s.setRuntime({ agent_id: id, owner_pid: process.pid, context_pct: null });
+
+  expect(s.localPanes()[0]?.agent?.context_pct).toBeNull();
+});
+
+test("setRuntime round-trips the usage bundle through its column", () => {
+  // The bundle is stored as one JSON document and re-parsed on read, so this
+  // asserts the column survives a full trip rather than that an object equals
+  // itself.
+  const s = store();
+  const id = claimedId(s);
+
+  const usage = {
+    input: 213_000,
+    output: 55_000,
+    cache_read: 4_100_000,
+    cache_write: 12_000,
+    total_tokens: 4_380_000,
+    cache_write_1h: 500,
+    reasoning: 9_000,
+    cost_input: 1.2,
+    cost_output: 2.4,
+    cost_cache_read: 0.41,
+    cost_cache_write: 0.6,
+    cost_total: 4.61,
+  };
+  expect(s.setRuntime({ agent_id: id, owner_pid: process.pid, usage })).toBe(true);
+  expect(s.localPanes()[0]?.agent?.usage).toEqual(usage);
+
+  // Nullable as a unit: an agent whose usage is cleared reports no usage rather
+  // than a bundle of zeroes, which is a different claim.
+  s.setRuntime({ agent_id: id, owner_pid: process.pid, usage: null });
+  expect(s.localPanes()[0]?.agent?.usage).toBeNull();
+});
+
+test("setRuntime refuses a caller that does not own the agent", () => {
+  // The same gate `setActivity` uses, and for the same reason: a pi launched
+  // inside an agent's pane inherits $TMUX_PANE and would otherwise report AS the
+  // parent agent. Six pids once wrote to one pane that way and the parent read
+  // as idle while it was working.
+  const s = store();
+  const id = claimedId(s);
+
+  expect(s.setRuntime({ agent_id: id, owner_pid: process.pid + 1, model: "x" })).toBe(false);
+  expect(s.localPanes()[0]?.agent?.model).toBeNull();
+});
+
+test("setRuntime on an unknown agent is false, not a throw", () => {
+  // A replaced owner matches nothing. That is not an error and must not be
+  // retried: it means this process is no longer the owner of record.
+  const s = store();
+  expect(s.setRuntime({ agent_id: "nope", owner_pid: process.pid, model: "x" })).toBe(false);
+});
+
+test("setRuntime with no fields at all is a no-op, not malformed SQL", () => {
+  // Reachable from the producer: an older pi offers none of the members, so
+  // `runtimeFromContext` returns {} and the caller passes it straight through.
+  // A SET clause built from zero keys would be a syntax error.
+  const s = store();
+  const id = claimedId(s);
+
+  expect(s.setRuntime({ agent_id: id, owner_pid: process.pid })).toBe(false);
 });
