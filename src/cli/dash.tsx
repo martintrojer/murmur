@@ -31,7 +31,6 @@ import {
 import { DASH_CHROME, DASH_CHROME_COLOR, DASH_COLOR, DASH_GLYPH } from "../dash-paint.js";
 import { type DashPrefs, type DashSort, loadDashPrefs, saveDashPrefs } from "../dash-prefs.js";
 import {
-  cardSummary,
   cardWindow,
   type DashFocus,
   dashFooterHints,
@@ -43,11 +42,8 @@ import {
   moveIndex,
   paneFingerprint,
   scrollLabel,
-  summaryKey,
-  summaryTargets,
 } from "../dash-tick.js";
 import { dashRows } from "../dash-view.js";
-import { glance as capturePane } from "../glance.js";
 import { tmux } from "../mux.js";
 import {
   glancePlacement,
@@ -63,14 +59,6 @@ import { requireIdentity } from "./identity-guard.js";
 
 const REDRAW_MS = 1_000;
 const INPUT_PREVIEW_MS = 500;
-/**
- * Trailing lines captured for a card's summary line.
- *
- * Small because only the last non-empty line is read. `capture-pane` returns
- * the whole visible pane regardless of `-S`, so this bounds the string that
- * gets split rather than the work tmux does.
- */
-const SUMMARY_GLANCE_LINES = 5;
 const SORTS: DashSort[] = ["priority", "node", "age"];
 
 type DashProps = {
@@ -215,17 +203,6 @@ function App({ store, initial }: DashProps) {
   // `fetched_at`: on a peerless node those two say nothing about whether the
   // loop is alive, and the header's only ticking field has to.
   const [refreshedAt, setRefreshedAt] = useState<number | null>(null);
-  // One captured glance per visible local card, keyed by pane. Every card
-  // carries its own summary line; before this, only the selected pane was
-  // passed one and the rest showed a blank row.
-  const [summaries, setSummaries] = useState<Map<string, string>>(new Map());
-  // Passed DOWN to the effect rather than listed as a dependency: the rows are
-  // rebuilt on every render, so depending on them would capture on each
-  // keypress. The effect keys on the visible KEYS and the tick instead.
-  const summaryRequestRef = useRef<{ shown: PaneView[]; selected: PaneView | undefined }>({
-    shown: [],
-    selected: undefined,
-  });
   const panes = useMemo(() => dashRows(view.panes, prefs, now), [view, prefs, now]);
   const selectedIndex = Math.max(
     0,
@@ -349,40 +326,6 @@ function App({ store, initial }: DashProps) {
   const window = cardWindow(selectedIndex, panes.length, visibleCards);
   const shown = panes.slice(window.first, window.first + window.shown);
   const scroll = scrollLabel({ ...window, total: panes.length });
-
-  // The visible set as a value, so the capture effect below can depend on WHICH
-  // panes are on screen rather than on the array `panes` rebuilds every render.
-  const shownKeys = shown.map(paneKey).join(",");
-  summaryRequestRef.current = { shown, selected };
-
-  // One capture per visible local card, for the summary line.
-  //
-  // Its own interval rather than the redraw tick, and the same shape as the
-  // input-preview effect below: the cadence is then stated here instead of
-  // riding `now` as a dependency that the body never reads. Restarted whenever
-  // the visible set changes, so a scrolled-to card fills in at once rather than
-  // after the next tick.
-  useEffect(() => {
-    const keys = new Set(shownKeys.split(","));
-    const capture = () => {
-      const { shown: visible, selected: current } = summaryRequestRef.current;
-      const captures = new Map<string, string>();
-      // Filtered by the effect's OWN key set, not the ref alone: the ref is
-      // written on every render, so without this a capture could run against a
-      // row list this effect was never started for.
-      const targets = summaryTargets(visible, current).filter((pane) => keys.has(summaryKey(pane)));
-      for (const pane of targets) {
-        // SUMMARY_GLANCE_LINES, not the preview's 2000: only the last non-empty
-        // line is read.
-        const text = capturePane(store, pane, SUMMARY_GLANCE_LINES);
-        if (text?.trim()) captures.set(summaryKey(pane), text);
-      }
-      setSummaries(captures);
-    };
-    capture();
-    const timer = setInterval(capture, REDRAW_MS);
-    return () => clearInterval(timer);
-  }, [shownKeys, store]);
 
   const jumpTo = useCallback(
     (index: number) => {
@@ -686,7 +629,7 @@ function App({ store, initial }: DashProps) {
                 pane={pane}
                 selected={key === paneKey(selected ?? pane)}
                 cardsFocused={focus === "cards"}
-                glanceLine={cardSummary(pane, selected, summaries, glanceLine)}
+                glanceLine={pane === selected ? glanceLine : undefined}
                 now={now}
                 elementRef={(node) => {
                   if (node) cardNodesRef.current.set(key, node);
