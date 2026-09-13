@@ -77,3 +77,52 @@ test("no message and no glance is the empty string", () => {
   expect(oneLiner(view(), "")).toBe("");
   expect(oneLiner(view(), "\n \n")).toBe("");
 });
+
+/**
+ * pi's status footer, condensed.
+ *
+ * The footer is always the LAST line a pi pane prints, so it is always what the
+ * fallback chain lands on -- the card was spending its one line on token
+ * counters, cache-hit rate and spend, none of which a reader scanning a dash
+ * for an agent to attend to can act on. What matters is which model is running,
+ * at what effort, and how close the context is to full.
+ */
+test("a pi status footer is condensed to model, effort and context", () => {
+  const footer =
+    "↑213k ↓55k R4.4M CH99.0% $4.633 10.5%/800k (auto)     anthropic/claude-opus-5 • medium";
+  expect(oneLiner(view(), footer)).toBe("claude-opus-5 · medium · 10.5%");
+});
+
+test("the provider prefix is dropped, however many segments it has", () => {
+  expect(
+    oneLiner(
+      view(),
+      "↑344k ↓23k R4.6M CH99.1% $4.717 15.1%/850k (auto)   meta-openai/gpt-5.6-sol • medium",
+    ),
+  ).toBe("gpt-5.6-sol · medium · 15.1%");
+});
+
+test("a footer missing a field states the fields it has", () => {
+  // Effort is a pi preference and not always shown; a missing one must not cost
+  // the reader the model and the context too.
+  expect(
+    oneLiner(view(), "↑1k ↓1k R1M CH9.0% $0.10 3.0%/800k (auto)    anthropic/claude-opus-5"),
+  ).toBe("claude-opus-5 · 3.0%");
+});
+
+test("a line that is not a pi footer is left alone", () => {
+  // The condensing is keyed on the footer's own shape. Ordinary output that
+  // happens to contain a percentage or a slash is the agent talking, and
+  // rewriting it would be the fallback chain lying about what the pane said.
+  expect(oneLiner(view(), "running 3 tests, 99.0% covered")).toBe("running 3 tests, 99.0% covered");
+  expect(oneLiner(view(), "src/view.ts • medium")).toBe("src/view.ts • medium");
+});
+
+test("an attention message still beats a pi footer", () => {
+  const agent = view({
+    attention: [{ kind: "blocked", requested_at: 1, message: "needs input" }],
+  });
+  expect(
+    oneLiner(agent, "↑1k ↓1k R1M CH9.0% $0.10 3.0%/800k (auto)  anthropic/claude-opus-5 • medium"),
+  ).toBe("needs input");
+});

@@ -71,6 +71,42 @@ export function wants(
   return view.attention.some((entry) => entry.kind === kind);
 }
 
+/**
+ * pi's status footer, condensed to the three facts a dash reader can act on.
+ *
+ * The footer is the LAST line a pi pane prints, so it is always what the
+ * fallback chain below lands on for a pi agent -- and it spent the card's one
+ * line on token counters, cache-hit rate and spend. None of those change what a
+ * reader scanning for an agent to attend to does next. Model, effort and how
+ * full the context is do: a near-full context is about to compact, and which
+ * model at which effort is the first thing you check before reading further.
+ *
+ * Recognised by SHAPE, not by cli field: the footer's `<pct>%/<budget>` plus a
+ * `provider/model` tail is distinctive, and keying on `cli === "pi"` would
+ * rewrite ordinary output from a pi pane that merely printed something last.
+ * The `not a pi footer` case is the one this must never break -- the fallback
+ * chain's contract is that it shows what the pane SAID.
+ *
+ * Returns null when the line is not a footer, so the caller keeps the original.
+ */
+function piFooter(line: string): string | null {
+  // Context first, and it anchors the match: `10.5%/800k`. The budget is what
+  // separates this from any line with a percentage in it.
+  const context = /(\d+(?:\.\d+)?)%\/\d+(?:\.\d+)?[kKmM]\b/.exec(line);
+  if (!context) return null;
+  // Then the model tail, which must sit AFTER the context for this to be a
+  // footer rather than a coincidence. `provider/model` with an optional
+  // ` • effort`; the provider can carry more than one segment
+  // (`meta-openai/gpt-5.6-sol`), so the model is the last path segment.
+  const tail = line
+    .slice(context.index + context[0].length)
+    .replace(/\s*\([^)]*\)\s*/, " ")
+    .trim();
+  const model = /^(\S*\/)?([\w.-]+)(?:\s*•\s*([\w.-]+))?$/.exec(tail);
+  if (!model) return null;
+  return [model[2], model[3], `${context[1]}%`].filter(Boolean).join(" · ");
+}
+
 /** The first attention message, or the last non-empty line of pane output. */
 export function oneLiner(agent: PaneView, glanceLine?: string | null): string {
   for (const entry of agent.attention) {
@@ -81,7 +117,7 @@ export function oneLiner(agent: PaneView, glanceLine?: string | null): string {
   const lines = glanceLine?.split("\n") ?? [];
   for (let index = lines.length - 1; index >= 0; index -= 1) {
     const line = lines[index]?.trim();
-    if (line) return line;
+    if (line) return piFooter(line) ?? line;
   }
   return "";
 }
