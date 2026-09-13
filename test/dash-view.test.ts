@@ -34,6 +34,14 @@ function view(over: Partial<PaneView> = {}): PaneView {
     role: null,
     cli: "pi",
     driver: "human",
+    model: null,
+    provider: null,
+    effort: null,
+    provider_effort: null,
+    context_pct: null,
+    context_tokens: null,
+    context_window: null,
+    usage: null,
     updated_at: 1_000,
     snapshot_at: null,
     fetched_at: null,
@@ -56,6 +64,14 @@ test("crew rows are hidden unless prefs.crew, and agree with isVisible", () => {
 test("a crew row that needs a human stays visible with crew off", () => {
   const blocked = view({
     driver: "orchestrated",
+    model: null,
+    provider: null,
+    effort: null,
+    provider_effort: null,
+    context_pct: null,
+    context_tokens: null,
+    context_window: null,
+    usage: null,
     attention: [{ kind: "blocked", requested_at: 500, message: "which approach?" }],
   });
   expect(dashVisible(blocked, prefs())).toBe(true);

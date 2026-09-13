@@ -31,6 +31,14 @@ function view(over: Partial<PaneView> = {}): PaneView {
     role: null,
     cli: "pi",
     driver: "human",
+    model: null,
+    provider: null,
+    effort: null,
+    provider_effort: null,
+    context_pct: null,
+    context_tokens: null,
+    context_window: null,
+    usage: null,
     updated_at: 1_000,
     snapshot_at: null,
     fetched_at: null,
@@ -125,4 +133,61 @@ test("an attention message still beats a pi footer", () => {
   expect(
     oneLiner(agent, "↑1k ↓1k R1M CH9.0% $0.10 3.0%/800k (auto)  anthropic/claude-opus-5 • medium"),
   ).toBe("needs input");
+});
+
+// --- reported fields beat the scrape -------------------------------------
+
+test("reported fields beat the scraped footer", () => {
+  // The whole point of snapshot v2: reported state, not text read out of a
+  // pane. The footer here deliberately disagrees with the stored fields, so a
+  // test that passed by coincidence cannot.
+  const agent = view({ model: "gpt-5.6-sol", effort: "high", context_pct: 42.4 });
+  const footer = "↑1k ↓1k R1M CH9.0% $0.10 3.0%/800k (auto)  anthropic/claude-opus-5 • medium";
+  expect(oneLiner(agent, footer)).toBe("gpt-5.6-sol · high · 42.4%");
+});
+
+test("a partial report states what it has", () => {
+  // Each field is independently nullable -- a harness may report a model and no
+  // effort -- and a missing one must not cost the reader the others.
+  expect(oneLiner(view({ model: "m", effort: null, context_pct: 5 }), "")).toBe("m · 5.0%");
+  expect(oneLiner(view({ model: "m", effort: "low", context_pct: null }), "")).toBe("m · low");
+  expect(oneLiner(view({ model: null, effort: null, context_pct: 12.5 }), "")).toBe("12.5%");
+});
+
+test("a reported percentage is formatted like the scraped one", () => {
+  // One decimal, matching `piFooter`, so a card does not visibly change shape
+  // the moment an agent starts reporting. A stored 5 reads "5.0%", not "5%".
+  expect(oneLiner(view({ model: "m", effort: null, context_pct: 5 }), "")).toContain("5.0%");
+  expect(oneLiner(view({ model: "m", effort: null, context_pct: 0 }), "")).toContain("0.0%");
+});
+
+test("no reported fields falls back to the scraped footer", () => {
+  // The fallback is load-bearing, not vestigial: a bare shell, codex, or any
+  // agent without the pi extension has all three null and must still show
+  // something on the selected card.
+  const footer = "↑1k ↓1k R1M CH9.0% $0.10 3.0%/800k (auto)  anthropic/claude-opus-5 • medium";
+  expect(oneLiner(view({ model: null, effort: null, context_pct: null }), footer)).toBe(
+    "claude-opus-5 · medium · 3.0%",
+  );
+});
+
+test("an attention message still beats a report", () => {
+  // Unchanged precedence. A human sentence written by the agent outranks any
+  // derived status line, reported or scraped.
+  const agent = view({
+    model: "m",
+    effort: "low",
+    context_pct: 5,
+    attention: [{ kind: "blocked", requested_at: 1, message: "needs input" }],
+  });
+  expect(oneLiner(agent, "")).toBe("needs input");
+});
+
+test("a reported agent needs no glance at all", () => {
+  // What makes every card showable without a capture: with fields reported, the
+  // line is derived from state the collector already carries, local or remote.
+  expect(oneLiner(view({ model: "m", effort: "max", context_pct: 1 }))).toBe("m · max · 1.0%");
+  expect(oneLiner(view({ model: "m", effort: "max", context_pct: 1 }), null)).toBe(
+    "m · max · 1.0%",
+  );
 });

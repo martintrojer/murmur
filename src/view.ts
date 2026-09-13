@@ -3,9 +3,11 @@ import type { PaneId, SessionId, WindowId } from "./ids.js";
 import type { Store } from "./store.js";
 import {
   type Activity,
+  type AgentUsage,
   type AttentionKind,
   DEFAULT_DRIVER,
   type Driver,
+  type Effort,
   type SnapshotPane,
 } from "./types.js";
 
@@ -107,12 +109,53 @@ function piFooter(line: string): string | null {
   return [model[2], model[3], `${context[1]}%`].filter(Boolean).join(" · ");
 }
 
-/** The first attention message, or the last non-empty line of pane output. */
+/**
+ * What the agent is running with, from its own report.
+ *
+ * Formatted to one decimal so it matches `piFooter` exactly: a card must not
+ * visibly change shape the moment an agent starts reporting, or the reader sees
+ * a cosmetic difference and reads it as a state change.
+ *
+ * Returns "" when nothing was reported, which is the common case for any
+ * harness without the pi extension.
+ */
+function reportedSummary(agent: PaneView): string {
+  return [
+    agent.model,
+    agent.effort,
+    // Guarded on the VALUE, not on null: `PaneView` is exported from the SDK,
+    // so an object built against an older shape can reach here with the key
+    // missing entirely -- and a crash in a card renderer takes the whole dash
+    // down over a cosmetic field.
+    typeof agent.context_pct === "number" ? `${agent.context_pct.toFixed(1)}%` : "",
+  ]
+    .filter(Boolean)
+    .join(" \u00b7 ");
+}
+
+/**
+ * One line describing what this pane is doing, in order of authority.
+ *
+ * 1. An attention message. A human sentence the agent wrote outranks anything
+ *    derived, and it is the one thing a reader may need to act on.
+ * 2. The agent's own report. State the collector already carries, so it works
+ *    for a remote pane as well as a local one and needs no capture.
+ * 3. The last non-empty line of pane output, condensed if it is a pi footer.
+ *    A guess, kept only because agents without the pi extension report nothing
+ *    and a blank card would be worse.
+ *
+ * The report beats the scrape because they answer the same question with
+ * different authority: one is the owner speaking, the other is murmur reading
+ * someone else's terminal. Where they disagree, the owner is right.
+ */
 export function oneLiner(agent: PaneView, glanceLine?: string | null): string {
   for (const entry of agent.attention) {
     const message = entry.message.trim();
     if (message) return message;
   }
+
+  const reported = reportedSummary(agent);
+  if (reported) return reported;
 
   const lines = glanceLine?.split("\n") ?? [];
   for (let index = lines.length - 1; index >= 0; index -= 1) {
@@ -169,6 +212,17 @@ export type PaneView = {
   workstream: string | null;
   role: string | null;
   cli: string | null;
+  // owner-reported runtime: what the agent is running WITH, as opposed to the
+  // metadata above, which is who it is. Null for any harness that does not
+  // report, which is every one without the pi extension.
+  model: string | null;
+  provider: string | null;
+  effort: Effort | null;
+  provider_effort: string | null;
+  context_pct: number | null;
+  context_tokens: number | null;
+  context_window: number | null;
+  usage: AgentUsage | null;
   driver: Driver;
   // ages
   /** When the pane's own node last said something. Never `fetched_at`. */
@@ -297,6 +351,14 @@ function paneView(pane: SnapshotPane, source: ViewSource): PaneView {
     workstream: agent?.workstream ?? null,
     role: agent?.role ?? null,
     cli: agent?.cli ?? null,
+    model: agent?.model ?? null,
+    provider: agent?.provider ?? null,
+    effort: agent?.effort ?? null,
+    provider_effort: agent?.provider_effort ?? null,
+    context_pct: agent?.context_pct ?? null,
+    context_tokens: agent?.context_tokens ?? null,
+    context_window: agent?.context_window ?? null,
+    usage: agent?.usage ?? null,
     driver: agent?.driver ?? DEFAULT_DRIVER,
     // The NEWER of the two, not the agent row with attention as a fallback.
     //
