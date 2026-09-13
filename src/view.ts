@@ -182,22 +182,6 @@ export function oneLiner(agent: PaneView, glanceLine?: string | null): string {
   return "";
 }
 
-/** The owner-reported fields that identify one mu worker. */
-export type WorkerIdentity = {
-  agent_name: string | null;
-  workstream: string | null;
-};
-
-/** Whether two rows report the same complete mu worker identity. */
-export function sameWorker(left: WorkerIdentity, right: WorkerIdentity): boolean {
-  return (
-    left.workstream !== null &&
-    left.agent_name !== null &&
-    left.workstream === right.workstream &&
-    left.agent_name === right.agent_name
-  );
-}
-
 /**
  * One pane, as every surface reads it: address, the three independent facts,
  * owner metadata, and ages.
