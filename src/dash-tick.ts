@@ -18,21 +18,51 @@ export function glanceNeedsRefresh(previous: string | null, next: string | null)
 }
 
 /**
- * How long ago the oldest peer fetch was, for the dash header.
+ * A header age, verb-free so both the fetch and the refresh can borrow it.
  *
  * Unlike `age()`, this speaks in seconds — the header ticks every second and
  * must visibly advance. `age()` stays blank under a minute on purpose for
  * status-column noise; that made the strip read "fetched now ago" and freeze.
  */
-export function formatFetchedAge(ms: number): string {
+function elapsedText(ms: number): string {
+  // Clamped: a clock that stepped backwards (suspend, NTP) must read as now
+  // rather than print a negative age.
   const elapsed = Math.max(0, ms);
-  if (elapsed < 1_000) return "fetched just now";
-  if (elapsed < 60_000) return `fetched ${Math.floor(elapsed / 1000)}s ago`;
-  return `fetched ${age(elapsed)} ago`;
+  if (elapsed < 1_000) return "just now";
+  if (elapsed < 60_000) return `${Math.floor(elapsed / 1000)}s ago`;
+  return `${age(elapsed)} ago`;
 }
 
-export function fetchedText(view: Pick<Status, "peers">, now: number): string {
-  if (view.peers.length === 0) return "local";
+/** How long ago the oldest peer fetch was. */
+export function formatFetchedAge(ms: number): string {
+  return `fetched ${elapsedText(ms)}`;
+}
+
+/**
+ * The header's one ticking field: how current the data on screen is.
+ *
+ * `refreshedAt` is when the dash's own collect cycle last completed, and it is
+ * what the peerless case reports. `local` alone was a constant, so on a machine
+ * with no peers the field never moved -- and a header field that cannot change
+ * cannot answer the question it exists for, which is "is this thing still
+ * running or has it wedged?". Every other cue on the dash is a fact about an
+ * agent; this is the only one about murmur itself.
+ *
+ * Appended rather than substituted, because `local` is still worth saying: it
+ * tells the reader the rows are this machine's and no ssh is involved, which is
+ * why an unconfigured peer list shows nothing rather than being broken.
+ *
+ * Null when no refresh has completed yet -- the first tick fires before the
+ * first collect resolves, and stating an age we do not have would be worse than
+ * saying nothing for one second.
+ */
+export function fetchedText(
+  view: Pick<Status, "peers">,
+  now: number,
+  refreshedAt: number | null = null,
+): string {
+  if (view.peers.length === 0)
+    return refreshedAt === null ? "local" : `local · refreshed ${elapsedText(now - refreshedAt)}`;
   if (view.peers.some((peer) => peer.fetched_at === null)) return "fetched never";
   const fetched = view.peers.flatMap((peer) => (peer.fetched_at === null ? [] : [peer.fetched_at]));
   const oldest = Math.min(...fetched);

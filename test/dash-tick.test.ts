@@ -93,7 +93,21 @@ test("fetchedText picks the oldest peer fetch", () => {
     ...overrides,
   });
 
-  expect(fetchedText({ peers: [] }, 10_000)).toBe("local");
+  // A peerless node still has a clock. `local` alone was a CONSTANT: on a
+  // machine with no peers the header's one ticking field never moved, so the
+  // dash looked frozen and gave the reader nothing to tell a live collect loop
+  // from a wedged one -- which is the whole job of that field.
+  //
+  // The refresh age is the honest counter there: nothing is fetched, but the
+  // collect cycle still runs, and its age is what "is this still alive" asks.
+  expect(fetchedText({ peers: [] }, 10_000, 10_000)).toBe("local · refreshed just now");
+  expect(fetchedText({ peers: [] }, 10_000, 7_000)).toBe("local · refreshed 3s ago");
+  // A clock that went backwards (suspend, NTP step) reads as now, not as a
+  // negative age: `formatFetchedAge` clamps, and the header must not print
+  // `refreshed -60s ago`.
+  expect(fetchedText({ peers: [] }, 10_000, 70_000)).toBe("local · refreshed just now");
+  // No refresh has completed yet, so there is no age to state.
+  expect(fetchedText({ peers: [] }, 10_000, null)).toBe("local");
   expect(fetchedText({ peers: [peer({ name: "a", fetched_at: null })] }, 10_000)).toBe(
     "fetched never",
   );

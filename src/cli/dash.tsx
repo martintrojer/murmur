@@ -199,6 +199,10 @@ function App({ store, initial }: DashProps) {
   const [message, setMessage] = useState("");
   const [now, setNow] = useState(Date.now());
   const [collectRevision, setCollectRevision] = useState(0);
+  // When the collect cycle last COMPLETED, which is not `now` and not a peer's
+  // `fetched_at`: on a peerless node those two say nothing about whether the
+  // loop is alive, and the header's only ticking field has to.
+  const [refreshedAt, setRefreshedAt] = useState<number | null>(null);
   const panes = useMemo(() => dashRows(view.panes, prefs, now), [view, prefs, now]);
   const selectedIndex = Math.max(
     0,
@@ -239,8 +243,10 @@ function App({ store, initial }: DashProps) {
         ssh,
         floored ? { floorMs: COLLECT_FLOOR_MS } : {},
       );
+      const at = Date.now();
       setView(updated);
-      setNow(Date.now());
+      setNow(at);
+      setRefreshedAt(at);
       setCollectRevision((revision) => revision + 1);
     },
     [store],
@@ -591,7 +597,7 @@ function App({ store, initial }: DashProps) {
           ))
         )}
         <Dot />
-        <Text color={DASH_CHROME_COLOR.info}>{fetchedText(view, now)}</Text>
+        <Text color={DASH_CHROME_COLOR.info}>{fetchedText(view, now, refreshedAt)}</Text>
         <Dot />
         <Text color={DASH_CHROME_COLOR.accent}>sort </Text>
         <Text color={DASH_CHROME_COLOR.text}>{prefs.sort}</Text>
