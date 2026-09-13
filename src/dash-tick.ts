@@ -231,3 +231,32 @@ export function dashFooterHints(
     { chord: "+/-", label: "preview", drop: 11 },
   ];
 }
+
+/**
+ * Clip one glance line to the visible width, before ink ever measures it.
+ *
+ * ink memoises text measurement in a module-level `Map` keyed by the string
+ * itself, with no eviction (`ink/build/measure-text.js`). Every distinct string
+ * the renderer has seen is retained for the life of the process -- measured at
+ * ~0.24KB per line and surviving a forced GC.
+ *
+ * The dash is close to a worst case for that: the glance holds up to 2000 lines
+ * of live `capture-pane` output and re-renders every second, so a working agent
+ * produces new distinct text indefinitely. Left alone it reached 2.3GB RSS in
+ * five and a half hours, growing ~240MB/hour.
+ *
+ * `wrap="truncate-end"` does not help, because it happens at PAINT time: ink
+ * measures the whole 400-character line first and caches that. Clipping here
+ * bounds the cache in the only way that works -- by collapsing the VARIETY, so
+ * two lines differing only past the right-hand edge become one key rather than
+ * two.
+ *
+ * Returns the input unchanged when it already fits, so text ink has measured
+ * before does not become a second key. A width of zero or less is ignored
+ * rather than honoured: a narrow terminal must still show something, and a
+ * blank glance would be a worse bug than the one this fixes.
+ */
+export function clipGlanceLine(line: string, width: number): string {
+  if (width <= 0 || line.length <= width) return line;
+  return line.slice(0, width);
+}

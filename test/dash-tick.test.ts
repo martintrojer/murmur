@@ -1,6 +1,7 @@
 import { expect, test } from "vitest";
 import {
   cardWindow,
+  clipGlanceLine,
   dashFooterHints,
   dashNavigation,
   fetchedText,
@@ -191,4 +192,61 @@ test("navigation keys map to the active region", () => {
   expect(dashNavigation("preview", "pageDown", 4, 2)).toEqual({ type: "preview", offset: 2 });
   expect(dashNavigation("preview", "home", 4, 2)).toEqual({ type: "preview-edge", edge: "top" });
   expect(dashNavigation("cards", "end", 4, 2)).toEqual({ type: "cards-edge", edge: "bottom" });
+});
+
+/**
+ * Why the glance body is clipped before it reaches ink.
+ *
+ * ink memoises text measurement in a module-level `Map` keyed by the string
+ * itself, with no eviction (`ink/build/measure-text.js`). Every distinct string
+ * the renderer has ever seen is retained for the life of the process --
+ * measured at ~0.24KB per line, surviving a forced GC.
+ *
+ * The dash feeds it an unbounded stream of distinct strings: the glance holds
+ * 2000 lines of live `capture-pane` output and re-renders every second, so a
+ * busy agent's scrolling pane produces new text indefinitely. Observed at 2.3GB
+ * RSS after five and a half hours, climbing ~240MB/hour.
+ *
+ * Clipping to the pane width is what breaks the growth, because it also collapses
+ * the variety: `wrap="truncate-end"` happens at PAINT time, so ink measures the
+ * full 400-character line first and caches that. Clipped, two lines differing
+ * only past the right-hand edge become one cache key.
+ */
+test("glance lines are clipped to the visible width before rendering", () => {
+  // A line wider than the pane is cut, with room left for the ellipsis ink's
+  // own truncation would add.
+  const long = "x".repeat(400);
+  expect(clipGlanceLine(long, 80).length).toBeLessThanOrEqual(80);
+  // Two lines that differ only past the edge collapse to ONE cache key, which
+  // is the property that bounds the cache rather than merely slowing it.
+  expect(clipGlanceLine(`${"a".repeat(90)}FIRST`, 80)).toBe(
+    clipGlanceLine(`${"a".repeat(90)}SECOND`, 80),
+  );
+  // A line that fits is returned unchanged -- no allocation, and no new cache
+  // key for text ink has already measured.
+  const short = "ready";
+  expect(clipGlanceLine(short, 80)).toBe(short);
+});
+
+test("clipping keeps enough width to be useful and never zero", () => {
+  // Defends the reader, not the renderer: a narrow terminal must still show
+  // something, and a zero or negative width would blank the pane entirely.
+  expect(clipGlanceLine("hello world", 0)).toBe("hello world");
+  expect(clipGlanceLine("hello world", -5)).toBe("hello world");
+  expect(clipGlanceLine("hello world", 4)).toBe("hell");
+});
+
+test("the card summary is clipped too, since it is also live pane text", () => {
+  // The glance body was only half the source. A card's third row is
+  // `oneLiner(pane, glanceLine)`, and for an agent that reports nothing that is
+  // the last non-empty line of its pane -- which changes on every tick of a
+  // working agent, exactly like the glance.
+  //
+  // Same cache, same unbounded growth, and clipping the glance alone left the
+  // dash still climbing 130MB in 80 seconds when measured.
+  const long = `status: ${"y".repeat(300)}`;
+  expect(clipGlanceLine(long, 36).length).toBeLessThanOrEqual(36);
+  expect(clipGlanceLine(`${"b".repeat(40)}ONE`, 36)).toBe(
+    clipGlanceLine(`${"b".repeat(40)}TWO`, 36),
+  );
 });

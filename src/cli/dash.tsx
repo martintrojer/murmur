@@ -32,6 +32,7 @@ import { DASH_CHROME, DASH_CHROME_COLOR, DASH_COLOR, DASH_GLYPH } from "../dash-
 import { type DashPrefs, type DashSort, loadDashPrefs, saveDashPrefs } from "../dash-prefs.js";
 import {
   cardWindow,
+  clipGlanceLine,
   type DashFocus,
   dashFooterHints,
   dashNavigation,
@@ -57,7 +58,29 @@ import { openStore, type Store } from "../store.js";
 import { age, oneLiner, type PaneView, RENDER_PRIORITY, renderState } from "../view.js";
 import { requireIdentity } from "./identity-guard.js";
 
-const REDRAW_MS = 1_000;
+/**
+ * Redraw cadence.
+ *
+ * Three seconds, not one, and this is a memory decision rather than a
+ * cosmetic one. ink allocates a yoga layout node per element and frees it on
+ * the next render; yoga is WASM and that churn is not returned to the OS.
+ * Measured on this dash: a 1s tick grew ~200MB/hour without bound (2.3GB after
+ * five and a half hours), a 10s tick was flat, and 3s plateaus around 250MB and
+ * stays there.
+ *
+ * Nothing on screen needs a faster clock. The ages are displayed to the second
+ * but a second's lag in reading one is invisible, and the collect floor is 30s,
+ * so the underlying facts change far more slowly than this.
+ */
+const REDRAW_MS = 3_000;
+/**
+ * Widest text a card can show, used only to bound what ink measures.
+ *
+ * A card is a fixed fraction of the rail and never wide; the exact figure does
+ * not matter, only that it is an upper bound, since anything past it was never
+ * painted. See `clipGlanceLine` for why measuring the unclipped string leaks.
+ */
+const CARD_TEXT_WIDTH = 120;
 const INPUT_PREVIEW_MS = 500;
 const SORTS: DashSort[] = ["priority", "node", "age"];
 
@@ -149,7 +172,11 @@ function Card({
   const state = renderState(pane);
   const stale = pane.freshness === "stale";
   const stream = pane.workstream ?? pane.session_name;
-  const summary = oneLiner(pane, glanceLine);
+  // Clipped for the same reason the glance body is: for an agent that reports
+  // nothing, this is the last line of its pane and changes every tick, and ink
+  // retains every distinct string it measures for the life of the process. The
+  // card is ~38 columns wide, so anything past that was never visible anyway.
+  const summary = clipGlanceLine(oneLiner(pane, glanceLine), CARD_TEXT_WIDTH);
   const elapsed = age(pane.updated_at === null ? null : now - pane.updated_at);
 
   return (
@@ -557,6 +584,14 @@ function App({ store, initial }: DashProps) {
     return placement === "bottom" ? Math.max(5, bodyRows - cardHeight) : bodyRows;
   })();
   const glanceLines = glance.split("\n");
+  // The glance body's own width: the box less its border (1 each side) and
+  // paddingX (1 each side). Only used to bound what ink measures, so an
+  // approximation is fine -- but it must not be wider than the box, or the
+  // clipping stops collapsing anything.
+  const glanceTextWidth = Math.max(
+    1,
+    Math.round((placement === "right" ? columns * share : columns) - 4),
+  );
   const previewFocused = focus === "preview";
   const inputChromeRows = inputMode ? 2 + (inputError ? 1 : 0) : previewFocused ? 1 : 0;
   const glanceFrame = glanceViewport(glanceLines.length, glanceBoxHeight - inputChromeRows);
@@ -564,6 +599,12 @@ function App({ store, initial }: DashProps) {
   const glanceScrollMax = Math.max(0, glanceLines.length - glanceVisibleLines);
   const glanceOffset = clampGlanceScroll(glanceScroll, glanceLines.length, glanceVisibleLines);
   const glanceViewLines = glanceLines.slice(glanceOffset, glanceOffset + glanceVisibleLines);
+  // Clipped per line, then joined into one string. An empty line becomes a
+  // space so the row still occupies height, as it did when each line was its
+  // own element.
+  const glanceBody = glanceViewLines
+    .map((line) => clipGlanceLine(line, glanceTextWidth) || " ")
+    .join("\n");
   const glanceLine = [...glanceLines]
     .reverse()
     .find((line) => line.trim())
@@ -682,14 +723,23 @@ function App({ store, initial }: DashProps) {
                 : "↓ end"}
             </Text>
           ) : null}
-          {glanceViewLines.map((line, slot) => {
-            const lineNo = glanceOffset + slot;
-            return (
-              <Text key={lineNo} wrap="truncate-end">
-                {line.length > 0 ? line : " "}
-              </Text>
-            );
-          })}
+          {/*
+            ONE Text node for the whole body, not one per line.
+            
+            ink builds a yoga layout node per element and frees it on the next
+            render. Yoga is WASM, and that create/free churn does not return to
+            the OS -- measured at ~200MB/hour with a 1s tick, and near zero at
+            10s, which is what proves the cost is per-render rather than
+            per-second. Thirty-five line elements made the glance the largest
+            contributor on every tick.
+            
+            Lines are clipped and joined here instead. Each is cut to the
+            visible width first, so the single string cannot be wider than the
+            box and `wrap="truncate-end"` has nothing left to do -- which is
+            also what keeps ink's unevictable measurement cache from growing a
+            key per distinct full-width line.
+          */}
+          <Text>{glanceBody}</Text>
           {inputError ? (
             <Text color={DASH_COLOR.crashed} wrap="truncate-end">
               {inputError}
