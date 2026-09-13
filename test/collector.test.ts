@@ -15,7 +15,7 @@ import {
 } from "../src/collector.js";
 import { asPaneId, asSessionId, asWindowId } from "../src/ids.js";
 import { openStore, type Store } from "../src/store.js";
-import type { Snapshot, SnapshotPane } from "../src/types.js";
+import { SNAPSHOT_VERSION, type Snapshot, type SnapshotPane } from "../src/types.js";
 import { STALENESS_MS } from "../src/view.js";
 import { fakeMux } from "./helpers/fake-mux.js";
 
@@ -48,6 +48,14 @@ function pane(id: string): SnapshotPane {
       role: null,
       cli: "pi",
       driver: "human",
+      model: null,
+      provider: null,
+      context_tokens: null,
+      context_window: null,
+      provider_effort: null,
+      usage: null,
+      effort: null,
+      context_pct: null,
       claimed_at: 1,
       updated_at: 1,
     },
@@ -57,7 +65,7 @@ function pane(id: string): SnapshotPane {
 
 function snapshot(panes: SnapshotPane[], hostId = "REMOTE", over: Partial<Snapshot> = {}): string {
   return JSON.stringify({
-    murmur_snapshot: 1,
+    murmur_snapshot: 2,
     host_id: hostId,
     display_name: "Remote",
     murmur_version: "0.2.0",
@@ -87,7 +95,7 @@ test("collect replaces a peer's cached snapshot whole", async () => {
     host_id: "REMOTE",
     display_name: "Remote",
     murmur_version: "0.2.0",
-    snapshot_version: 1,
+    snapshot_version: SNAPSHOT_VERSION,
     snapshot_at: 1_000,
     fetched_at: 5_000,
     last_error: null,
@@ -190,7 +198,10 @@ test("an invalid snapshot is rejected before storage and reads as reachable-but-
   // dropped. None may reach storage, because a half-valid document is how an
   // unknown value gets into a sort, a count or a render path.
   const documents: [name: string, body: string][] = [
-    ["a newer protocol", snapshot([pane("%1")], "REMOTE", { murmur_snapshot: 2 } as never)],
+    [
+      "a newer protocol",
+      snapshot([pane("%1")], "REMOTE", { murmur_snapshot: SNAPSHOT_VERSION + 1 } as never),
+    ],
     [
       "an unknown activity",
       JSON.stringify(JSON.parse(snapshot([pane("%1")])), (key, value) =>

@@ -37,7 +37,7 @@ function location(pane: string): Location {
 
 function remoteSnapshot(panes: SnapshotPane[]): Snapshot {
   return {
-    murmur_snapshot: 1,
+    murmur_snapshot: 2,
     host_id: "REMOTE",
     display_name: "container-id",
     murmur_version: "0.2.0",
@@ -62,6 +62,14 @@ function remotePane(pane: string): SnapshotPane {
       role: null,
       cli: "pi",
       driver: "human",
+      model: null,
+      provider: null,
+      context_tokens: null,
+      context_window: null,
+      provider_effort: null,
+      usage: null,
+      effort: null,
+      context_pct: null,
       claimed_at: 1,
       updated_at: 1,
     },

@@ -8,6 +8,7 @@ import {
   type RosterEntry,
   type SurveyResult,
 } from "../src/doctor.js";
+import { SNAPSHOT_VERSION } from "../src/types.js";
 
 /**
  * The diagnosis core. Pure in, pure out: no Channel, no store, no ssh, so every
@@ -30,7 +31,7 @@ function peer(over: Partial<LocalPeer> & { name: string }): LocalPeer {
     host_id: null,
     display_name: null,
     murmur_version: "0.2.1",
-    snapshot_version: 1,
+    snapshot_version: SNAPSHOT_VERSION,
     // Defaults describing a HEALTHY peer, so a test opts in to the never-worked
     // shape rather than inheriting it: most fixtures here are about other
     // checks and must not accidentally raise this finding.
@@ -236,7 +237,12 @@ test("a survey identity beats a stale cache, so a peer added while asleep is sti
 test("snapshot skew is a problem and reuses versionCell's text verbatim", () => {
   const findings = diagnose(
     localNode([
-      peer({ name: "bubba", host_id: "BUBBA", murmur_version: "0.1.3", snapshot_version: 2 }),
+      peer({
+        name: "bubba",
+        host_id: "BUBBA",
+        murmur_version: "0.1.3",
+        snapshot_version: SNAPSHOT_VERSION - 1,
+      }),
     ]),
     [],
   );
@@ -245,7 +251,7 @@ test("snapshot skew is a problem and reuses versionCell's text verbatim", () => 
   // The parenthetical is versionCell's cell, character for character. If doctor
   // ever grew its own opinion of compatibility this string would drift.
   expect(skew.message).toBe(
-    "bubba speaks an incompatible snapshot version (0.1.3 (snapshot 2 \u2260 1)); " +
+    `bubba speaks an incompatible snapshot version (0.1.3 (snapshot ${SNAPSHOT_VERSION - 1} \u2260 ${SNAPSHOT_VERSION})); ` +
       "state will not sync until murmur versions match",
   );
 });
@@ -261,7 +267,12 @@ test("a peer that has never answered is not skew: unknown is not incompatible", 
 test("a matching snapshot version is not skew even when murmur versions differ", () => {
   const findings = diagnose(
     localNode([
-      peer({ name: "bubba", host_id: "BUBBA", murmur_version: "0.1.3", snapshot_version: 1 }),
+      peer({
+        name: "bubba",
+        host_id: "BUBBA",
+        murmur_version: "0.1.3",
+        snapshot_version: SNAPSHOT_VERSION,
+      }),
     ]),
     [],
   );
@@ -406,7 +417,7 @@ test("problems sort ahead of observations", () => {
   const findings = diagnose(
     localNode([
       peer({ name: "bubba", host_id: "BUBBA" }),
-      peer({ name: "macmini", host_id: "MACMINI", snapshot_version: 2 }),
+      peer({ name: "macmini", host_id: "MACMINI", snapshot_version: SNAPSHOT_VERSION - 1 }),
     ]),
     [surveyed({ target: "bubba", host_id: "BUBBA" })],
   );

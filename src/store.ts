@@ -8,7 +8,7 @@ import { asPaneId, asSessionId, asWindowId } from "./ids.js";
 import { defaultJumpCommand } from "./jump-command.js";
 import { pidAlive } from "./mux.js";
 import { dbPath } from "./paths.js";
-import { parseSnapshot } from "./snapshot.js";
+import { parseSnapshot, parseUsage } from "./snapshot.js";
 import type {
   ActivityUpdate,
   AgentClaim,
@@ -26,7 +26,7 @@ import type {
   SnapshotAttention,
   SnapshotPane,
 } from "./types.js";
-import { ATTENTION_PRIORITY } from "./types.js";
+import { ATTENTION_PRIORITY, SNAPSHOT_VERSION } from "./types.js";
 import { MURMUR_VERSION } from "./version.js";
 
 /**
@@ -36,7 +36,7 @@ import { MURMUR_VERSION } from "./version.js";
  * typed, deletes the file, and recreates the schema. No ALTER TABLE anywhere, so
  * there is no additive path to forget to use.
  */
-const SCHEMA_USER_VERSION = 4;
+const SCHEMA_USER_VERSION = 5;
 
 /**
  * How long to wait for another process's reset before stealing its lock.
@@ -63,6 +63,25 @@ const SCHEMA = `
     role         TEXT,
     cli          TEXT    NOT NULL,
     driver       TEXT    NOT NULL CHECK (driver IN ('human', 'orchestrated')),
+    -- What the agent is running with, as it reports it. Nullable because a bare
+    -- shell or a notify-only harness knows none of it. The effort column is
+    -- CHECK-ed for the same reason driver is: the set is closed, so no sort or
+    -- render path needs a fallback branch for a word nothing defines.
+    model        TEXT,
+    provider     TEXT,
+    context_tokens  INTEGER CHECK (context_tokens IS NULL OR context_tokens >= 0),
+    context_window  INTEGER CHECK (context_window IS NULL OR context_window >= 0),
+    provider_effort TEXT,
+    -- The usage bundle as one JSON document, because it is nullable as a UNIT
+    -- and no query looks inside it. Twelve more columns would buy nothing that
+    -- is read and cost every writer twelve placeholders; if a surface ever
+    -- needs to sort on cost, that is the point to promote a column.
+    -- Validated by parseUsage on the way in and out, so the opacity is at rest
+    -- only -- nothing trusts this text without parsing it.
+    usage        TEXT,
+    effort       TEXT    CHECK (effort IS NULL OR effort IN
+                          ('off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max')),
+    context_pct  REAL    CHECK (context_pct IS NULL OR (context_pct >= 0 AND context_pct <= 100)),
     claimed_at   INTEGER NOT NULL,
     updated_at   INTEGER NOT NULL
   ) STRICT;
@@ -158,6 +177,14 @@ type AgentDbRow = {
   role: string | null;
   cli: string;
   driver: string;
+  model: string | null;
+  provider: string | null;
+  effort: string | null;
+  context_pct: number | null;
+  context_tokens: number | null;
+  context_window: number | null;
+  provider_effort: string | null;
+  usage: string | null;
   claimed_at: number;
   updated_at: number;
 };
@@ -342,6 +369,22 @@ function toAttention(row: AttentionDbRow): SnapshotAttention {
   };
 }
 
+/**
+ * The usage column, parsed, or null.
+ *
+ * Total by construction: anything unparseable becomes null, because a missing
+ * usage bundle is a state every reader already handles and a throw here would
+ * fail a whole local read over optional baggage.
+ */
+function parseStoredUsage(text: string | null): SnapshotAgent["usage"] {
+  if (text === null) return null;
+  try {
+    return parseUsage(JSON.parse(text));
+  } catch {
+    return null;
+  }
+}
+
 function toAgent(row: AgentDbRow): SnapshotAgent {
   return {
     agent_id: row.agent_id,
@@ -352,6 +395,18 @@ function toAgent(row: AgentDbRow): SnapshotAgent {
     role: row.role,
     cli: row.cli,
     driver: row.driver as SnapshotAgent["driver"],
+    model: row.model,
+    provider: row.provider,
+    effort: row.effort as SnapshotAgent["effort"],
+    context_pct: row.context_pct,
+    context_tokens: row.context_tokens,
+    context_window: row.context_window,
+    provider_effort: row.provider_effort,
+    // Re-validated, not cast. The column is opaque text at rest, so the only
+    // thing that makes it trustworthy on the way out is parsing it again -- and
+    // a row written by an older build, or edited by hand, must degrade to null
+    // rather than hand a render path a shape it never checked.
+    usage: parseStoredUsage(row.usage),
     claimed_at: row.claimed_at,
     updated_at: row.updated_at,
   };
@@ -840,7 +895,7 @@ export function openStore(): Store {
       // every focus hook on the machine behind an export.
       reconcileLocal(world);
       return {
-        murmur_snapshot: 1,
+        murmur_snapshot: SNAPSHOT_VERSION,
         host_id: identity.host_id,
         display_name: identity.display_name,
         murmur_version: MURMUR_VERSION,

@@ -22,7 +22,7 @@ function cell(over: Partial<Pick<PeerRecord, "murmur_version" | "snapshot_versio
 /** A document, as a peer's `murmur export` would print it. */
 function wire(over: Partial<Snapshot> = {}): string {
   return JSON.stringify({
-    murmur_snapshot: 1,
+    murmur_snapshot: 2,
     host_id: "REMOTE",
     display_name: "bubba",
     murmur_version: "0.1.4",
@@ -32,7 +32,7 @@ function wire(over: Partial<Snapshot> = {}): string {
   });
 }
 
-test("this node's own snapshot states its version and speaks snapshot 1", () => {
+test("this node's own snapshot states its version and speaks the current snapshot", () => {
   const identity = createIdentity("here");
   const store = openStore();
   const snapshot = store.buildLocalSnapshot(identity, { panes: new Set() });
@@ -45,8 +45,7 @@ test("this node's own snapshot states its version and speaks snapshot 1", () => 
   expect(snapshot.murmur_version).toBe(VERSION);
   // A literal, not the constant. Comparing the document against the constant
   // passes whatever the constant is, so it cannot notice a bump at all.
-  expect(snapshot.murmur_snapshot).toBe(1);
-  expect(SNAPSHOT_VERSION).toBe(1);
+  expect(snapshot.murmur_snapshot).toBe(2);
 });
 
 test("a collect records what the peer is running, out of the document itself", async () => {
@@ -59,7 +58,7 @@ test("a collect records what the peer is running, out of the document itself", a
 
   expect(store.peers()[0]).toMatchObject({
     murmur_version: "0.1.4",
-    snapshot_version: 1,
+    snapshot_version: SNAPSHOT_VERSION,
     host_id: "REMOTE",
     display_name: "bubba",
   });
@@ -75,7 +74,8 @@ test("a peer speaking a newer snapshot version is refused and recorded as broken
   const store = openStore();
   store.addPeer("newer", "newer");
   const channel: Channel = {
-    exec: async () => wire({ murmur_snapshot: 2 as never, murmur_version: "9.9.9" }),
+    exec: async () =>
+      wire({ murmur_snapshot: (SNAPSHOT_VERSION + 1) as never, murmur_version: "9.9.9" }),
   };
 
   const results = await collect(store, channel, 5_000);
@@ -105,11 +105,11 @@ test("only a snapshot-version mismatch is flagged; a murmur version is shown pla
   // A differing murmur version is not. Two nodes on snapshot 1 running 0.1.3 and
   // 0.2.0 interoperate, so marking it would fire on every patch release and
   // train the operator to ignore the column.
-  expect(cell({ murmur_version: "0.1.3", snapshot_version: 1 })).toEqual({
+  expect(cell({ murmur_version: "0.1.3", snapshot_version: SNAPSHOT_VERSION })).toEqual({
     text: "0.1.3",
     incompatible: false,
   });
-  expect(cell({ murmur_version: "0.9.0", snapshot_version: 1 })).toEqual({
+  expect(cell({ murmur_version: "0.9.0", snapshot_version: SNAPSHOT_VERSION })).toEqual({
     text: "0.9.0",
     incompatible: false,
   });
@@ -121,11 +121,16 @@ test("only a snapshot-version mismatch is flagged; a murmur version is shown pla
 
   // Answered, but from a build too old to say what it is. Distinct from never
   // having answered: this one is reachable and talking.
-  expect(cell({ snapshot_version: 1 })).toEqual({ text: "unreported", incompatible: false });
+  expect(cell({ snapshot_version: SNAPSHOT_VERSION })).toEqual({
+    text: "unreported",
+    incompatible: false,
+  });
 
   // The number appears ONLY when it is the problem, or every row would read
   // "0.1.4 (snapshot 1)" and the signal would be lost in the noise.
-  expect(cell({ murmur_version: "0.1.4", snapshot_version: 1 }).text).not.toContain("snapshot");
+  expect(cell({ murmur_version: "0.1.4", snapshot_version: SNAPSHOT_VERSION }).text).not.toContain(
+    "snapshot",
+  );
 });
 
 /**
@@ -167,7 +172,7 @@ test("peer list shows a VERSION column once a peer has reported, and names a rea
     ok: true,
     at: Date.now(),
     snapshot: {
-      murmur_snapshot: 1,
+      murmur_snapshot: 2,
       host_id: "M",
       display_name: "macmini",
       murmur_version: "0.1.4",

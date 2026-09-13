@@ -87,7 +87,7 @@ test("a field-level snapshot failure still names its path first", () => {
   // The other half of the same join: a real path must be prefixed exactly as
   // before, or the fix for the empty case would cost every useful message.
   const bad = JSON.stringify({
-    murmur_snapshot: 1,
+    murmur_snapshot: 2,
     host_id: "H",
     display_name: "d",
     murmur_version: "0.1.0",

@@ -9,7 +9,7 @@ import type { PeerRecord, Snapshot } from "../src/types.js";
 /** A probe result: what `peer add` parsed out of the far side's `murmur export`. */
 function probe(hostId: string, displayName: string): Snapshot {
   return {
-    murmur_snapshot: 1,
+    murmur_snapshot: 2,
     host_id: hostId,
     display_name: displayName,
     murmur_version: "0.2.0",

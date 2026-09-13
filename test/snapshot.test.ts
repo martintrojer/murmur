@@ -249,10 +249,10 @@ test("a pane with nothing to say is a pane nobody mentions, locally or on the wi
   expect(parseSnapshot(JSON.stringify(built)).panes).toHaveLength(1);
 });
 
-test("a snapshot states its own version and speaks snapshot 1", () => {
+test("a snapshot states its own version and speaks snapshot 2", () => {
   const built = store().buildLocalSnapshot(IDENTITY, { panes: live(), now: 1 });
 
-  expect(built.murmur_snapshot).toBe(1);
+  expect(built.murmur_snapshot).toBe(2);
   expect(built.murmur_version).toMatch(/^\d+\.\d+\.\d+/);
   // An empty node is a valid, complete document: it says "nothing here", which
   // is a fact, not an absence of one.
@@ -266,7 +266,7 @@ test("parseSnapshot names the first failing path so an operator can act", () => 
   // shows `last_error` and nothing else. "invalid snapshot" would send them to
   // read code on another machine.
   const bad = JSON.stringify({
-    murmur_snapshot: 1,
+    murmur_snapshot: 2,
     host_id: "H",
     display_name: "d",
     murmur_version: "0.1.0",
@@ -290,7 +290,7 @@ test("parseSnapshot names the first failing path so an operator can act", () => 
 
 test("nothing is coerced, defaulted or carried through", () => {
   const base = {
-    murmur_snapshot: 1,
+    murmur_snapshot: 2,
     host_id: "H",
     display_name: "d",
     murmur_version: "0.1.0",
@@ -316,6 +316,14 @@ test("nothing is coerced, defaulted or carried through", () => {
     role: null,
     cli: "pi",
     driver: "human",
+    model: null,
+    provider: null,
+    context_tokens: null,
+    context_window: null,
+    provider_effort: null,
+    usage: null,
+    effort: null,
+    context_pct: null,
     claimed_at: 1,
     updated_at: 1,
   };
@@ -323,14 +331,18 @@ test("nothing is coerced, defaulted or carried through", () => {
   // way a lenient parser would have let it through: a coerced number, a
   // defaulted null, an unknown key kept "just in case".
   const rejected: [why: string, document: unknown][] = [
-    ["a newer protocol", { ...base, murmur_snapshot: 2 }],
+    // Both directions, because compatibility is offered in neither: a reader
+    // that accepted the older document would be guessing at the fields that
+    // version added, which are exactly the state a human acts on.
+    ["a newer protocol", { ...base, murmur_snapshot: 3 }],
+    ["an older protocol", { ...base, murmur_snapshot: 1 }],
     ["a stringly-typed clock", { ...base, generated_at: "1" }],
     ["a fractional clock", { ...base, generated_at: 1.5 }],
     ["a negative clock", { ...base, generated_at: -1 }],
     ["an empty host_id", { ...base, host_id: "" }],
     [
       "a missing murmur_version",
-      { murmur_snapshot: 1, host_id: "H", display_name: "d", generated_at: 1, panes: [] },
+      { murmur_snapshot: 2, host_id: "H", display_name: "d", generated_at: 1, panes: [] },
     ],
     ["an unknown top-level key", { ...base, extra: 3 }],
     ["panes as an object", { ...base, panes: {} }],
@@ -431,7 +443,7 @@ test("murmur export prints exactly one snapshot document and nothing else", () =
   // and parse each piece, which is a reader that can act on half a document.
   expect(stdout.trimEnd().split("\n")).toHaveLength(1);
   const parsed: Snapshot = parseSnapshot(stdout);
-  expect(parsed).toMatchObject({ murmur_snapshot: 1, display_name: "exporter", panes: [] });
+  expect(parsed).toMatchObject({ murmur_snapshot: 2, display_name: "exporter", panes: [] });
 });
 
 test("murmur export takes no options: an unknown flag is rejected, not ignored", () => {
@@ -464,4 +476,156 @@ test("murmur export on an uninitialised node refuses instead of minting a node",
 
   expect(status).toBe(1);
   expect(stdout).toBe("");
+});
+
+// --- runtime fields (snapshot v2) ----------------------------------------
+
+/**
+ * A valid v2 document with one agent pane, for the runtime-field tests.
+ *
+ * Local to this section rather than shared with the tests above: those build
+ * their documents inline to make each rejection readable beside its reason, and
+ * a shared builder would hide which field the case is actually about.
+ */
+function agentDocument(runtime: Record<string, unknown>): string {
+  return JSON.stringify({
+    murmur_snapshot: 2,
+    host_id: "H",
+    display_name: "d",
+    murmur_version: "0.4.0",
+    generated_at: 1,
+    panes: [
+      {
+        pane: "%1",
+        session: "$0",
+        window: "@1",
+        session_name: null,
+        window_name: null,
+        agent: {
+          agent_id: "a-1",
+          activity: "running",
+          agent_name: null,
+          pi_session: null,
+          workstream: null,
+          role: null,
+          cli: "pi",
+          driver: "human",
+          provider: null,
+          context_tokens: null,
+          context_window: null,
+          provider_effort: null,
+          usage: null,
+          claimed_at: 1,
+          updated_at: 1,
+          // Spread LAST, and the three fields under test are deliberately NOT
+          // defaulted above, so a caller can omit one to check that absent is
+          // rejected rather than quietly defaulted.
+          ...runtime,
+        },
+        attention: [],
+      },
+    ],
+  });
+}
+
+test("a version 1 document is rejected as firmly as a newer one", () => {
+  // Forward compatibility is not offered in EITHER direction. A reader that
+  // accepted the older document would be guessing which fields a human is
+  // looking at -- and the fields it would be guessing about are the ones this
+  // version added, so the guess is exactly wrong.
+  const older = agentDocument({ model: null, effort: null, context_pct: null }).replace(
+    '"murmur_snapshot":2',
+    '"murmur_snapshot":1',
+  );
+  expect(() => parseSnapshot(older)).toThrow(SnapshotInvalidError);
+  expect(() => parseSnapshot(older)).toThrow("murmur_snapshot");
+});
+
+test("the runtime fields round-trip", () => {
+  const parsed = parseSnapshot(
+    agentDocument({ model: "claude-opus-5", effort: "medium", context_pct: 11.7 }),
+  );
+  expect(parsed.panes[0]?.agent).toMatchObject({
+    model: "claude-opus-5",
+    effort: "medium",
+    context_pct: 11.7,
+  });
+});
+
+test("all three runtime fields are nullable", () => {
+  // A bare shell, codex, or a notify-only harness reports none of them, and an
+  // agent that cannot report one must not be forced to invent it. `context_pct`
+  // is null in one more case: pi returns a null percent right after compaction,
+  // before the next response.
+  const parsed = parseSnapshot(agentDocument({ model: null, effort: null, context_pct: null }));
+  expect(parsed.panes[0]?.agent).toMatchObject({
+    model: null,
+    provider: null,
+    context_tokens: null,
+    context_window: null,
+    provider_effort: null,
+    usage: null,
+    effort: null,
+    context_pct: null,
+  });
+});
+
+test("an unknown effort fails the whole document", () => {
+  // `effort` is a closed set, so a display variant is a broken peer rather than
+  // a value to coerce. Strict validation working as designed: the alternative is
+  // a sort or a render path receiving a word nothing in murmur defines.
+  const bad = agentDocument({ model: "m", effort: "Medium", context_pct: 1 });
+  expect(() => parseSnapshot(bad)).toThrow(SnapshotInvalidError);
+  expect(() => parseSnapshot(bad)).toThrow("effort");
+});
+
+test("a context percentage outside 0..100 is rejected", () => {
+  // It is a percentage of a context window, so the range is the whole domain.
+  // Nothing is clamped: a document asserting 140% is describing something that
+  // did not happen, and saying so is more useful than rendering it.
+  for (const percent of [-1, 101, -0.5, 100.5]) {
+    expect(() =>
+      parseSnapshot(agentDocument({ model: "m", effort: "low", context_pct: percent })),
+    ).toThrow(SnapshotInvalidError);
+  }
+  // The boundaries themselves are valid: a fresh context is 0 and a full one is
+  // 100, and both are states an agent is legitimately in.
+  for (const percent of [0, 100]) {
+    expect(
+      parseSnapshot(agentDocument({ model: "m", effort: "low", context_pct: percent })).panes[0]
+        ?.agent?.context_pct,
+    ).toBe(percent);
+  }
+});
+
+test("a non-finite context percentage cannot survive the wire", () => {
+  // NaN and Infinity are not expressible in JSON -- `JSON.stringify` emits
+  // `null` for both -- so a document cannot carry one, and the null it becomes
+  // is a legitimate value. `percentOrNull` still rejects them, because it also
+  // guards the in-process path where a builder could hand one over directly.
+  expect(
+    JSON.parse(agentDocument({ model: "m", effort: "low", context_pct: Number.NaN })).panes[0].agent
+      .context_pct,
+  ).toBeNull();
+});
+
+test("a stringly-typed context percentage is rejected", () => {
+  expect(() =>
+    parseSnapshot(agentDocument({ model: "m", effort: "low", context_pct: "11.7" })),
+  ).toThrow("context_pct");
+});
+
+test("an agent missing a runtime field is rejected, not defaulted", () => {
+  // Same rule every other field follows: absent is not null. A node that means
+  // "no model" says so with an explicit null, and one that omits the key is a
+  // node speaking a different document than it claims to.
+  expect(() => parseSnapshot(agentDocument({ effort: null, context_pct: null }))).toThrow(
+    "missing key model",
+  );
+  expect(() => parseSnapshot(agentDocument({ model: null, context_pct: null }))).toThrow(
+    "missing key effort",
+  );
+  expect(() => parseSnapshot(agentDocument({ model: null, effort: null }))).toThrow(
+    "missing key context_pct",
+  );
 });

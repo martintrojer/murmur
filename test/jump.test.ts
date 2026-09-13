@@ -77,7 +77,7 @@ function peer(name: string, hostId: string, panes: string[] = [], jumpCommand?: 
     ok: true,
     at: 1_000,
     snapshot: {
-      murmur_snapshot: 1,
+      murmur_snapshot: 2,
       host_id: hostId,
       display_name: name,
       murmur_version: "0.2.0",

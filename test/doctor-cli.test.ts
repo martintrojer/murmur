@@ -4,6 +4,7 @@ import { exitCodeFor, jsonReport, render, surveyFleet } from "../src/cli/doctor.
 import { MAX_CONCURRENT_PEERS } from "../src/collector.js";
 import { diagnose, type Finding, type LocalNode, type SurveyResult } from "../src/doctor.js";
 import type { PeerRecord } from "../src/types.js";
+import { SNAPSHOT_VERSION } from "../src/types.js";
 
 /**
  * The command's own three jobs -- fan out, render, decide the exit code --
@@ -24,7 +25,7 @@ function peerRecord(over: Partial<PeerRecord> & { name: string }): PeerRecord {
     last_attempt_at: null,
     last_error: null,
     murmur_version: "0.2.1",
-    snapshot_version: 1,
+    snapshot_version: SNAPSHOT_VERSION,
     ...over,
   };
 }
@@ -60,7 +61,7 @@ function finding(over: Partial<Finding> = {}): Finding {
 /** A snapshot document, as a peer's `murmur export` prints it. */
 function wire(host_id: string, display_name: string): string {
   return JSON.stringify({
-    murmur_snapshot: 1,
+    murmur_snapshot: 2,
     host_id,
     display_name,
     murmur_version: "0.2.1",

@@ -1,13 +1,16 @@
 import { asPaneId, asSessionId, asWindowId } from "./ids.js";
 import type {
   Activity,
+  AgentUsage,
   AttentionKind,
   Driver,
+  Effort,
   Snapshot,
   SnapshotAgent,
   SnapshotAttention,
   SnapshotPane,
 } from "./types.js";
+import { SNAPSHOT_VERSION } from "./types.js";
 
 /**
  * A peer answered, and what it said is not a snapshot.
@@ -72,6 +75,22 @@ function anyText(value: unknown, path: string): string {
   return value;
 }
 
+/**
+ * A percentage, 0..100, or null.
+ *
+ * Nothing is clamped. A document asserting 140% is describing something that did
+ * not happen on the node that served it, and saying so is more useful than
+ * rendering it. NaN is rejected explicitly because it is a number by `typeof`
+ * and would otherwise pass every comparison below.
+ */
+function percentOrNull(value: unknown, path: string): number | null {
+  if (value === null) return null;
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 100) {
+    fail(path, "expected a number in 0..100 or null");
+  }
+  return value;
+}
+
 function timestamp(value: unknown, path: string): number {
   if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
     fail(path, "expected a non-negative integer");
@@ -87,6 +106,7 @@ function member<T extends string>(value: unknown, path: string, allowed: readonl
 }
 
 const ACTIVITIES: readonly Activity[] = ["running", "stopped"];
+const EFFORTS: readonly Effort[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 const DRIVERS: readonly Driver[] = ["human", "orchestrated"];
 const KINDS: readonly AttentionKind[] = ["done", "blocked", "crashed"];
 
@@ -116,10 +136,79 @@ const AGENT_KEYS = [
   "role",
   "cli",
   "driver",
+  "model",
+  "effort",
+  "context_pct",
+  "context_tokens",
+  "context_window",
+  "provider",
+  "provider_effort",
+  "usage",
   "claimed_at",
   "updated_at",
 ] as const;
 const ATTENTION_KEYS = ["kind", "message", "source", "requested_at"] as const;
+const USAGE_KEYS = [
+  "input",
+  "output",
+  "cache_read",
+  "cache_write",
+  "total_tokens",
+  "cache_write_1h",
+  "reasoning",
+  "cost_input",
+  "cost_output",
+  "cost_cache_read",
+  "cost_cache_write",
+  "cost_total",
+] as const;
+
+/**
+ * A token count or a cost: finite, non-negative, and not necessarily an integer.
+ *
+ * Costs are fractional dollars, so `timestamp`'s integer rule does not apply --
+ * but the rest of it does. Nothing is clamped or coerced: a negative cost is a
+ * node describing something that did not happen.
+ */
+function quantity(value: unknown, path: string): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    fail(path, "expected a non-negative finite number");
+  }
+  return value;
+}
+
+function quantityOrNull(value: unknown, path: string): number | null {
+  return value === null ? null : quantity(value, path);
+}
+
+/**
+ * Tokens and money, or null when no turn has completed.
+ *
+ * Validated as strictly as the rest of the document despite being optional
+ * baggage nothing renders yet: the point of collecting these early is that a
+ * later display can trust them, and a lenient parse here would mean the first
+ * surface to read them is the one that discovers they are garbage.
+ */
+export function parseUsage(value: unknown, path = "usage"): AgentUsage | null {
+  if (value === null) return null;
+  const row = object(value, path, USAGE_KEYS);
+  return {
+    input: quantity(row.input, `${path}.input`),
+    output: quantity(row.output, `${path}.output`),
+    cache_read: quantity(row.cache_read, `${path}.cache_read`),
+    cache_write: quantity(row.cache_write, `${path}.cache_write`),
+    total_tokens: quantity(row.total_tokens, `${path}.total_tokens`),
+    // Null rather than absent: only some providers report these, and "the
+    // provider said nothing" is not the same claim as zero.
+    cache_write_1h: quantityOrNull(row.cache_write_1h, `${path}.cache_write_1h`),
+    reasoning: quantityOrNull(row.reasoning, `${path}.reasoning`),
+    cost_input: quantity(row.cost_input, `${path}.cost_input`),
+    cost_output: quantity(row.cost_output, `${path}.cost_output`),
+    cost_cache_read: quantity(row.cost_cache_read, `${path}.cost_cache_read`),
+    cost_cache_write: quantity(row.cost_cache_write, `${path}.cost_cache_write`),
+    cost_total: quantity(row.cost_total, `${path}.cost_total`),
+  };
+}
 
 function parseAgent(value: unknown, path: string): SnapshotAgent | null {
   if (value === null) return null;
@@ -133,6 +222,17 @@ function parseAgent(value: unknown, path: string): SnapshotAgent | null {
     role: textOrNull(row.role, `${path}.role`),
     cli: text(row.cli, `${path}.cli`),
     driver: member(row.driver, `${path}.driver`, DRIVERS),
+    model: textOrNull(row.model, `${path}.model`),
+    // Null-tolerant `member`: the set is closed, but not reporting is always
+    // allowed. A harness with no notion of effort says null, not "off" -- those
+    // are different claims, and "off" is one pi can actually make.
+    effort: row.effort === null ? null : member(row.effort, `${path}.effort`, EFFORTS),
+    context_pct: percentOrNull(row.context_pct, `${path}.context_pct`),
+    context_tokens: quantityOrNull(row.context_tokens, `${path}.context_tokens`),
+    context_window: quantityOrNull(row.context_window, `${path}.context_window`),
+    provider: textOrNull(row.provider, `${path}.provider`),
+    provider_effort: textOrNull(row.provider_effort, `${path}.provider_effort`),
+    usage: parseUsage(row.usage, `${path}.usage`),
     claimed_at: timestamp(row.claimed_at, `${path}.claimed_at`),
     updated_at: timestamp(row.updated_at, `${path}.updated_at`),
   };
@@ -180,10 +280,11 @@ function parsePane(value: unknown, path: string): SnapshotPane {
 /**
  * Parse and totally validate one snapshot document.
  *
- * `murmur_snapshot` must be exactly 1: a higher value is rejected too, because
- * forward compatibility is not offered here and a version mismatch is an
- * operator-visible pairing problem. Saying so is the honest report; guessing at
- * a newer document's meaning is not.
+ * `murmur_snapshot` must be exactly 2. A higher value is rejected, and so is a
+ * LOWER one: compatibility is offered in neither direction, because a reader
+ * that accepted an older document would be guessing at the fields that version
+ * added -- which is precisely the state a human is acting on. A version mismatch
+ * is an operator-visible pairing problem, and saying so is the honest report.
  */
 export function parseSnapshot(input: string): Snapshot {
   let parsed: unknown;
@@ -193,8 +294,11 @@ export function parseSnapshot(input: string): Snapshot {
     fail("", `not JSON (${error instanceof Error ? error.message : String(error)})`);
   }
   const top = object(parsed, "", TOP_KEYS);
-  if (top.murmur_snapshot !== 1) {
-    fail("murmur_snapshot", `expected 1, got ${JSON.stringify(top.murmur_snapshot)}`);
+  if (top.murmur_snapshot !== SNAPSHOT_VERSION) {
+    fail(
+      "murmur_snapshot",
+      `expected ${SNAPSHOT_VERSION}, got ${JSON.stringify(top.murmur_snapshot)}`,
+    );
   }
   if (!Array.isArray(top.panes)) fail("panes", "expected an array");
 
@@ -222,7 +326,7 @@ export function parseSnapshot(input: string): Snapshot {
   }
 
   return {
-    murmur_snapshot: 1,
+    murmur_snapshot: SNAPSHOT_VERSION,
     host_id: text(top.host_id, "host_id"),
     display_name: text(top.display_name, "display_name"),
     murmur_version: text(top.murmur_version, "murmur_version"),

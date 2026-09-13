@@ -8,14 +8,13 @@ import { loadIdentity } from "../identity.js";
 import { tmux } from "../mux.js";
 import { parseSnapshot } from "../snapshot.js";
 import { openStore } from "../store.js";
-import type { PeerRecord, Snapshot } from "../types.js";
+import { type PeerRecord, SNAPSHOT_VERSION, type Snapshot } from "../types.js";
 import { age, freshness, STALENESS_MS } from "../view.js";
 
-/**
- * The snapshot document version this node speaks. One number, and the only one
- * the code enforces: `parseSnapshot` rejects anything else outright.
- */
-export const SNAPSHOT_VERSION = 1;
+// Re-exported, not redeclared. This was its own `= 1` literal, so bumping the
+// document version left `peer list` insisting every correctly-upgraded peer was
+// incompatible. One number, declared beside the type it describes.
+export { SNAPSHOT_VERSION };
 
 export function parseSshHosts(config: string): string[] {
   const hosts: string[] = [];

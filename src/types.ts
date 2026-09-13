@@ -54,6 +54,101 @@ export type Location = {
   window_name: string | null;
 };
 
+/**
+ * pi's thinking levels, verbatim.
+ *
+ * A closed set, so `effort` can be CHECK-constrained in the schema and
+ * `member()`-validated on the wire, the same way `activity` and `driver` are.
+ * A display variant like "Medium" is a broken peer rather than a value to
+ * coerce.
+ */
+export type Effort = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+
+/**
+ * Tokens and money for one agent's session, as the provider reported them.
+ *
+ * A SUB-OBJECT rather than twenty more columns, and nullable as a unit. Three
+ * reasons, in order of how much they cost when ignored:
+ *
+ * 1. It arrives as a bundle. pi hands over one `Usage` object per turn, so
+ *    every field in here shares one clock and one provenance -- and a partial
+ *    write mixing this turn's cost with last turn's tokens would be a number
+ *    nobody could interpret.
+ * 2. Absence is a real state. An agent that has not completed a turn has no
+ *    usage at all, which is different from having zero tokens, and flat columns
+ *    would have to spell that with twenty nulls.
+ * 3. Nothing renders it yet. These are for a display concern that does not
+ *    exist: the card draws `AgentRuntime`'s three fields. Carrying the numbers
+ *    now means the next display option costs no wire change, which is the whole
+ *    argument for collecting them early.
+ *
+ * `cache_write_1h` and `reasoning` are optional WITHIN the object because only
+ * some providers report them -- Anthropic splits cache retention, and a
+ * reasoning breakdown exists only where the model exposes one. Absent means the
+ * provider said nothing, which is not the same as zero.
+ */
+export type AgentUsage = {
+  input: number;
+  output: number;
+  cache_read: number;
+  cache_write: number;
+  total_tokens: number;
+  /** Subset of `cache_write` with 1h retention. Anthropic only. */
+  cache_write_1h: number | null;
+  /** Thinking tokens, already counted in `output`. Provider-dependent. */
+  reasoning: number | null;
+  cost_input: number;
+  cost_output: number;
+  cost_cache_read: number;
+  cost_cache_write: number;
+  cost_total: number;
+};
+
+/**
+ * What the agent is running with, as the agent reports it.
+ *
+ * A SIBLING of `AgentMeta`, not more keys on it, and the split is the point.
+ * `AgentMeta` is what an owner asserts once when it claims a pane -- name,
+ * session, workstream, role, cli, driver -- and `claimAgent` is its only
+ * writer. Nothing in it changes for the life of the process.
+ *
+ * These three change repeatedly, from three different events, and `claimAgent`
+ * never sees them. Folding them in would mean a "metadata" type half of whose
+ * fields are live state, and the next reader could not tell which half they
+ * were holding.
+ *
+ * All nullable: a bare shell, codex, or a notify-only harness reports none of
+ * them, and an agent that cannot report one must not be forced to invent it.
+ */
+export type AgentRuntime = {
+  /** Model id with the provider prefix stripped, e.g. `claude-opus-5`. */
+  model: string | null;
+  effort: Effort | null;
+  /**
+   * Percent of the context window in use, 0..100.
+   *
+   * Null is a normal state, not merely an absent one: pi reports a null percent
+   * immediately after a compaction, before the next response.
+   */
+  context_pct: number | null;
+  /** Absolute context figures, beside the percentage they were derived from. */
+  context_tokens: number | null;
+  context_window: number | null;
+  /** The provider id, kept apart from `model` so neither has to be parsed out. */
+  provider: string | null;
+  /**
+   * The effort the provider actually applied, when it says so.
+   *
+   * Distinct from `effort`, which is what was REQUESTED: a model can clamp a
+   * requested level, and the two disagreeing is a fact worth being able to see
+   * rather than a contradiction to resolve. Free text, because this is the
+   * provider's own vocabulary and not pi's closed set.
+   */
+  provider_effort: string | null;
+  /** Tokens and money, or null when no turn has completed. See `AgentUsage`. */
+  usage: AgentUsage | null;
+};
+
 /** Owner-reported metadata about the agent in a pane. */
 export type AgentMeta = {
   agent_name: string | null;
@@ -85,11 +180,23 @@ export type PeerRecord = {
 };
 
 /**
+ * The snapshot document version this node speaks.
+ *
+ * Declared beside the type it describes, and the ONE place the number lives.
+ * It was previously a literal in `Snapshot`, in `buildLocalSnapshot`, in
+ * `parseSnapshot`'s check and again in `peer.ts` -- four copies of one fact,
+ * which drifted the moment the version changed: `peer list` went on reporting
+ * that every peer speaking the new version was incompatible, because its copy
+ * still said 1.
+ */
+export const SNAPSHOT_VERSION = 2;
+
+/**
  * One node's whole current state. Complete, never a delta: a peer that returns
  * one has said everything it knows, so absence from it is absence.
  */
 export type Snapshot = {
-  murmur_snapshot: 1;
+  murmur_snapshot: typeof SNAPSHOT_VERSION;
   host_id: string;
   display_name: string;
   murmur_version: string;
@@ -108,12 +215,13 @@ export type SnapshotPane = {
   attention: SnapshotAttention[];
 };
 
-export type SnapshotAgent = AgentMeta & {
-  agent_id: string;
-  activity: Activity;
-  claimed_at: number;
-  updated_at: number;
-};
+export type SnapshotAgent = AgentMeta &
+  AgentRuntime & {
+    agent_id: string;
+    activity: Activity;
+    claimed_at: number;
+    updated_at: number;
+  };
 
 export type SnapshotAttention = {
   kind: AttentionKind;
