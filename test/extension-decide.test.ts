@@ -188,8 +188,15 @@ test("a failed write closes the store it is dropping", async () => {
   vi.resetModules();
   const { default: murmurPi } = await import("../src/extension/murmur-pi.js");
 
+  // Real pi passes `(event, ctx)` to every handler. An EMPTY ctx here is the
+  // older-pi case -- no model, no thinking level, no context usage -- so the
+  // runtime report is skipped and these tests keep asserting activity and
+  // attention only, which is what they are about.
   const handlers = new Map<string, () => void | Promise<void>>();
-  murmurPi({ on: (event, handler) => handlers.set(event, handler) });
+  murmurPi({
+    on: (event: string, handler: (event: unknown, ctx: unknown) => unknown) =>
+      handlers.set(event, () => handler({}, {}) as void | Promise<void>),
+  } as never);
 
   // agent_start/agent_end are fire-and-forget (`void enqueue`), so drive the
   // one handler that awaits its queue.
@@ -257,8 +264,15 @@ test("a transient write failure does not silence the agent for the rest of its l
   vi.resetModules();
   const { default: murmurPi } = await import("../src/extension/murmur-pi.js");
 
+  // Real pi passes `(event, ctx)` to every handler. An EMPTY ctx here is the
+  // older-pi case -- no model, no thinking level, no context usage -- so the
+  // runtime report is skipped and these tests keep asserting activity and
+  // attention only, which is what they are about.
   const handlers = new Map<string, () => void | Promise<void>>();
-  murmurPi({ on: (event, handler) => handlers.set(event, handler) });
+  murmurPi({
+    on: (event: string, handler: (event: unknown, ctx: unknown) => unknown) =>
+      handlers.set(event, () => handler({}, {}) as void | Promise<void>),
+  } as never);
 
   // First turn: the write throws and the handle is dropped. Waited on the
   // observable effect (the store was opened) rather than on a timer.
@@ -307,8 +321,15 @@ test("a missing murmur is given up on after one attempt, not retried per event",
   vi.resetModules();
   const { default: murmurPi } = await import("../src/extension/murmur-pi.js");
 
+  // Real pi passes `(event, ctx)` to every handler. An EMPTY ctx here is the
+  // older-pi case -- no model, no thinking level, no context usage -- so the
+  // runtime report is skipped and these tests keep asserting activity and
+  // attention only, which is what they are about.
   const handlers = new Map<string, () => void | Promise<void>>();
-  murmurPi({ on: (event, handler) => handlers.set(event, handler) });
+  murmurPi({
+    on: (event: string, handler: (event: unknown, ctx: unknown) => unknown) =>
+      handlers.set(event, () => handler({}, {}) as void | Promise<void>),
+  } as never);
 
   for (let turn = 0; turn < 3; turn += 1) {
     await handlers.get("agent_start")?.();
@@ -367,8 +388,15 @@ test("a pane moved to another window keeps its identity and stops badging the ol
   vi.resetModules();
   const { default: murmurPi } = await import("../src/extension/murmur-pi.js");
 
+  // Real pi passes `(event, ctx)` to every handler. An EMPTY ctx here is the
+  // older-pi case -- no model, no thinking level, no context usage -- so the
+  // runtime report is skipped and these tests keep asserting activity and
+  // attention only, which is what they are about.
   const handlers = new Map<string, () => void | Promise<void>>();
-  murmurPi({ on: (event, handler) => handlers.set(event, handler) });
+  murmurPi({
+    on: (event: string, handler: (event: unknown, ctx: unknown) => unknown) =>
+      handlers.set(event, () => handler({}, {}) as void | Promise<void>),
+  } as never);
   await handlers.get("agent_start")?.();
   await until(() => reports.length === 1, "first turn's write");
 
@@ -457,8 +485,15 @@ test("session_shutdown does not permanently silence the extension, because /relo
   vi.resetModules();
   const { default: murmurPi } = await import("../src/extension/murmur-pi.js");
 
+  // Real pi passes `(event, ctx)` to every handler. An EMPTY ctx here is the
+  // older-pi case -- no model, no thinking level, no context usage -- so the
+  // runtime report is skipped and these tests keep asserting activity and
+  // attention only, which is what they are about.
   const handlers = new Map<string, () => void | Promise<void>>();
-  murmurPi({ on: (event, handler) => handlers.set(event, handler) });
+  murmurPi({
+    on: (event: string, handler: (event: unknown, ctx: unknown) => unknown) =>
+      handlers.set(event, () => handler({}, {}) as void | Promise<void>),
+  } as never);
 
   // The full documented cycle: pi fires session_shutdown for the old instance,
   // rebinds, then fires session_start. Extensions clean up in the first and
@@ -528,8 +563,15 @@ test("session_start re-arms an extension that gave up, so a reload is a real rec
   vi.resetModules();
   const { default: murmurPi } = await import("../src/extension/murmur-pi.js");
 
+  // Real pi passes `(event, ctx)` to every handler. An EMPTY ctx here is the
+  // older-pi case -- no model, no thinking level, no context usage -- so the
+  // runtime report is skipped and these tests keep asserting activity and
+  // attention only, which is what they are about.
   const handlers = new Map<string, () => void | Promise<void>>();
-  murmurPi({ on: (event, handler) => handlers.set(event, handler) });
+  murmurPi({
+    on: (event: string, handler: (event: unknown, ctx: unknown) => unknown) =>
+      handlers.set(event, () => handler({}, {}) as void | Promise<void>),
+  } as never);
 
   // No identity: the extension gives up permanently, by design.
   await handlers.get("agent_start")?.();
@@ -609,8 +651,15 @@ async function driveExtension(options: { focused: boolean; muManaged?: boolean }
   if (previous === undefined) delete process.env.MU_MANAGED_AGENT;
   else process.env.MU_MANAGED_AGENT = previous;
 
+  // Real pi passes `(event, ctx)` to every handler. An EMPTY ctx here is the
+  // older-pi case -- no model, no thinking level, no context usage -- so the
+  // runtime report is skipped and these tests keep asserting activity and
+  // attention only, which is what they are about.
   const handlers = new Map<string, () => void | Promise<void>>();
-  murmurPi({ on: (event, handler) => handlers.set(event, handler) });
+  murmurPi({
+    on: (event: string, handler: (event: unknown, ctx: unknown) => unknown) =>
+      handlers.set(event, () => handler({}, {}) as void | Promise<void>),
+  } as never);
   return { handlers, reports, badges };
 }
 
@@ -778,8 +827,15 @@ test("a refused claim means no report and no badge, for the life of the process"
 
   vi.resetModules();
   const { default: murmurPi } = await import("../src/extension/murmur-pi.js");
+  // Real pi passes `(event, ctx)` to every handler. An EMPTY ctx here is the
+  // older-pi case -- no model, no thinking level, no context usage -- so the
+  // runtime report is skipped and these tests keep asserting activity and
+  // attention only, which is what they are about.
   const handlers = new Map<string, () => void | Promise<void>>();
-  murmurPi({ on: (event, handler) => handlers.set(event, handler) });
+  murmurPi({
+    on: (event: string, handler: (event: unknown, ctx: unknown) => unknown) =>
+      handlers.set(event, () => handler({}, {}) as void | Promise<void>),
+  } as never);
 
   // A full turn, plus a settle, plus a /reload cycle. None of it may produce a
   // write or a badge: a nested agent is deliberately invisible, and the refusal
@@ -836,7 +892,10 @@ test("a claim the store retained keeps reporting, which is what /reload needs", 
     vi.resetModules();
     const { default: murmurPi } = await import("../src/extension/murmur-pi.js");
     const handlers = new Map<string, () => void | Promise<void>>();
-    murmurPi({ on: (event, handler) => handlers.set(event, handler) });
+    murmurPi({
+      on: (event: string, handler: (event: unknown, ctx: unknown) => unknown) =>
+        handlers.set(event, () => handler({}, {}) as void | Promise<void>),
+    } as never);
 
     await handlers.get("agent_start")?.();
     await until(() => writes.length === 1, `${outcome} reports`);
@@ -883,8 +942,15 @@ test("a stale owner's write returning false is silence, not an error", async () 
 
   vi.resetModules();
   const { default: murmurPi } = await import("../src/extension/murmur-pi.js");
+  // Real pi passes `(event, ctx)` to every handler. An EMPTY ctx here is the
+  // older-pi case -- no model, no thinking level, no context usage -- so the
+  // runtime report is skipped and these tests keep asserting activity and
+  // attention only, which is what they are about.
   const handlers = new Map<string, () => void | Promise<void>>();
-  murmurPi({ on: (event, handler) => handlers.set(event, handler) });
+  murmurPi({
+    on: (event: string, handler: (event: unknown, ctx: unknown) => unknown) =>
+      handlers.set(event, () => handler({}, {}) as void | Promise<void>),
+  } as never);
 
   await handlers.get("agent_start")?.();
   await until(() => calls === 1, "the first refused write");

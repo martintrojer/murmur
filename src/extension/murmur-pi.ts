@@ -1,8 +1,15 @@
 import { execFileSync } from "node:child_process";
 import { tmux } from "../mux.js";
 import type { Store } from "../store.js";
-import type { Activity, AgentMeta, Location } from "../types.js";
-import { driverFromEnv, settledState } from "./decide.js";
+import type { Activity, AgentMeta, AgentRuntime, Location } from "../types.js";
+import {
+  driverFromEnv,
+  type RuntimeContext,
+  type RuntimeMessage,
+  runtimeFromContext,
+  settledState,
+  usageFromMessage,
+} from "./decide.js";
 import type { StoreModule } from "./store-api.js";
 
 // Declared, not imported: murmur must not depend on pi to build, and this is the
@@ -15,8 +22,21 @@ import type { StoreModule } from "./store-api.js";
 // follows, and session_start answers that by firing.
 type ExtensionAPI = {
   on(
-    event: "agent_start" | "agent_end" | "agent_settled" | "session_shutdown" | "session_start",
+    event: "agent_end" | "agent_settled" | "session_shutdown" | "session_start",
     handler: () => void | Promise<void>,
+  ): void;
+  // `agent_start` takes ctx because a run beginning is the moment to state what
+  // this agent is running WITH -- a resumed session may never emit a
+  // model_select or a turn_end, and would otherwise report nothing at all.
+  on(event: "agent_start", handler: (event: unknown, ctx: RuntimeContext) => void): void;
+  // The runtime-reporting events, declared separately because they are the only
+  // ones whose handlers take arguments. Every member of both payloads is
+  // optional in `RuntimeContext` / `RuntimeMessage`, so a pi that lacks any of
+  // them degrades to reporting nothing rather than crashing -- which is why
+  // murmur can declare this surface instead of depending on pi to build.
+  on(
+    event: "model_select" | "thinking_level_select" | "turn_end",
+    handler: (event: RuntimeMessage & { message?: RuntimeMessage }, ctx: RuntimeContext) => void,
   ): void;
   getSessionName?(): string | undefined;
 };
@@ -229,6 +249,27 @@ export default function murmurPi(pi: ExtensionAPI): void {
   };
 
   /**
+   * Send a runtime report, if there is anything to send and we own the pane.
+   *
+   * Silent on every failure, like `report`: an extension fault must never reach
+   * pi, and a runtime field is the least important thing murmur carries. An
+   * empty patch is skipped before the store is even opened -- an older pi offers
+   * none of these members, and that must not cost a dynamic import per turn.
+   */
+  const reportRuntime = async (patch: Partial<AgentRuntime>): Promise<void> => {
+    if (Object.keys(patch).length === 0) return;
+    try {
+      const store = await getStore();
+      if (!store || !agentId) return;
+      // Same owner gate as `report`, enforced inside the store: a nested pi that
+      // inherited $TMUX_PANE gets `false` and writes nothing.
+      store.setRuntime({ agent_id: agentId, owner_pid: process.pid, ...patch });
+    } catch {
+      dropStore();
+    }
+  };
+
+  /**
    * Claim the pane NOW, not on the first event.
    *
    * A nested process must paint no badge, and the same handler that reports also
@@ -255,14 +296,49 @@ export default function murmurPi(pi: ExtensionAPI): void {
     tmux.setWindowBadge(location.window, state);
   };
 
-  pi.on("agent_start", () => {
+  pi.on("agent_start", (_event, ctx) => {
     void enqueue(async () => {
       const location = here();
       // Ownership first, glyph second. A process whose pane was taken over while
       // its handle was dropped learns that from the claim inside `report`, and a
       // badge painted before it would announce an agent that has moved on.
       if (await report("running", location)) badge(location, "running");
+      // Then what it is running with. Here as well as on the change events,
+      // because a RESUMED session may never emit a model_select or a turn_end --
+      // it would sit on the dash reporting no model for its whole life.
+      await reportRuntime(runtimeFromContext(ctx));
     });
+  });
+
+  // One event per field that can change, and no timer anywhere.
+  //
+  //   model_select          the only thing that changes the model
+  //   thinking_level_select the only thing that changes the requested effort
+  //   turn_end              a turn boundary is the only thing that moves the
+  //                         context, the token counts or the cost
+  //
+  // A periodic poll would have put a SQLite write in every pi process forever
+  // for numbers that cannot change between turns. These fire exactly as often
+  // as the facts move.
+  pi.on("model_select", (_event, ctx) => {
+    void enqueue(() => reportRuntime(runtimeFromContext(ctx)));
+  });
+
+  pi.on("thinking_level_select", (_event, ctx) => {
+    void enqueue(() => reportRuntime(runtimeFromContext(ctx)));
+  });
+
+  pi.on("turn_end", (event, ctx) => {
+    void enqueue(() =>
+      // Both halves in one write: the context figures come from `ctx` and the
+      // tokens and cost from the turn's own message, and they describe the same
+      // instant. Two writes would let a reader see this turn's cost beside last
+      // turn's context.
+      //
+      // `event.message` is where pi puts the AssistantMessage; falling back to
+      // the event itself keeps this working if that ever flattens.
+      reportRuntime({ ...runtimeFromContext(ctx), ...usageFromMessage(event.message ?? event) }),
+    );
   });
 
   pi.on("agent_end", () => {

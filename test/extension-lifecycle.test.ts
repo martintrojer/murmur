@@ -100,8 +100,17 @@ async function rig(claimAnswers: Claim[], options: { setActivity?: boolean } = {
 
   vi.resetModules();
   const { default: murmurPi } = await import("../src/extension/murmur-pi.js");
+  // Real pi hands every handler `(event, ctx)`; the ones that ignore both just
+  // declare no parameters. The harness curries those arguments away so a test
+  // can call `handlers.get("agent_start")?.()` as before -- and passes an EMPTY
+  // ctx, which is the older-pi case: no model, no thinking level, no context
+  // usage, so the runtime report is skipped and these tests keep asserting only
+  // activity and ownership.
   const handlers = new Map<string, () => void | Promise<void>>();
-  murmurPi({ on: (event, handler) => handlers.set(event, handler) });
+  murmurPi({
+    on: (event: string, handler: (event: unknown, ctx: unknown) => unknown) =>
+      handlers.set(event, () => handler({}, {}) as void | Promise<void>),
+  } as never);
 
   return {
     handlers,
