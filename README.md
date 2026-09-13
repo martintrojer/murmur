@@ -85,5 +85,5 @@ factor / `BatchMode`, `MaxSessions 1`, Eternal Terminal): [SSH.md](SSH.md).
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Model, design choices, gaps |
 | [AGENTS.md](AGENTS.md) | Repo gate for agents working on murmur |
 
-**0.4.0.** Ready for daily use. Known gaps live at the end of
+**0.4.1.** Ready for daily use. Known gaps live at the end of
 [ARCHITECTURE.md](ARCHITECTURE.md#known-gaps).

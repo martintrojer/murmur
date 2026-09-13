@@ -3,6 +3,37 @@
 Notable changes per release. Written for someone deciding whether to upgrade,
 so it says what changed for a user rather than listing every commit.
 
+## 0.4.1
+
+Wire-compatible with 0.4.0: the snapshot format is unchanged at version 2, so no
+coordinated upgrade is needed. Worth taking if you are on 0.4.0, because one of
+these is a display bug you would eventually hit.
+
+**Fixed: a line that merely mentions a pi status footer is no longer treated as
+one.** The dashboard condenses pi's footer into `model · effort · context` for
+an agent that does not report those fields itself. It recognised the footer by
+searching anywhere in the line, so any output containing a percentage, a slash
+and a model-shaped word read as a status footer -- a diff, a log line, or a test
+assertion quoting one. The card then showed a plausible model name that no agent
+was running. The match is now anchored: a real footer starts with its counters,
+or with the percentage before the first turn.
+
+Also fixed in the same area: a footer carrying a second parenthetical dropped
+the condensing entirely and fell back to showing the raw token-counter line.
+
+**Corrected documentation.** The README claimed murmur never reads pane output,
+which is not true of the one fallback the dashboard still uses for agents that
+report nothing. `ARCHITECTURE.md`'s snapshot example gave a version combination
+no node can produce. Several code comments still described snapshot version 1
+and an earlier, smaller field set.
+
+**Internal.** The seven thinking levels were spelled out in four places -- the
+type, the wire validator, the producer and the database constraint -- and now
+come from one list, with a test that fails if a fifth spelling appears. Removed
+a correlation helper that had had no caller since attachment detection changed.
+Added the missing test for negative token and cost values, found by mutating the
+validator and noticing nothing failed.
+
 ## 0.4.0
 
 **Not wire-compatible with 0.3.x. Every node must be upgraded together.** The
