@@ -1106,14 +1106,6 @@ each was cheaper to accept than to solve:
 
 ## Known gaps
 
-- **The remote wrapper session is verified against tmux, not against use.**
-  Options, the switch, and the return to the origin window are verified on real
-  tmux servers with a stub ssh. Sitting in a live remote pane and working in it
-  is not.
-- **Interactive attach is unverified.** Federation, staleness, snapshot
-  replacement and the jump target are verified across two machines over real
-  ssh; sitting in a remote pane and working in it is not, and it needs a human
-  at a terminal.
 - **A deadline-cut peer reports `unreachable: false`.** The message says the
   collect deadline passed, which is accurate and is what every surface prints,
   but the flag reads as "reachable". No surface misreports it today; the flag is
@@ -1122,5 +1114,6 @@ each was cheaper to accept than to solve:
   `host_id` in the probe's snapshot, so a target that fails to answer is added
   on the operator's word. Correct by design, but best-effort rather than a
   guarantee.
-- **The hardware-token path is verified only in the cold-fail direction.** The
-  second test node authenticates by key, so it never needed a warm socket.
+- **A host demanding a hardware-token touch per connection is unhandled.**
+  `BatchMode` cannot detect the touch before the token blinks. `hasWarmSocket`
+  exists for it and is not wired up, because no peer in use needs it.

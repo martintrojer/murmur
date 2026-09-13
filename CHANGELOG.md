@@ -3,6 +3,29 @@
 Notable changes per release. Written for someone deciding whether to upgrade,
 so it says what changed for a user rather than listing every commit.
 
+## 0.3.2
+
+Wire-compatible with 0.3.x and 0.2.x: the snapshot format is unchanged at
+version 1, so no coordinated upgrade is needed.
+
+**Dashboard cards say which model is running, not how many tokens it spent.** A
+pi status footer is the last line the pane prints, so it was always what the
+card's one line showed — spent on token counters, cache-hit rate and spend. The
+card now reads `claude-opus-5 · medium · 11.7%`: model, effort, and how full the
+context is. Output that is not a pi footer is shown unchanged.
+
+**The dashboard no longer mis-renders on pane output containing tabs.** A tab is
+one character and up to eight columns, and the width check scored it as two — so
+a line measured as fitting the glance box overflowed, wrapped, and pushed every
+row below it down. Common in `git status` and `make` output. Tabs are now
+expanded to the terminal's own 8-column stops, which keeps table-shaped output
+aligned.
+
+**The dashboard header ticks on a machine with no peers.** The age field was
+derived from peer fetches alone, so an unconfigured peer list showed a constant
+`local` and the dashboard looked frozen. It now reports how long ago its own
+refresh completed.
+
 ## 0.3.1
 
 Wire-compatible with 0.3.0 and 0.2.x: the snapshot format is unchanged at
