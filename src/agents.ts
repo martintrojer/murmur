@@ -302,10 +302,22 @@ export function jumpToAgent(
   // Without ControlPath the probe misses the warm master socket the collector
   // rides; without ConnectTimeout it inherits the kernel's 75s dial, so a
   // sleeping laptop froze the picker for ten seconds before admitting it.
+  //
+  // The probe also ARMS the jump marker when there is a local session to come
+  // back to, so `murmur dash --goto` on the remote machine detaches instead of
+  // switching. Appended to the probe rather than sent as its own ssh: a second
+  // round trip would double the jump's latency, and arming it after the attach
+  // is impossible -- the hook has to exist before the client it marks. Appended
+  // rather than prepended so the probe's pane list stays the readable output.
+  //
+  // `process.env.TMUX` gates it because the outside-tmux path below has no
+  // wrapper and no local client: a detach there would drop the operator out of
+  // their own shell's session for nothing.
+  const arm = process.env.TMUX ? ` ; tmux ${mux.armJumpMarkerCommand()}` : "";
   const probe = run("ssh", [
     ...SSH_OPTIONS,
     target,
-    `tmux list-panes -a -F ${shellQuote("#{pane_id}")}`,
+    `tmux list-panes -a -F ${shellQuote("#{pane_id}")}${arm}`,
   ]);
   if (probe.status !== 0) {
     // 255 is ssh's own failure code; anything else came from the remote command.
@@ -397,10 +409,15 @@ export function jumpToAgent(
       // wrapper's own ssh already warmed. A failure here is not fatal: the
       // switch below still lands the operator on the right HOST, which is
       // better than refusing to move, so this reports rather than aborts.
+      // Re-arms the marker alongside the retarget. The hook is one-shot, so the
+      // one armed by the jump that created this wrapper has already fired and
+      // its marker names a client that may since have gone. Without this, a
+      // reused wrapper's PREFIX G would read a stale marker and switch to the
+      // REMOTE machine's dash rather than coming home.
       const retarget = run("ssh", [
         ...SSH_OPTIONS,
         target,
-        `tmux switch-client -t ${shellQuote(shellQuote(agent.pane))}`,
+        `tmux switch-client -t ${shellQuote(shellQuote(agent.pane))} ; tmux ${mux.armJumpMarkerCommand()}`,
       ]);
       if (!mux.switchClient(client, name)) {
         return {

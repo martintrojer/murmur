@@ -159,6 +159,38 @@ Typing in pick matches agent name, workstream or tmux session, host, and the
 state word as literal substrings — so `blocked` narrows without a dedicated
 binding.
 
+## One key back to the dash
+
+After a jump, getting back depends on where the agent lives: a local agent is
+an ordinary tmux move, a remote one hands the keyboard to the remote server.
+Bind one key that covers both:
+
+```tmux
+bind -N "go to murmur dash" G run-shell -b "murmur dash --goto"
+```
+
+Add it on every machine you jump to, not just the one you sit at — on a remote
+host it is the remote tmux that reads the key.
+
+`murmur dash --goto` has three outcomes:
+
+- **In a murmur-controlled remote session** it detaches. The wrapper's own
+  restore command then returns the local client to the dash you came from.
+- **Anywhere else** it switches to the pane a running `murmur dash` occupies —
+  including an ordinary `ssh` login to a machine that has its own dash.
+- **With no dash running** it prints `no murmur dash is running` and exits
+  nonzero.
+
+A dash marks its pane for as long as it runs, and murmur marks the one client
+its own jump attaches. Both are tmux options, so nothing is inferred from
+process ancestry or history, and a second login to a host murmur has jumped to
+keeps the ordinary switch behaviour. A dash killed with `SIGKILL` cannot clear
+its marker, so `--goto` checks the pane is still alive before switching.
+
+`run-shell -b` backgrounds the call, so the key never blocks the server. The
+cost is that a failure message goes nowhere; run `murmur dash --goto` by hand
+to see it.
+
 ## Jump command override
 
 `target` is always ssh (collector). The jump command is for a human and need not

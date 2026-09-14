@@ -41,6 +41,12 @@ export function fakeMux(over: Partial<Mux> = {}): Mux {
     newSession: () => true,
     setSessionOption: () => {},
     switchClient: () => true,
+    markDashPane: () => {},
+    dashPane: () => null,
+    clientIdentity: () => null,
+    jumpClientMarker: () => null,
+    armJumpMarkerCommand: () => "set-hook -g client-attached[9000] 'fake'",
+    detachClient: () => true,
     ...over,
   };
 }

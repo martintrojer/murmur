@@ -45,7 +45,9 @@ import {
   scrollLabel,
 } from "../dash-tick.js";
 import { dashRows, dashStateCount } from "../dash-view.js";
-import { tmux } from "../mux.js";
+import { runGoto } from "../goto.js";
+import { asPaneId } from "../ids.js";
+import { type Mux, tmux } from "../mux.js";
 import {
   glancePlacement,
   glanceShare,
@@ -800,23 +802,56 @@ function App({ store, initial }: DashProps) {
   );
 }
 
+/**
+ * Run `--goto` and report. Split out so the exit code and the message are
+ * assertable without rendering a dash.
+ */
+export function dashGoto(
+  mux: Mux = tmux,
+  env: NodeJS.ProcessEnv = process.env,
+  writeError: (message: string) => unknown = process.stderr.write.bind(process.stderr),
+): boolean {
+  const result = runGoto(mux, env);
+  if (result.ok) return true;
+  // stderr and a nonzero exit, even though the usual caller is `run-shell -b`
+  // which shows neither: the same command is run by hand when the key "does
+  // nothing", and that is the run that has to explain itself.
+  writeError(`${result.message}\n`);
+  process.exitCode = 1;
+  return false;
+}
+
 export function registerDash(program: Command): void {
   program
     .command("dash")
     .description("Watch agents and glance at their panes")
-    .action(async () => {
+    .option("--goto", "switch to the running dash, or leave a murmur-controlled remote session")
+    .action(async (options: { goto?: boolean }) => {
+      if (options.goto) {
+        dashGoto();
+        return;
+      }
       if (!requireDashTmux()) return;
       const identity = requireIdentity();
       if (!identity) return;
       const store = openStore();
       const previousTitle = process.title;
       process.title = "murmur";
+      // For the dash's MOUNTED LIFETIME, which is what `--goto` looks for. The
+      // pane comes from $TMUX_PANE rather than from tmux: `display-message`
+      // answers about whichever pane the server thinks is active, so asking
+      // would let a dash started in a popup mark someone else's pane.
+      const pane = process.env.TMUX_PANE;
+      if (pane) tmux.markDashPane(asPaneId(pane));
       try {
         const instance = render(<App store={store} initial={status(store, identity)} />, {
           alternateScreen: true,
         });
         await instance.waitUntilExit();
       } finally {
+        // Best effort: a SIGKILL leaves the option behind, which is exactly why
+        // `gotoDecision` re-checks the pane against tmux's live list.
+        if (pane) tmux.markDashPane(null);
         disableMouse(process.stdout);
         store.close();
         process.title = previousTitle;

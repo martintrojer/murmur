@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { DASH_PANE_OPTION, JUMP_CLIENT_OPTION, JUMP_HOOK_INDEX } from "./goto.js";
 import { asPaneId, asSessionId, asWindowId, type PaneId, type WindowId } from "./ids.js";
 import type { Location } from "./types.js";
 import type { RenderState } from "./view.js";
@@ -38,6 +39,23 @@ export interface Mux {
   newSession(name: string, command: string): boolean;
   setSessionOption(session: string, option: string, value: string): void;
   switchClient(client: string | null, session: string): boolean;
+  // --- goto seam ----------------------------------------------------------
+  // `murmur dash --goto` decides from server-global tmux options only, so each
+  // of these is one option read or one action. See src/goto.ts for why the
+  // decision itself is pure and lives outside this file.
+  //
+  // Marks (and unmarks) the pane a running dash occupies, for its lifetime.
+  markDashPane(pane: PaneId | null): void;
+  dashPane(): PaneId | null;
+  // This client as `name created`. The creation time is what stops a recycled
+  // tty path from inheriting a dead jump's marker.
+  clientIdentity(): string | null;
+  jumpClientMarker(): string | null;
+  // Arms a ONE-SHOT client-attached hook so the next client to attach marks
+  // itself as murmur's. Run on the REMOTE server by the jump, just before its
+  // ssh attaches, which is what keeps an ordinary human login unmarked.
+  armJumpMarkerCommand(): string;
+  detachClient(client: string): boolean;
 }
 
 function runTmux(args: string[]): string | null {
@@ -300,6 +318,44 @@ export const tmux: Mux = {
       ? ["switch-client", "-c", client, "-t", target]
       : ["switch-client", "-t", target];
     return runTmux(args) !== null;
+  },
+
+  markDashPane(pane) {
+    if (pane === null) runTmux(["set-option", "-gqu", DASH_PANE_OPTION]);
+    else runTmux(["set-option", "-gq", DASH_PANE_OPTION, pane]);
+  },
+
+  dashPane() {
+    // `-q` so an unset option is an empty answer rather than an error, and `-v`
+    // for the bare value: the `option value` form would have to be re-split.
+    const out = runTmux(["show-options", "-gqv", DASH_PANE_OPTION]);
+    return out ? asPaneId(out) : null;
+  },
+
+  // No `-t`: the point is the client running THIS command, which is the one
+  // whose key press invoked it. tmux resolves that from $TMUX, and a targeted
+  // read would answer about the target's session instead.
+  clientIdentity() {
+    return runTmux(["display-message", "-p", "#{client_name} #{client_created}"]) || null;
+  },
+
+  jumpClientMarker() {
+    return runTmux(["show-options", "-gqv", JUMP_CLIENT_OPTION]) || null;
+  },
+
+  armJumpMarkerCommand() {
+    // Indexed, so it appends to the user's own client-attached hooks instead of
+    // replacing them, and `set-hook -gu` on the same index inside the hook body
+    // makes it fire exactly once -- verified against tmux 3.7c.
+    //
+    // `-F` expands the format in the VALUE at hook time, when the attaching
+    // client exists; expanding it now would record the wrong client or none.
+    const hook = `client-attached[${JUMP_HOOK_INDEX}]`;
+    return `set-hook -g ${hook} "set-option -gF ${JUMP_CLIENT_OPTION} '#{client_name} #{client_created}' ; set-hook -gu ${hook}"`;
+  },
+
+  detachClient(client) {
+    return runTmux(["detach-client", "-t", client]) !== null;
   },
 
   // The window a pane belongs to, for a pane murmur holds no row for: clearing a

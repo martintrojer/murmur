@@ -713,3 +713,81 @@ test("agentLabel prefers every more specific name over the session", () => {
     ),
   ).toBe("w-1");
 });
+
+test("the wrapper arms the remote jump marker before its attach, in one ssh", () => {
+  // This is what makes `PREFIX G` on the remote machine mean "leave" rather
+  // than "show me that machine's dash". The hook is armed on the REMOTE server
+  // and fires for the next client to attach, which is the wrapper's own ssh --
+  // so an ordinary human login to the same host stays unmarked.
+  //
+  // Armed in the PROBE call rather than in a second ssh: a separate round trip
+  // would double the jump's latency and could arm a marker for a jump that then
+  // failed to attach at all.
+  peer("p", "remote-host");
+  vi.stubEnv("TMUX", "/tmp/tmux-1000/default,123,0");
+  const remoteCommands: string[] = [];
+
+  const result = jumpToAgent(
+    store,
+    view(),
+    fakeMux({ armJumpMarkerCommand: () => "set-hook -g client-attached[9000] 'mark'" }),
+    (_file, args) => {
+      remoteCommands.push(args.at(-1) ?? "");
+      return ok("%9\n");
+    },
+  );
+
+  expect(result).toEqual({ ok: true });
+  expect(remoteCommands).toHaveLength(1);
+  // Probe and arm in the same remote shell, the probe's output still parseable:
+  // the arm is appended, so its output cannot be read as a pane id.
+  expect(remoteCommands[0]).toContain("list-panes");
+  expect(remoteCommands[0]).toContain("client-attached[9000]");
+});
+
+test("reusing a wrapper re-arms the marker, because the earlier hook has fired", () => {
+  // The hook is one-shot by design, so the marker set by the first jump belongs
+  // to a client that may since have detached. Without re-arming, PREFIX G on a
+  // reused wrapper would find a stale or absent marker and switch to the remote
+  // machine's dash instead of coming home.
+  peer("p", "remote-host");
+  vi.stubEnv("TMUX", "/tmp/tmux-1000/default,123,0");
+  const remoteCommands: string[] = [];
+
+  const result = jumpToAgent(
+    store,
+    view({ pane: asPaneId("%42") }),
+    fakeMux({
+      sessionNamed: () => true,
+      armJumpMarkerCommand: () => "set-hook -g client-attached[9000] 'mark'",
+    }),
+    (_file, args) => {
+      remoteCommands.push(args.at(-1) ?? "");
+      return ok("%42\n");
+    },
+  );
+
+  expect(result).toEqual({ ok: true });
+  expect(remoteCommands.some((command) => command.includes("client-attached[9000]"))).toBe(true);
+});
+
+test("outside tmux the jump arms no marker, because there is nothing to come back to", () => {
+  // No local wrapper, no local client, and nothing to restore but the invoking
+  // shell -- so a detach here would drop the operator out of their own session
+  // for no gain. The remote server must stay unmarked.
+  peer("p", "remote-host");
+  vi.stubEnv("TMUX", "");
+  const remoteCommands: string[] = [];
+
+  jumpToAgent(
+    store,
+    view(),
+    fakeMux({ armJumpMarkerCommand: () => "set-hook -g client-attached[9000] 'mark'" }),
+    (file, args) => {
+      remoteCommands.push(args.at(-1) ?? "");
+      return file === "sh" ? ok() : ok("%9\n");
+    },
+  );
+
+  expect(remoteCommands.every((command) => !command.includes("client-attached"))).toBe(true);
+});

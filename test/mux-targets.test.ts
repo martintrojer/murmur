@@ -2,7 +2,8 @@ import { execFileSync } from "node:child_process";
 import { rmSync } from "node:fs";
 import { afterAll, expect, test } from "vitest";
 import { remoteSessionName } from "../src/agents.js";
-import { exactPaneTarget, exactSession } from "../src/mux.js";
+import { DASH_PANE_OPTION, JUMP_CLIENT_OPTION } from "../src/goto.js";
+import { exactPaneTarget, exactSession, tmux } from "../src/mux.js";
 
 // A private tmux server, so nothing here can touch the developer's session.
 // Every call carries -L; a bare `tmux` would hit whatever server is running.
@@ -224,4 +225,105 @@ test("a pane id as a switch-client target selects the pane, not just its window"
   expect(rig("display-message", "-t", window, "-p", "#{pane_id}")).toBe(second);
 
   rig("kill-session", "-t", exactSession("picked"));
+});
+
+test("the dash and jump markers are server-global options a later command can read", () => {
+  // A real server, because the claim is about tmux's option scoping and the
+  // spelling of the calls that read it. `--goto` runs in a DIFFERENT pane and
+  // session from the dash, so a session- or window-scoped option would be
+  // invisible exactly where it is needed -- and `show-options -gqv` returning
+  // empty (rather than failing) for an unset option is what makes "no dash
+  // running" expressible at all.
+  rig("new-session", "-d", "-s", "opts", "sleep 300");
+  const pane = rig("display-message", "-t", "opts", "-p", "#{pane_id}");
+
+  expect(rig("show-options", "-gqv", DASH_PANE_OPTION)).toBe("");
+  rig("set-option", "-gq", DASH_PANE_OPTION, pane);
+
+  // Read from a second window, which is the cross-session case in miniature.
+  rig("new-window", "-t", "opts", "sleep 300");
+  expect(rig("show-options", "-gqv", DASH_PANE_OPTION)).toBe(pane);
+
+  // And the dash's own cleanup path empties it rather than leaving "".
+  rig("set-option", "-gqu", DASH_PANE_OPTION);
+  expect(rig("show-options", "-gqv", DASH_PANE_OPTION)).toBe("");
+
+  rig("kill-session", "-t", exactSession("opts"));
+});
+
+test("the armed jump hook marks exactly one attaching client and then removes itself", () => {
+  // The invariant the whole remote branch rests on: murmur's own attach is
+  // marked, and the NEXT client -- an ordinary human `tmux attach` to the same
+  // machine -- is not. Only a real server can establish it, since the mechanism
+  // is tmux firing a hook and expanding `#{client_name}` at that moment.
+  //
+  // Two extra tmux servers act as terminals, because a client needs a tty and
+  // `attach` from a test process has none.
+  const outer = `${SOCKET}-outer`;
+  const second = `${SOCKET}-second`;
+  const outerTmux = (...args: string[]) =>
+    execFileSync("tmux", ["-L", outer, "-f", "/dev/null", ...args], {
+      encoding: "utf8",
+      timeout: 10_000,
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+  const secondTmux = (...args: string[]) =>
+    execFileSync("tmux", ["-L", second, "-f", "/dev/null", ...args], {
+      encoding: "utf8",
+      timeout: 10_000,
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+
+  try {
+    rig("new-session", "-d", "-s", "marked", "sleep 300");
+    // The exact string the jump appends to its probe, run the way the remote
+    // side runs it: through a SHELL, as arguments to `tmux`. That is the seam
+    // worth pinning -- the quoting has to survive a shell before tmux parses
+    // it. Not `run-shell` (which takes a shell command, so the tmux command
+    // fails) and not an argv array (which would skip the shell the real path
+    // goes through).
+    execFileSync("sh", ["-c", `tmux ${TMUX.join(" ")} ${tmux.armJumpMarkerCommand()}`], {
+      encoding: "utf8",
+      timeout: 10_000,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    expect(rig("show-options", "-gqv", JUMP_CLIENT_OPTION)).toBe("");
+
+    outerTmux("new-session", "-d", `tmux -L ${SOCKET} -f /dev/null attach -t marked`);
+    // A client attach is not synchronous with the command that starts it.
+    const settle = (predicate: () => boolean) => {
+      const deadline = Date.now() + 5_000;
+      while (Date.now() < deadline) {
+        if (predicate()) return true;
+        execFileSync("sleep", ["0.1"]);
+      }
+      return false;
+    };
+    expect(settle(() => rig("list-clients", "-F", "#{client_name}") !== "")).toBe(true);
+    expect(settle(() => rig("show-options", "-gqv", JUMP_CLIENT_OPTION) !== "")).toBe(true);
+
+    const marker = rig("show-options", "-gqv", JUMP_CLIENT_OPTION);
+    const client = rig("list-clients", "-F", "#{client_name} #{client_created}");
+    // `name created`, matching gotoDecision's comparison exactly. The creation
+    // time is in the marker because a tty path is recycled by the OS.
+    expect(marker).toBe(client);
+
+    // The hook is gone, so a SECOND client attaching does not get marked --
+    // the ordinary-remote-login case. Proven by clearing the option and
+    // checking nothing rewrites it.
+    rig("set-option", "-gqu", JUMP_CLIENT_OPTION);
+    secondTmux("new-session", "-d", `tmux -L ${SOCKET} -f /dev/null attach -t marked`);
+    expect(settle(() => rig("list-clients", "-F", "#{client_name}").split("\n").length === 2)).toBe(
+      true,
+    );
+    expect(rig("show-options", "-gqv", JUMP_CLIENT_OPTION)).toBe("");
+  } finally {
+    for (const socket of [outer, second]) {
+      try {
+        execFileSync("tmux", ["-L", socket, "kill-server"], { stdio: "ignore", timeout: 5_000 });
+      } catch {
+        // Never started, or already gone.
+      }
+    }
+  }
 });
