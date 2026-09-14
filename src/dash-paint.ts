@@ -1,10 +1,8 @@
 import type { RenderState } from "./view.js";
 
-// Dash-only vocabulary: do not leak these maps into paint.ts or pick.
-// All glyphs are classic Nerd Font `nf-fa-*` (Font Awesome 4) codepoints —
-// single cell, stable across NF versions. Avoid `nf-md-*`: those PUA slots
-// move between releases and render as the wrong icon (e.g. idle looked like
-// a red shield under md-sleep).
+// The one state vocabulary shared by status, pick and dash. State glyphs are
+// classic Nerd Font `nf-fa-*` (Font Awesome 4) codepoints: single cell and
+// stable across Nerd Font versions.
 export const DASH_GLYPH: Record<RenderState, string> = {
   crashed: "\uf057", // nf-fa-times_circle
   blocked: "\uf075", // nf-fa-comment
@@ -22,7 +20,9 @@ export const DASH_COLOR: Record<RenderState, string> = {
 };
 
 export const DASH_CHROME = {
-  robot: "\uf17b", // nf-fa-android
+  // Deliberate nf-md exception shared with the tmux agent-attention segment:
+  // this robot is clearer than nf-fa-android at status-bar size.
+  robot: "\u{f06a9}", // nf-md-robot
   here: "\uf015", // nf-fa-home
   remote: "\uf233", // nf-fa-server
   crew: "\uf0c0", // nf-fa-users

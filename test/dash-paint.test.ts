@@ -1,5 +1,6 @@
 import { expect, test } from "vitest";
 import { DASH_CHROME, DASH_CHROME_COLOR, DASH_COLOR, DASH_GLYPH } from "../src/dash-paint.js";
+import { GLYPH } from "../src/paint.js";
 import { RENDER_PRIORITY } from "../src/view.js";
 
 test("every render state has its single-codepoint Nerd Font glyph", () => {
@@ -13,6 +14,7 @@ test("every render state has its single-codepoint Nerd Font glyph", () => {
   for (const state of RENDER_PRIORITY) {
     expect([...DASH_GLYPH[state]]).toHaveLength(1);
   }
+  expect(GLYPH).toBe(DASH_GLYPH);
 });
 
 test("dash state colors use the Catppuccin Mocha palette", () => {
@@ -27,7 +29,7 @@ test("dash state colors use the Catppuccin Mocha palette", () => {
 
 test("dash chrome uses Nerd Font glyphs and Catppuccin accents", () => {
   expect(DASH_CHROME).toEqual({
-    robot: "\uf17b",
+    robot: "\u{f06a9}",
     here: "\uf015",
     remote: "\uf233",
     crew: "\uf0c0",

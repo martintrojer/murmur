@@ -2,6 +2,7 @@ import { expect, test } from "vitest";
 import { agentLabel } from "../src/agents.js";
 import { warmSocketCommand } from "../src/channel.js";
 import { headerRow, isPopup, isVisible, pickerRow, sessionNotice } from "../src/cli/pick.js";
+import { DASH_GLYPH } from "../src/dash-paint.js";
 import { asPaneId, asSessionId, asWindowId } from "../src/ids.js";
 import { tmux } from "../src/mux.js";
 import type { Status } from "../src/status.js";
@@ -485,7 +486,7 @@ test("the notice is styled as an action, not as furniture", () => {
   expect(notice).not.toContain("\u001b[2m");
   // And it carries `blocked`'s glyph, so it reads as that class of thing in the
   // alphabet the glyph column already established.
-  expect(notice).toContain("!");
+  expect(notice).toContain(DASH_GLYPH.blocked);
 });
 
 test("the notice comes first in the header, above the legend", () => {

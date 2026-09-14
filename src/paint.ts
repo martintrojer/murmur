@@ -1,5 +1,6 @@
 import { agentLabel, agentLocation, terminalText } from "./agents.js";
 import { warmSocketCommand } from "./channel.js";
+import { DASH_GLYPH } from "./dash-paint.js";
 import { type GlanceRunner, glance } from "./glance.js";
 import type { Status } from "./status.js";
 import type { Store } from "./store.js";
@@ -32,15 +33,9 @@ function tailLines(text: string, maxLines: number): string {
   return lines.slice(-maxLines).join("\n");
 }
 
-// Same glyphs the tmux status bar and window labels use, so one symbol means
-// one thing in every surface. Ported from the dotfiles' _tmux_common.
-export const GLYPH: Record<string, string> = {
-  crashed: "\u2717", // ✗
-  blocked: "!",
-  done: "\u2713", // ✓
-  running: "\u25b6", // ▶
-  idle: "\u00b7", // ·
-};
+// Back-compatible name used by pick/status renderers. The map lives with the
+// dash vocabulary so every murmur surface paints one state with one symbol.
+export const GLYPH = DASH_GLYPH;
 
 // Mirrors the window-glyph colours: red needs you now, peach needs you soon,
 // teal is finished-unseen, grey is busy or idle and carries no signal.
@@ -196,7 +191,7 @@ export function sessionNotice(peers: Status["peers"], now = Date.now()): string 
   // so a command built from the name is not guaranteed to run.
   const oldestTarget = oldest?.target ?? named[0] ?? "";
   return (
-    `${attention}! ${named.join(", ")}: re-auth needed${RESET}` +
+    `${attention}${GLYPH.blocked} ${named.join(", ")}: re-auth needed${RESET}` +
     `${COLOUR.blocked ?? ""} (last seen ${seen}) \u2014 ${BOLD}${warmSocketCommand(oldestTarget)}${RESET}`
   );
 }
