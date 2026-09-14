@@ -16,13 +16,15 @@ you can move between agents without moving between terminals.
 
 | Command | Job |
 | --- | --- |
-| `murmur status` | Counts for a tmux status bar |
+| `murmur status` | Attention-state rollups plus the total crew count for a tmux status bar |
 | `murmur pick` | fzf jump list — type to narrow, enter jumps, `ctrl-a` / `--all` toggles crew |
 | `murmur dash` | Watch and talk to local or remote agents without leaving the dashboard |
 
-Orchestrated (`crew`) agents stay hidden unless they are `blocked` or `crashed`
-— their supervisor consumes anything else. Local jump is a window switch;
-remote jump opens over ssh (or your `--jump-command`).
+Orchestrated (`crew`) agents stay hidden from state rollups unless they are
+`blocked` or `crashed`—their supervisor consumes anything else. `murmur status`
+also emits their total as a separate `crew` record, including those urgent
+agents. Local jump is a window switch; remote jump opens over ssh (or your
+`--jump-command`).
 
 `murmur dash` wants a [Nerd Font](https://www.nerdfonts.com/) and a Catppuccin
 Mocha terminal. Press `tab` to focus the cards or pane preview; `j`/`k`, arrow

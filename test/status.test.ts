@@ -488,13 +488,19 @@ test("a crew agent that needs a human is counted, one that does not is not", () 
   localAgent("%3", { driver: "orchestrated", attention: ["done"] });
   localAgent("%4", { driver: "orchestrated", activity: "running" });
 
-  expect(tmuxStatus(status(store, IDENTITY))).toBe("crashed\t1\nblocked\t1\n");
+  expect(tmuxStatus(status(store, IDENTITY))).toBe("crashed\t1\nblocked\t1\ncrew\t4\n");
 });
 
-test("tmux status omits a crew-only fleet that wants nothing", () => {
+test("tmux status reports the total for a crew-only fleet", () => {
   localAgent("%1", { driver: "orchestrated", activity: "running" });
 
-  expect(tmuxStatus(status(store, IDENTITY))).toBe("");
+  expect(tmuxStatus(status(store, IDENTITY))).toBe("crew\t1\n");
+});
+
+test("tmux status omits the crew record when no crew agents exist", () => {
+  localAgent("%1", { activity: "running" });
+
+  expect(tmuxStatus(status(store, IDENTITY))).toBe("working\t1\n");
 });
 
 test("status works with no peers configured", () => {
