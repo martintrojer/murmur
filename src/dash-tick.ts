@@ -1,3 +1,4 @@
+import type { DashSort } from "./dash-prefs.js";
 import type { Status } from "./status.js";
 import { age, type PaneView } from "./view.js";
 
@@ -111,9 +112,22 @@ export function cardWindow(
  * the window has to be computed from the row actually being painted, or the
  * dense view would scroll at the sparse view's pace and leave most of the rail
  * blank.
+ *
+ * The "N more" cues live inside the same fixed-height box as the rows, so when
+ * the list overflows they have to be paid for first. Compact mode made that
+ * systematic rather than occasional: at one line per row the window consumes
+ * the rail exactly, so a cue pushed the box's children past its height at every
+ * terminal size, and ink's default overflow is visible -- a fixed-height TUI
+ * quietly turning into a scrollable one. Both cues are reserved whenever the
+ * list does not fit, rather than resolving which of them shows: the window that
+ * decides that is computed FROM this number, and one spare line beats a
+ * circular definition.
  */
-export function dashVisibleCards(railHeight: number, compact: boolean): number {
-  return Math.max(1, Math.floor(railHeight / (compact ? 1 : 5)));
+export function dashVisibleCards(railHeight: number, compact: boolean, total = 0): number {
+  const rowCost = compact ? 1 : 5;
+  const uncued = Math.max(1, Math.floor(railHeight / rowCost));
+  if (total <= uncued) return uncued;
+  return Math.max(1, Math.floor(Math.max(0, railHeight - 2) / rowCost));
 }
 
 /** Compact scroll cue for the header, or null when everything fits. */
@@ -169,6 +183,8 @@ export function dashNavigation(
 export type FooterHint = {
   chord: string;
   label: string;
+  /** Current setting, for toggles whose state is otherwise invisible. */
+  value?: string;
 };
 
 /** Which of the four mutually exclusive key regimes the dash is in. */
@@ -210,14 +226,28 @@ export function dashFooterHints(mode: DashFooterMode): FooterHint[] {
 
 export type DashHelpSection = { title: string; hints: FooterHint[] };
 
+/** What the view toggles are currently set to, for the help panel to report. */
+export type DashViewState = {
+  sort: DashSort;
+  crew: boolean;
+  hideStale: boolean;
+  compact: boolean;
+};
+
 /**
  * The full legend, grouped, for the `?` panel.
  *
  * This is now the only complete list of the dash's bindings, so a chord added
  * to `useInput` and not added here is undiscoverable. The category test in
  * `test/dash-tick.test.ts` is what keeps the two in step.
+ *
+ * The view keys also carry their current setting. The old footer reported it
+ * ("a crew on", "f stale on") and the contextual footer cannot afford to; with
+ * the state named nowhere, a dash left with crew-only on reads as a dash that
+ * lost its agents. The footer stays two chords wide -- this panel is the
+ * surface with room to spare.
  */
-export function dashHelpSections(): DashHelpSection[] {
+export function dashHelpSections(view: DashViewState): DashHelpSection[] {
   return [
     {
       title: "navigation",
@@ -247,10 +277,10 @@ export function dashHelpSections(): DashHelpSection[] {
     {
       title: "view",
       hints: [
-        { chord: "s", label: "cycle sort" },
-        { chord: "a", label: "toggle crew only" },
-        { chord: "f", label: "toggle stale agents" },
-        { chord: "c", label: "toggle compact rows" },
+        { chord: "s", label: "cycle sort", value: view.sort },
+        { chord: "a", label: "toggle crew only", value: view.crew ? "crew only" : "all" },
+        { chord: "f", label: "toggle stale agents", value: view.hideStale ? "hidden" : "shown" },
+        { chord: "c", label: "toggle compact rows", value: view.compact ? "on" : "off" },
         { chord: "+/-", label: "resize the preview" },
       ],
     },
@@ -262,6 +292,20 @@ export function dashHelpSections(): DashHelpSection[] {
       ],
     },
   ];
+}
+
+/**
+ * The compact row's two-cell gutter: selection and focus, structurally.
+ *
+ * A borderless line had nothing but a background colour to carry both, and the
+ * focused and unfocused selections were two light purples a hue apart --
+ * invisible on a low-contrast or colour-blind terminal, where the bordered card
+ * still had its double/single border to fall back on. Unselected rows pay the
+ * same two cells so the columns stay aligned.
+ */
+export function compactSelectionMarker(selected: boolean, cardsFocused: boolean): string {
+  if (!selected) return "  ";
+  return cardsFocused ? "\u25b8 " : "\u00b7 ";
 }
 
 export type DashKeyRoute = "help-open" | "help-close" | "help-inert" | "dash";

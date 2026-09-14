@@ -36,8 +36,10 @@ import { type DashPrefs, type DashSort, loadDashPrefs, saveDashPrefs } from "../
 import {
   cardWindow,
   clipGlanceLine,
+  compactSelectionMarker,
   type DashFocus,
   type DashFooterMode,
+  type DashViewState,
   dashFooterHints,
   dashHelpSections,
   dashNavigation,
@@ -155,6 +157,12 @@ function Hint({ chord, label }: { chord: string; label: string }) {
   );
 }
 
+/** The help panel's own value column, absent from the footer's hints. */
+function HintValue({ value }: { value?: string }) {
+  if (value === undefined) return null;
+  return <Text color={DASH_CHROME_COLOR.text}> {value}</Text>;
+}
+
 function Footer({ columns, mode }: { columns: number; mode: DashFooterMode }) {
   const hints = dashFooterHints(mode);
   return (
@@ -176,7 +184,7 @@ function Footer({ columns, mode }: { columns: number; mode: DashFooterMode }) {
  * does anything behind it, so the cards underneath are not actionable and need
  * not stay visible.
  */
-function Help({ columns, rows }: { columns: number; rows: number }) {
+function Help({ columns, rows, view }: { columns: number; rows: number; view: DashViewState }) {
   return (
     <Box
       borderStyle="double"
@@ -190,7 +198,7 @@ function Help({ columns, rows }: { columns: number; rows: number }) {
       <Text bold color={DASH_CHROME_COLOR.accent}>
         shortcuts<Text dimColor> · ? or esc closes</Text>
       </Text>
-      {dashHelpSections().map((section) => (
+      {dashHelpSections(view).map((section) => (
         <Box key={section.title} flexDirection="column">
           <Text bold color={DASH_CHROME_COLOR.info}>
             {section.title}
@@ -200,6 +208,7 @@ function Help({ columns, rows }: { columns: number; rows: number }) {
               {"  "}
               <Text color={DASH_CHROME_COLOR.accent}>{hint.chord.padEnd(7)}</Text>
               <Text dimColor>{hint.label}</Text>
+              <HintValue value={hint.value} />
             </Text>
           ))}
         </Box>
@@ -310,8 +319,14 @@ function CompactRow({
     .join("  ");
   // The head is the part that must survive a narrow rail, so the summary takes
   // whatever is left and nothing more.
-  const summary = clipGlanceLine(oneLiner(pane, glanceLine), Math.max(0, width - head.length - 2));
-  const line = clipGlanceLine(summary ? `${head}  ${summary}` : head, width);
+  // Colour alone carried selection and focus on a borderless line; the gutter
+  // makes both survive a low-contrast or colour-blind terminal.
+  const marker = compactSelectionMarker(selected, cardsFocused);
+  const summary = clipGlanceLine(
+    oneLiner(pane, glanceLine),
+    Math.max(0, width - marker.length - head.length - 2),
+  );
+  const line = clipGlanceLine(`${marker}${summary ? `${head}  ${summary}` : head}`, width);
 
   return (
     <Box ref={elementRef} width={width} height={1}>
@@ -492,7 +507,7 @@ function App({ store, initial }: DashProps) {
   const bodyRows = Math.max(5, terminalRows - headerRows - 2);
   const cardHeight =
     placement === "bottom" ? Math.max(4, Math.floor(bodyRows * (1 - share))) : bodyRows;
-  const visibleCards = dashVisibleCards(cardHeight, prefs.compact);
+  const visibleCards = dashVisibleCards(cardHeight, prefs.compact, panes.length);
   // The rail's own width, used only to pad a compact row to full width so the
   // selection background spans it. Approximate is fine; the row is clipped.
   const railWidth = Math.max(
@@ -894,7 +909,18 @@ function App({ store, initial }: DashProps) {
         ) : null}
       </Box>
       {notice ? <Text>{notice}</Text> : null}
-      {helpOpen ? <Help columns={columns} rows={bodyRows} /> : null}
+      {helpOpen ? (
+        <Help
+          columns={columns}
+          rows={bodyRows}
+          view={{
+            sort: prefs.sort,
+            crew: prefs.crew,
+            hideStale: prefs.hide_stale,
+            compact: prefs.compact,
+          }}
+        />
+      ) : null}
       {/*
         Hidden rather than unmounted, so the cards and the glance keep their
         measured nodes: unmounting would drop every `measureElement` ref the

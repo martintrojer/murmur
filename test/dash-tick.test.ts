@@ -2,6 +2,7 @@ import { expect, test } from "vitest";
 import {
   cardWindow,
   clipGlanceLine,
+  compactSelectionMarker,
   dashFooterHints,
   dashHelpSections,
   dashNavigation,
@@ -145,6 +146,9 @@ test("cardWindow keeps selection mid-list and reports overflow", () => {
   expect(cardWindow(1, 2, 5)).toEqual({ first: 0, shown: 2, above: 0, below: 0 });
 });
 
+/** A neutral view state, for the tests that do not care about the values. */
+const VIEW_STATE = { sort: "priority", crew: false, hideStale: false, compact: false } as const;
+
 test("scrollLabel is silent when everything fits", () => {
   expect(scrollLabel({ first: 0, shown: 3, above: 0, below: 0, total: 3 })).toBeNull();
   expect(scrollLabel({ first: 2, shown: 3, above: 2, below: 5, total: 10 })).toBe("↑2 3–5/10 ↓5");
@@ -179,7 +183,7 @@ test("the footer is contextual and short enough never to need fitting", () => {
 });
 
 test("help lists every dashboard shortcut by category", () => {
-  const sections = dashHelpSections();
+  const sections = dashHelpSections(VIEW_STATE);
   expect(sections.map((section) => section.title)).toEqual([
     "navigation",
     "actions",
@@ -229,6 +233,74 @@ test("compact rows pack the rail far denser than bordered cards", () => {
   // Never zero, however little room is left: something must still be pickable.
   expect(dashVisibleCards(0, false)).toBe(1);
   expect(dashVisibleCards(0, true)).toBe(1);
+});
+
+/**
+ * The rail paints "↑ N more" / "↓ N more" INSIDE its own fixed-height box, so
+ * those rows have to be taken out of the capacity before the rows are counted.
+ *
+ * Compact mode makes the bug systematic rather than occasional: one row costs
+ * one line, so the window uses the rail exactly, and any cue pushes the box's
+ * children past its height at EVERY terminal size. Ink's default overflow is
+ * visible, so a fixed-height TUI starts scrolling.
+ */
+test("the rail reserves room for its overflow cues", () => {
+  // Everything fits: no cue is painted, so nothing is reserved.
+  expect(dashVisibleCards(20, true, 20)).toBe(20);
+  expect(dashVisibleCards(20, false, 4)).toBe(4);
+
+  // Overflowing: two cue rows, the worst case, come off the top.
+  expect(dashVisibleCards(20, true, 50)).toBe(18);
+  // Bordered mode only overflowed when the height divided evenly by five, and
+  // the remainder no longer hides it.
+  expect(dashVisibleCards(20, false, 10)).toBe(3);
+  expect(dashVisibleCards(22, false, 10)).toBe(4);
+
+  // Still never zero.
+  expect(dashVisibleCards(0, true, 9)).toBe(1);
+  expect(dashVisibleCards(1, false, 9)).toBe(1);
+});
+
+/**
+ * The footer used to report toggle STATE ("a crew on", "f stale on"); the
+ * contextual footer reports none of it. With no indicator anywhere, a dash left
+ * with crew-only on looks like a dash that lost its agents, so the panel -- the
+ * one surface with room -- has to name the current value next to the key.
+ */
+test("help names the current value of every view toggle", () => {
+  const values = (state: Parameters<typeof dashHelpSections>[0]) =>
+    Object.fromEntries(
+      dashHelpSections(state)
+        .flatMap((section) => section.hints)
+        .filter((hint) => hint.value !== undefined)
+        .map((hint) => [hint.chord, hint.value]),
+    );
+
+  expect(values({ sort: "priority", crew: false, hideStale: false, compact: false })).toEqual({
+    s: "priority",
+    a: "all",
+    f: "shown",
+    c: "off",
+  });
+  expect(values({ sort: "age", crew: true, hideStale: true, compact: true })).toEqual({
+    s: "age",
+    a: "crew only",
+    f: "hidden",
+    c: "on",
+  });
+});
+
+/**
+ * Selected-and-focused vs selected-and-unfocused were two light purples apart,
+ * which is a hue-only distinction on one borderless line -- unreadable on a
+ * low-contrast or colour-blind terminal. A gutter glyph makes it structural.
+ */
+test("a compact row marks selection and focus in the gutter", () => {
+  expect(compactSelectionMarker(true, true)).toBe("▸ ");
+  expect(compactSelectionMarker(true, false)).toBe("· ");
+  // Unselected rows still pay the gutter, so the text columns stay aligned.
+  expect(compactSelectionMarker(false, true)).toBe("  ");
+  expect(compactSelectionMarker(false, false)).toBe("  ");
 });
 
 test("navigation keys map to the active region", () => {
