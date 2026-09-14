@@ -89,6 +89,38 @@ type DashProps = {
   initial: Status;
 };
 
+type SuspendTerminal = (action: () => void | Promise<void>) => Promise<void>;
+
+/** Release Ink's terminal modes while a jump switches the tmux client away. */
+export async function withDashTerminalSuspended<T>(
+  suspendTerminal: SuspendTerminal,
+  action: () => T,
+  setMouse: (enabled: boolean) => void = (enabled) =>
+    enabled ? enableMouse(process.stdout) : disableMouse(process.stdout),
+): Promise<T> {
+  let outcome: { value: T } | undefined;
+  setMouse(false);
+  try {
+    await suspendTerminal(() => {
+      outcome = { value: action() };
+    });
+  } finally {
+    setMouse(true);
+  }
+  if (!outcome) throw new Error("dash jump did not run");
+  return outcome.value;
+}
+
+export function requireDashTmux(
+  env: NodeJS.ProcessEnv = process.env,
+  writeError: (message: string) => unknown = process.stderr.write.bind(process.stderr),
+): boolean {
+  if (env.TMUX) return true;
+  writeError("murmur dash must run inside tmux; start tmux and run it again.\n");
+  process.exitCode = 1;
+  return false;
+}
+
 function paneKey(pane: PaneView): string {
   return `${pane.host_id}:${pane.pane}`;
 }
@@ -203,7 +235,7 @@ function Card({
 }
 
 function App({ store, initial }: DashProps) {
-  const { exit } = useApp();
+  const { exit, suspendTerminal } = useApp();
   const { columns, rows: terminalRows } = useWindowSize();
   const [prefs, setPrefs] = useState(loadDashPrefs);
   const [view, setView] = useState(initial);
@@ -366,15 +398,17 @@ function App({ store, initial }: DashProps) {
   );
 
   const activatePane = useCallback(
-    (pane: PaneView) => {
-      const result = pane.attached_pane
-        ? tmux.attach(pane.attached_pane)
-          ? { ok: true as const }
-          : { ok: false as const, message: `could not focus ${pane.attached_pane}` }
-        : jumpToAgent(store, pane);
+    async (pane: PaneView) => {
+      const result = await withDashTerminalSuspended(suspendTerminal, () =>
+        pane.attached_pane
+          ? tmux.attach(pane.attached_pane)
+            ? { ok: true as const }
+            : { ok: false as const, message: `could not focus ${pane.attached_pane}` }
+          : jumpToAgent(store, pane),
+      );
       setMessage(result.ok ? "" : result.message);
     },
-    [store],
+    [store, suspendTerminal],
   );
 
   const mouseLiveRef = useRef({
@@ -419,7 +453,7 @@ function App({ store, initial }: DashProps) {
             clickMemoryRef.current = classified.next;
             if (classified.double) {
               const pane = live.panes.find((entry) => paneKey(entry) === key);
-              if (pane) live.activatePane(pane);
+              if (pane) void live.activatePane(pane);
             } else {
               setSelectedKey(key);
             }
@@ -549,7 +583,7 @@ function App({ store, initial }: DashProps) {
       else if (navigation.type === "preview-edge")
         setGlanceScroll(navigation.edge === "top" ? 0 : Number.MAX_SAFE_INTEGER);
     } else if (key.return && selected) {
-      activatePane(selected);
+      void activatePane(selected);
     } else if (input === "i" && selected) {
       inputGenerationRef.current += 1;
       setFocus("preview");
@@ -771,6 +805,7 @@ export function registerDash(program: Command): void {
     .command("dash")
     .description("Watch agents and glance at their panes")
     .action(async () => {
+      if (!requireDashTmux()) return;
       const identity = requireIdentity();
       if (!identity) return;
       const store = openStore();

@@ -599,7 +599,20 @@ test("a new peer defaults to today's ssh attach command", () => {
   const s = store();
   s.addPeer("dev", "dev.example");
 
-  expect(s.peers()[0]?.jump_command).toBe("ssh -t 'dev.example' tmux attach -t ''\\''{pane}'\\'''");
+  expect(s.peers()[0]?.jump_command).toBe(
+    "ssh -t 'dev.example' env LC_CTYPE=C.UTF-8 tmux attach -t ''\\''{pane}'\\'''",
+  );
+});
+
+test("addPeer upgrades the previous generated jump command", () => {
+  const s = store();
+  s.addPeer("dev", "dev.example", "ssh -t 'dev.example' tmux attach -t ''\\''{pane}'\\'''");
+
+  s.addPeer("dev", "dev.example");
+
+  expect(s.peers()[0]?.jump_command).toBe(
+    "ssh -t 'dev.example' env LC_CTYPE=C.UTF-8 tmux attach -t ''\\''{pane}'\\'''",
+  );
 });
 
 test("a stored jump command round-trips", () => {
@@ -738,7 +751,7 @@ test("an existing database upgrades without losing peers", () => {
     {
       name: "dev",
       target: "dev.example",
-      jump_command: "ssh -t 'dev.example' tmux attach -t ''\\''{pane}'\\'''",
+      jump_command: "ssh -t 'dev.example' env LC_CTYPE=C.UTF-8 tmux attach -t ''\\''{pane}'\\'''",
       host_id: null,
       display_name: null,
       snapshot: null,

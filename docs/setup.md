@@ -169,8 +169,9 @@ murmur peer set dev --jump-command 'et dev -c "tmux attach -t {pane}"'
 ```
 
 murmur substitutes `{pane}` and runs the rest unparsed. Default is
-`ssh -t <target> tmux attach`. Use this when sshd sets `MaxSessions 1` — see
-[SSH.md](../SSH.md).
+`ssh -t <target> env LC_CTYPE=C.UTF-8 tmux attach`. The explicit UTF-8 locale
+keeps Nerd Font glyphs intact when the remote SSH login has no locale. Override
+the command when sshd sets `MaxSessions 1` — see [SSH.md](../SSH.md).
 
 Remote jump from inside tmux opens a local wrapper session named after the peer
 with a trailing `~`:

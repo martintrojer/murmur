@@ -5,7 +5,7 @@ import Database from "better-sqlite3";
 import type { NodeIdentity } from "./identity.js";
 import type { PaneId } from "./ids.js";
 import { asPaneId, asSessionId, asWindowId } from "./ids.js";
-import { defaultJumpCommand } from "./jump-command.js";
+import { currentJumpCommand, defaultJumpCommand } from "./jump-command.js";
 import { pidAlive } from "./mux.js";
 import { dbPath } from "./paths.js";
 import { parseSnapshot, parseUsage } from "./snapshot.js";
@@ -1018,8 +1018,11 @@ export function openStore(): Store {
         .get(name) as Pick<PeerDbRow, "target" | "jump_command"> | undefined;
       const command =
         jumpCommand ??
-        (existing && existing.jump_command !== defaultJumpCommand(existing.target)
-          ? existing.jump_command
+        (existing
+          ? currentJumpCommand(existing.jump_command, existing.target) ===
+            defaultJumpCommand(existing.target)
+            ? defaultJumpCommand(target)
+            : existing.jump_command
           : defaultJumpCommand(target));
       database
         .prepare(

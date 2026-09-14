@@ -454,7 +454,7 @@ test("the wrapper returns the originating client to where the jump started", () 
   // be shell-inert, so this asserts the STRUCTURE that protects the next value
   // rather than a rescue this one needs.
   expect(command).toBe(
-    `ssh -t 'p' tmux attach -t ''\\''%9'\\'''; ` +
+    `ssh -t 'p' env LC_CTYPE=C.UTF-8 tmux attach -t ''\\''%9'\\'''; ` +
       `tmux switch-client -c '/dev/ttys004' -t '=work:@3'`,
   );
 });
@@ -539,7 +539,9 @@ test("outside tmux, no local wrapper session is created", () => {
   expect(sessions).toBe(0);
   // The configured command is opaque, so the shell parses it just as it does
   // inside a wrapper session.
-  expect(attached).toEqual([["-c", "ssh -t 'p' tmux attach -t ''\\''%9'\\'''"]]);
+  expect(attached).toEqual([
+    ["-c", "ssh -t 'p' env LC_CTYPE=C.UTF-8 tmux attach -t ''\\''%9'\\'''"],
+  ]);
 });
 
 test("outside tmux, the configured jump command runs through a shell", () => {

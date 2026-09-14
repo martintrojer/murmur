@@ -105,7 +105,7 @@ ET's own bootstrap can complete when the slot is *already* exhausted is untested
 
 ### Jumping is a session too — peek, then back out
 
-The jump is `ssh -t <host> tmux attach`, which occupies a session channel for
+The jump is `ssh -t <host> env LC_CTYPE=C.UTF-8 tmux attach`, which occupies a session channel for
 the whole visit. On a capped host that has two consequences, and both were
 measured:
 

@@ -47,8 +47,8 @@ murmur link pi   # install the agent-side extension
 ```
 
 Agents must run **inside tmux**. A pane is the address; without one there is
-nothing to jump to. Remote agents need tmux on the remote too — the jump is
-`ssh -t <host> tmux attach` (unless you override it).
+nothing to jump to. Remote agents need tmux on the remote too — the jump uses
+`ssh -t <host> env LC_CTYPE=C.UTF-8 tmux attach` unless you override it.
 
 Add focus hooks so looking at a finished agent clears its badge — see
 [docs/setup.md](docs/setup.md#tmux-focus-hooks). Wire Codex / Cursor /

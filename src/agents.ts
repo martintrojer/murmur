@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { SSH_OPTIONS } from "./channel.js";
 import { asPaneId } from "./ids.js";
-import { renderJumpCommand } from "./jump-command.js";
+import { currentJumpCommand, renderJumpCommand } from "./jump-command.js";
 import { type Mux, tmux } from "./mux.js";
 import type { Store } from "./store.js";
 import type { PeerRecord } from "./types.js";
@@ -353,7 +353,7 @@ export function jumpToAgent(
   // "only a pane may decide whether an agent exists" exists to prevent, applied
   // one level short of the action. `tmux attach -t %pane` resolves session,
   // window and pane together, verified against a real tmux server.
-  const attach = renderJumpCommand(peer.jump_command, agent.pane);
+  const attach = renderJumpCommand(currentJumpCommand(peer.jump_command, target), agent.pane);
 
   // Hand the ssh to tmux as its own detached SESSION rather than running it
   // here: `murmur pick` is usually a display-popup, and a popup is modal, so an

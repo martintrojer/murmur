@@ -1,9 +1,9 @@
 import { expect, test } from "vitest";
 import { defaultJumpCommand, renderJumpCommand } from "../src/jump-command.js";
 
-test("the default renders the existing ssh attach command byte for byte", () => {
+test("the default gives the remote tmux client a UTF-8 locale", () => {
   expect(renderJumpCommand(defaultJumpCommand("p"), "%9")).toBe(
-    "ssh -t 'p' tmux attach -t ''\\''%9'\\'''",
+    "ssh -t 'p' env LC_CTYPE=C.UTF-8 tmux attach -t ''\\''%9'\\'''",
   );
 });
 
