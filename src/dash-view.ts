@@ -1,3 +1,4 @@
+import { agentLabel } from "./agents.js";
 import type { DashPrefs } from "./dash-prefs.js";
 import { isVisible } from "./paint.js";
 import { type PaneView, RENDER_PRIORITY, type RenderState, renderState, viewSort } from "./view.js";
@@ -49,6 +50,45 @@ export function dashVisible(agent: PaneView, prefs: DashPrefs): boolean {
 }
 
 /**
+ * The text one row is searched against: everything the card and its header
+ * already say out loud.
+ *
+ * Lowercased once here rather than per comparison, and built from the RENDERED
+ * words -- `agentLabel` is the name on the card and `renderState` is the state
+ * word it paints -- so a query matches what the reader can actually see. A row
+ * that reads `done` is not findable by typing `running`, for the same reason
+ * `hidden_states` keys on `renderState`.
+ */
+export function dashSearchText(agent: PaneView): string {
+  return [
+    agentLabel(agent),
+    agent.agent_name,
+    agent.workstream,
+    agent.session_name,
+    agent.host,
+    renderState(agent),
+  ]
+    .filter((field): field is string => Boolean(field))
+    .join("\u0000")
+    .toLowerCase();
+}
+
+/**
+ * Whether one row survives the reader's transient query.
+ *
+ * Literal substring, case-insensitive, no fuzzy matching and no dependency:
+ * the dash is read at a glance and a subsequence matcher makes `wrkr` hit
+ * `worker-1` while also hitting three rows the reader did not mean. A blank
+ * query matches everything, so "no filter" and "filter that matches all" are
+ * the same state and the caller never has to special-case it.
+ */
+export function dashMatches(agent: PaneView, query: string): boolean {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return true;
+  return dashSearchText(agent).includes(needle);
+}
+
+/**
  * The reader's chosen order. Never mutates the input.
  *
  * `priority` is `viewSort` verbatim -- the attention-first ordering every
@@ -88,10 +128,24 @@ export function dashSort(views: PaneView[], prefs: DashPrefs, now = Date.now()):
   return viewSort(views, { now });
 }
 
-/** The dash's row list: the reader's filters, then the reader's order. */
-export function dashRows(views: PaneView[], prefs: DashPrefs, now = Date.now()): PaneView[] {
+/**
+ * The dash's row list: the reader's filters, the transient query, then order.
+ *
+ * The query runs AFTER `dashVisible` and before the sort, which is what keeps
+ * it honest: it narrows what the persisted gates already allow rather than
+ * revealing a crew row the reader chose to hide. It is a separate argument and
+ * not part of `DashPrefs` because it is session-local by design and must never
+ * reach `dash.toml` -- a filter you cannot see the origin of is a dash that
+ * lies about how many agents you have.
+ */
+export function dashRows(
+  views: PaneView[],
+  prefs: DashPrefs,
+  now = Date.now(),
+  query = "",
+): PaneView[] {
   return dashSort(
-    views.filter((view) => dashVisible(view, prefs)),
+    views.filter((view) => dashVisible(view, prefs) && dashMatches(view, query)),
     prefs,
     now,
   );

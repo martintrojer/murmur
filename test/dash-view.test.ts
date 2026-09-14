@@ -2,7 +2,9 @@ import { expect, test } from "vitest";
 import { type DashPrefs, DEFAULT_DASH_PREFS } from "../src/dash-prefs.js";
 import {
   dashCrewCount,
+  dashMatches,
   dashRows,
+  dashSearchText,
   dashSort,
   dashStateCount,
   dashVisible,
@@ -198,6 +200,76 @@ test("every sort leaves the input array untouched", () => {
   const before = rows.map((row) => row.pane);
   for (const sort of ["priority", "node", "age"] as const) dashSort(rows, prefs({ sort }));
   expect(rows.map((row) => row.pane)).toEqual(before);
+});
+
+test("the searchable text is name, workstream, session, host and rendered state", () => {
+  const row = view({
+    agent_name: "Worker-1",
+    workstream: "DashSearch",
+    session_name: "hacking/murmur",
+    host: "Devbox",
+    local: false,
+    activity: "running",
+  });
+  const text = dashSearchText(row);
+  for (const field of ["worker-1", "dashsearch", "hacking/murmur", "devbox", "running"]) {
+    expect(text).toContain(field);
+  }
+});
+
+test("matching is case-insensitive, literal, and not fuzzy", () => {
+  const row = view({ agent_name: "worker-1", workstream: "dash-search" });
+  expect(dashMatches(row, "WORKER")).toBe(true);
+  expect(dashMatches(row, "dash-sea")).toBe(true);
+  // Literal: the subsequence a fuzzy matcher would accept must not match.
+  expect(dashMatches(row, "wrkr")).toBe(false);
+  expect(dashMatches(row, "nope")).toBe(false);
+});
+
+test("an empty or blank query matches every row", () => {
+  const row = view({ agent_name: "worker-1" });
+  expect(dashMatches(row, "")).toBe(true);
+  expect(dashMatches(row, "   ")).toBe(true);
+});
+
+test("a query matches the rendered state word, not the raw activity", () => {
+  const done = view({
+    activity: "running",
+    attention: [{ kind: "done", requested_at: 900, message: "" }],
+  });
+  expect(dashMatches(done, "done")).toBe(true);
+  expect(dashMatches(done, "running")).toBe(false);
+});
+
+test("the query composes with the crew, stale and state gates", () => {
+  const rows = [
+    view({ pane: asPaneId("%1"), agent_name: "alpha", driver: "orchestrated" }),
+    view({ pane: asPaneId("%2"), agent_name: "alpha", freshness: "stale", local: false }),
+    view({ pane: asPaneId("%3"), agent_name: "alpha" }),
+    view({ pane: asPaneId("%4"), agent_name: "beta" }),
+  ];
+
+  // Crew off hides %1 even though it matches; the query hides %4 even though
+  // every gate passes it.
+  expect(dashRows(rows, prefs({ sort: "node" }), 0, "alpha").map((row) => row.pane)).toEqual([
+    "%3",
+    "%2",
+  ]);
+  expect(dashRows(rows, prefs({ sort: "node", crew: true }), 0, "alpha").map((row) => row.pane)) //
+    .toEqual(["%1", "%3", "%2"]);
+  expect(
+    dashRows(rows, prefs({ sort: "node", hide_stale: true }), 0, "alpha").map((row) => row.pane),
+  ).toEqual(["%3"]);
+  expect(dashRows(rows, prefs({ sort: "node", hidden_states: ["running"] }), 0, "alpha")).toEqual(
+    [],
+  );
+});
+
+test("dashRows without a query is unchanged", () => {
+  const rows = [view({ pane: asPaneId("%1") }), view({ pane: asPaneId("%2") })];
+  expect(dashRows(rows, prefs(), 0, "").map((row) => row.pane)).toEqual(
+    dashRows(rows, prefs(), 0).map((row) => row.pane),
+  );
 });
 
 test("dashRows filters then sorts", () => {

@@ -15,8 +15,11 @@ import { ssh } from "../channel.js";
 import { COLLECT_FLOOR_MS } from "../collector.js";
 import {
   type Composer,
+  type DashFilter,
+  dashFilter,
   editComposer,
   emptyComposer,
+  emptyFilter,
   sendEscape,
   sendPrompt,
 } from "../dash-input.js";
@@ -44,7 +47,7 @@ import {
   paneFingerprint,
   scrollLabel,
 } from "../dash-tick.js";
-import { dashCrewCount, dashRows, dashStateCount } from "../dash-view.js";
+import { dashCrewCount, dashMatches, dashRows, dashStateCount } from "../dash-view.js";
 import { runGoto } from "../goto.js";
 import { asPaneId } from "../ids.js";
 import { type Mux, tmux } from "../mux.js";
@@ -154,11 +157,13 @@ function Footer({
   columns,
   prefs,
   inputMode,
+  filterMode,
   focus,
 }: {
   columns: number;
   prefs: DashPrefs;
   inputMode: boolean;
+  filterMode: boolean;
   focus: DashFocus;
 }) {
   const hints = fitFooterHints(
@@ -168,7 +173,12 @@ function Footer({
           { chord: "^e", label: "stop", drop: 1 },
           { chord: "esc", label: "leave", drop: 2 },
         ]
-      : dashFooterHints(prefs, focus),
+      : filterMode
+        ? [
+            { chord: "enter", label: "keep", drop: 0 },
+            { chord: "esc", label: "clear", drop: 1 },
+          ]
+        : dashFooterHints(prefs, focus),
     columns,
   );
   return (
@@ -252,6 +262,10 @@ function App({ store, initial }: DashProps) {
   const [inputError, setInputError] = useState("");
   const [inputSending, setInputSending] = useState(false);
   const inputGenerationRef = useRef(0);
+  // Session-local on purpose: the query never reaches `dash.toml`, so a dash
+  // reopened tomorrow shows every agent rather than silently hiding rows
+  // behind a filter set days ago.
+  const [filter, setFilter] = useState<DashFilter>(emptyFilter);
   const [message, setMessage] = useState("");
   const [now, setNow] = useState(Date.now());
   const [collectRevision, setCollectRevision] = useState(0);
@@ -259,7 +273,12 @@ function App({ store, initial }: DashProps) {
   // `fetched_at`: on a peerless node those two say nothing about whether the
   // loop is alive, and the header's only ticking field has to.
   const [refreshedAt, setRefreshedAt] = useState<number | null>(null);
-  const panes = useMemo(() => dashRows(view.panes, prefs, now), [view, prefs, now]);
+  const query = filter.query.text;
+  const allPanes = useMemo(() => dashRows(view.panes, prefs, now), [view, prefs, now]);
+  const panes = useMemo(
+    () => (query.trim() ? allPanes.filter((pane) => dashMatches(pane, query)) : allPanes),
+    [allPanes, query],
+  );
   const selectedIndex = Math.max(
     0,
     panes.findIndex((pane) => paneKey(pane) === selectedKey),
@@ -544,7 +563,37 @@ function App({ store, initial }: DashProps) {
       return;
     }
 
-    if (input === "q" || (key.ctrl && input === "c")) {
+    if (filter.editing) {
+      // Filter editing owns every printable key, so a query may contain `q`,
+      // `j` or `i` without quitting, moving or opening the prompt.
+      if (key.escape) setFilter((state) => dashFilter(state, { type: "cancel" }));
+      else if (key.return) setFilter((state) => dashFilter(state, { type: "accept" }));
+      else if (key.backspace)
+        setFilter((state) => dashFilter(state, { type: "edit", edit: { type: "backspace" } }));
+      else if (key.delete)
+        setFilter((state) => dashFilter(state, { type: "edit", edit: { type: "delete" } }));
+      else if (key.leftArrow)
+        setFilter((state) => dashFilter(state, { type: "edit", edit: { type: "left" } }));
+      else if (key.rightArrow)
+        setFilter((state) => dashFilter(state, { type: "edit", edit: { type: "right" } }));
+      else if (key.home)
+        setFilter((state) => dashFilter(state, { type: "edit", edit: { type: "home" } }));
+      else if (key.end)
+        setFilter((state) => dashFilter(state, { type: "edit", edit: { type: "end" } }));
+      else if (input && !key.ctrl && !key.meta)
+        setFilter((state) =>
+          dashFilter(state, { type: "edit", edit: { type: "insert", text: input } }),
+        );
+      return;
+    }
+
+    if (input === "/") {
+      setFilter((state) => dashFilter(state, { type: "open" }));
+    } else if (key.escape && query) {
+      // Escape while navigating a filtered list drops the filter, so one key
+      // always gets the full list back.
+      setFilter((state) => dashFilter(state, { type: "cancel" }));
+    } else if (input === "q" || (key.ctrl && input === "c")) {
       exit();
     } else if (key.tab) {
       setFocus((current) => (current === "cards" ? "preview" : "cards"));
@@ -640,6 +689,12 @@ function App({ store, initial }: DashProps) {
     .reverse()
     .find((line) => line.trim())
     ?.trim();
+  const filterDraft = [...query];
+  const filterBefore = filterDraft.slice(0, filter.query.cursor).join("");
+  const filterCursor = filterDraft[filter.query.cursor] ?? " ";
+  const filterAfter = filterDraft
+    .slice(filter.query.cursor + (filterDraft[filter.query.cursor] ? 1 : 0))
+    .join("");
   const draft = [...composer.text.replaceAll("\n", "↵")];
   const draftBefore = draft.slice(0, composer.cursor).join("");
   const draftCursor = draft[composer.cursor] ?? " ";
@@ -689,6 +744,31 @@ function App({ store, initial }: DashProps) {
             <Dot />
             <Text bold color={DASH_CHROME_COLOR.stale}>
               {scroll}
+            </Text>
+          </>
+        ) : null}
+        {/*
+          The query and the cards it kept, next to counts that stay GLOBAL.
+          The state tallies and the crew total answer "what is the fleet
+          doing", and a filter narrowing those would make a typo look like
+          agents disappearing. `N/M` is the only number the filter moves.
+        */}
+        {filter.editing || query ? (
+          <>
+            <Dot />
+            <Text color={DASH_CHROME_COLOR.accent}>/</Text>
+            {filter.editing ? (
+              <Text color={DASH_CHROME_COLOR.text}>
+                {filterBefore}
+                <Text inverse>{filterCursor}</Text>
+                {filterAfter}
+              </Text>
+            ) : (
+              <Text color={DASH_CHROME_COLOR.text}>{terminalText(query)}</Text>
+            )}
+            <Text color={panes.length === 0 ? DASH_CHROME_COLOR.stale : DASH_CHROME_COLOR.info}>
+              {" "}
+              {panes.length}/{allPanes.length}
             </Text>
           </>
         ) : null}
@@ -799,7 +879,13 @@ function App({ store, initial }: DashProps) {
           ) : null}
         </Box>
       </Box>
-      <Footer columns={columns} prefs={prefs} inputMode={inputMode} focus={focus} />
+      <Footer
+        columns={columns}
+        prefs={prefs}
+        inputMode={inputMode}
+        filterMode={filter.editing}
+        focus={focus}
+      />
       {message ? (
         <Box width={columns} height={1}>
           <Text color="red" wrap="truncate-end">

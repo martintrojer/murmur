@@ -185,6 +185,11 @@ test("dash footer makes input mode and region focus discoverable", () => {
   expect(preview.some((hint) => hint.chord === "j/k" && hint.label === "scroll")).toBe(true);
 });
 
+test("dash footer advertises the transient filter", () => {
+  const hints = dashFooterHints({ sort: "priority", hide_stale: false, crew: false });
+  expect(hints.some((hint) => hint.chord === "/" && hint.label === "filter")).toBe(true);
+});
+
 test("navigation keys map to the active region", () => {
   expect(dashNavigation("cards", "down", 4, 2)).toEqual({ type: "cards", offset: 1 });
   expect(dashNavigation("cards", "pageDown", 4, 2)).toEqual({ type: "cards", offset: 4 });

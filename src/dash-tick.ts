@@ -222,13 +222,14 @@ export function dashFooterHints(
     { chord: "tab", label: "focus", value: focus, drop: 2 },
     { chord: "q", label: "quit", drop: 3 },
     { chord: "i", label: "input", drop: 4 },
-    { chord: "s", label: "sort", value: prefs.sort, drop: 5 },
-    { chord: "a", label: "crew", value: prefs.crew ? "on" : "off", drop: 6 },
-    { chord: "f", label: "stale", value: prefs.hide_stale ? "off" : "on", drop: 7 },
-    { chord: "^r", label: "refresh", drop: 8 },
-    { chord: "^u/^d", label: "page", drop: 9 },
-    { chord: "g/G", label: "top/end", drop: 10 },
-    { chord: "+/-", label: "preview", drop: 11 },
+    { chord: "/", label: "filter", drop: 5 },
+    { chord: "s", label: "sort", value: prefs.sort, drop: 6 },
+    { chord: "a", label: "crew", value: prefs.crew ? "on" : "off", drop: 7 },
+    { chord: "f", label: "stale", value: prefs.hide_stale ? "off" : "on", drop: 8 },
+    { chord: "^r", label: "refresh", drop: 9 },
+    { chord: "^u/^d", label: "page", drop: 10 },
+    { chord: "g/G", label: "top/end", drop: 11 },
+    { chord: "+/-", label: "preview", drop: 12 },
   ];
 }
 

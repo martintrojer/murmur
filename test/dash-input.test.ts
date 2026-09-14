@@ -2,8 +2,10 @@ import { expect, test } from "vitest";
 import {
   buildEscapeDelivery,
   buildPromptDelivery,
+  dashFilter,
   editComposer,
   emptyComposer,
+  emptyFilter,
   sendPrompt,
 } from "../src/dash-input.js";
 import { asPaneId, asSessionId, asWindowId } from "../src/ids.js";
@@ -133,4 +135,59 @@ test("remote delivery refuses an unresolved peer", async () => {
     ok: false,
     message: "no peer for dev",
   });
+});
+
+/**
+ * The filter editor seam.
+ *
+ * A pure reducer so the `/` transitions are assertable without rendering a
+ * dash: the query is session-local state in `dash.tsx`, and the only thing
+ * worth testing about it is which key does what to it.
+ */
+
+test("slash opens filter editing and printable text lands in the query", () => {
+  let state = emptyFilter();
+  expect(state).toEqual({ editing: false, query: emptyComposer() });
+
+  state = dashFilter(state, { type: "open" });
+  expect(state.editing).toBe(true);
+
+  state = dashFilter(state, { type: "edit", edit: { type: "insert", text: "work" } });
+  expect(state.query.text).toBe("work");
+});
+
+test("Backspace and Delete edit the query, and typing is ignored when closed", () => {
+  let state = dashFilter(emptyFilter(), { type: "open" });
+  state = dashFilter(state, { type: "edit", edit: { type: "insert", text: "worker" } });
+  state = dashFilter(state, { type: "edit", edit: { type: "backspace" } });
+  expect(state.query.text).toBe("worke");
+
+  state = dashFilter(state, { type: "edit", edit: { type: "left" } });
+  state = dashFilter(state, { type: "edit", edit: { type: "delete" } });
+  expect(state.query.text).toBe("work");
+
+  const closed = dashFilter(state, { type: "accept" });
+  expect(dashFilter(closed, { type: "edit", edit: { type: "insert", text: "x" } })).toEqual(closed);
+});
+
+test("Enter keeps the query and leaves editing; slash resumes it", () => {
+  let state = dashFilter(emptyFilter(), { type: "open" });
+  state = dashFilter(state, { type: "edit", edit: { type: "insert", text: "dash" } });
+  state = dashFilter(state, { type: "accept" });
+  expect(state).toEqual({ editing: false, query: { text: "dash", cursor: 4 } });
+
+  // `/` re-enters with the query intact rather than starting over.
+  expect(dashFilter(state, { type: "open" })).toEqual({
+    editing: true,
+    query: { text: "dash", cursor: 4 },
+  });
+});
+
+test("Escape clears the query, whether editing or navigating", () => {
+  let state = dashFilter(emptyFilter(), { type: "open" });
+  state = dashFilter(state, { type: "edit", edit: { type: "insert", text: "dash" } });
+  expect(dashFilter(state, { type: "cancel" })).toEqual(emptyFilter());
+
+  const kept = dashFilter(state, { type: "accept" });
+  expect(dashFilter(kept, { type: "cancel" })).toEqual(emptyFilter());
 });

@@ -39,6 +39,47 @@ export function editComposer(state: Composer, edit: ComposerEdit): Composer {
   return state;
 }
 
+/**
+ * The dash's transient filter: a query plus whether the reader is typing it.
+ *
+ * Two fields rather than one nullable composer, because an empty query being
+ * EDITED and no query at all are different screens -- the first shows a live
+ * prompt the reader is mid-thought in, the second shows nothing.
+ */
+export type DashFilter = {
+  editing: boolean;
+  query: Composer;
+};
+
+export type DashFilterAction =
+  | { type: "open" }
+  | { type: "accept" }
+  | { type: "cancel" }
+  | { type: "edit"; edit: ComposerEdit };
+
+export function emptyFilter(): DashFilter {
+  return { editing: false, query: emptyComposer() };
+}
+
+/**
+ * The `/` state machine, pure so the key bindings are assertable without ink.
+ *
+ * `open` resumes the existing query rather than clearing it: after Enter the
+ * reader is navigating a filtered list, and `/` there almost always means
+ * "refine that", not "start over". `accept` keeps the query and stops editing;
+ * `cancel` clears it in both modes, so one Escape always gets you back to the
+ * full list without having to know which mode you were in. Edits outside
+ * editing mode are ignored, which is what lets the dash keep `j`/`k`/`q` as
+ * navigation once the prompt is closed.
+ */
+export function dashFilter(state: DashFilter, action: DashFilterAction): DashFilter {
+  if (action.type === "open") return { ...state, editing: true };
+  if (action.type === "accept") return { ...state, editing: false };
+  if (action.type === "cancel") return emptyFilter();
+  if (!state.editing) return state;
+  return { ...state, query: editComposer(state.query, action.edit) };
+}
+
 export type InputDelivery = {
   command: "tmux" | "ssh";
   args: string[];
