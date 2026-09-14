@@ -3,6 +3,29 @@
 Notable changes per release. Written for someone deciding whether to upgrade,
 so it says what changed for a user rather than listing every commit.
 
+## 0.4.3
+
+Wire-compatible with 0.4.x: the snapshot format is unchanged at version 2.
+
+**The tmux status protocol now reports total crew size.** Attention-needing crew
+remain in the crashed and blocked rollups, while a final `crew\t<count>` record
+includes every orchestrated agent. The record is absent at zero. Consumers can
+therefore show both what needs a human and how much supervised work exists.
+
+**Every murmur surface now uses one state-glyph alphabet.** `status`, `pick`,
+and `dash` share the stable `nf-fa-*` state map. The re-auth notice uses the
+same blocked glyph, and dash uses the same preferred `nf-md-robot` as the tmux
+agent-attention pill.
+
+**Dashboard navigation is safer and easier to leave.** `murmur dash --goto`
+returns to a running dashboard from local or remote agents, preserving terminal
+state across jumps. Remote probe failures retain their real exit status, and
+one dash cannot clear another dash's marker.
+
+**Crew headers now match the visible dashboard.** When crew mode is enabled,
+the header counts all visible crew states rather than retaining the default
+attention-only totals.
+
 ## 0.4.2
 
 Wire-compatible with 0.4.x: the snapshot format is unchanged at version 2.
