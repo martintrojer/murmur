@@ -103,6 +103,19 @@ export function cardWindow(
   };
 }
 
+/**
+ * How many agents fit in the rail, which depends on what a row costs.
+ *
+ * A bordered card is three text rows inside a border: five. A compact row is
+ * one line with no border at all, which is the entire point of the mode -- so
+ * the window has to be computed from the row actually being painted, or the
+ * dense view would scroll at the sparse view's pace and leave most of the rail
+ * blank.
+ */
+export function dashVisibleCards(railHeight: number, compact: boolean): number {
+  return Math.max(1, Math.floor(railHeight / (compact ? 1 : 5)));
+}
+
 /** Compact scroll cue for the header, or null when everything fits. */
 export function scrollLabel(window: {
   first: number;
@@ -237,6 +250,7 @@ export function dashHelpSections(): DashHelpSection[] {
         { chord: "s", label: "cycle sort" },
         { chord: "a", label: "toggle crew only" },
         { chord: "f", label: "toggle stale agents" },
+        { chord: "c", label: "toggle compact rows" },
         { chord: "+/-", label: "resize the preview" },
       ],
     },

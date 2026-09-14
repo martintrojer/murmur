@@ -5,6 +5,7 @@ import {
   dashFooterHints,
   dashHelpSections,
   dashNavigation,
+  dashVisibleCards,
   fetchedText,
   formatFetchedAge,
   glanceNeedsRefresh,
@@ -190,7 +191,7 @@ test("help lists every dashboard shortcut by category", () => {
   const chords = sections.flatMap((section) => section.hints.map((hint) => hint.chord));
   // Every chord `useInput` binds has to be discoverable here, since the footer
   // no longer names them.
-  for (const chord of ["j/k", "^u/^d", "g/G", "tab", "enter", "i", "q", "^r", "/", "esc", "?"])
+  for (const chord of ["j/k", "^u/^d", "g/G", "tab", "enter", "i", "q", "^r", "/", "esc", "?", "c"])
     expect(chords).toContain(chord);
   expect(new Set(chords).size).toBe(chords.length);
 });
@@ -212,6 +213,22 @@ test("an open help panel swallows every other dashboard key", () => {
   expect(routeDashKey(true, "q", {})).toBe("help-inert");
   expect(routeDashKey(true, "j", {})).toBe("help-inert");
   expect(routeDashKey(true, "", { return: true })).toBe("help-inert");
+});
+
+/**
+ * Compact mode only pays for itself if the window grows with it.
+ *
+ * A bordered card costs five rows; a compact row costs one. Reusing the card
+ * arithmetic in compact mode would paint the same handful of agents in a fifth
+ * of the space and waste the rest, so the capacity has to know which row it is
+ * counting.
+ */
+test("compact rows pack the rail far denser than bordered cards", () => {
+  expect(dashVisibleCards(20, false)).toBe(4);
+  expect(dashVisibleCards(20, true)).toBe(20);
+  // Never zero, however little room is left: something must still be pickable.
+  expect(dashVisibleCards(0, false)).toBe(1);
+  expect(dashVisibleCards(0, true)).toBe(1);
 });
 
 test("navigation keys map to the active region", () => {

@@ -11,6 +11,8 @@ export type DashPrefs = {
   hide_stale: boolean;
   hidden_states: RenderState[];
   preview: number;
+  /** One borderless line per agent instead of a three-row bordered card. */
+  compact: boolean;
 };
 
 export const DEFAULT_DASH_PREFS: DashPrefs = {
@@ -19,6 +21,7 @@ export const DEFAULT_DASH_PREFS: DashPrefs = {
   hide_stale: false,
   hidden_states: [],
   preview: 0.75,
+  compact: false,
 };
 
 const SORTS = new Set<DashSort>(["priority", "node", "age"]);
@@ -116,7 +119,7 @@ export function loadDashPrefs(dir = configDir()): DashPrefs {
     if (key === "sort") {
       const parsed = stringValue(value);
       if (parsed !== undefined && isDashSort(parsed)) prefs.sort = parsed;
-    } else if (key === "crew" || key === "hide_stale") {
+    } else if (key === "crew" || key === "hide_stale" || key === "compact") {
       if (value === "true" || value === "false") prefs[key] = value === "true";
     } else if (key === "hidden_states") {
       const parsed = stringArray(value);
@@ -143,6 +146,7 @@ export function saveDashPrefs(prefs: DashPrefs, dir = configDir()): void {
     `hide_stale = ${prefs.hide_stale}`,
     `hidden_states = [${hiddenStates.join(", ")}]`,
     `preview = ${clampPreview(prefs.preview)}`,
+    `compact = ${prefs.compact}`,
     "",
   ].join("\n");
 

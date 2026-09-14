@@ -41,6 +41,7 @@ test("every field survives a round trip", () => {
     hide_stale: true,
     hidden_states: ["done", "idle"],
     preview: 0.4,
+    compact: true,
   };
 
   saveDashPrefs(prefs, dir);
@@ -94,9 +95,24 @@ test("a hidden state that is no longer a render state is dropped", () => {
 
 test("a key with the wrong type falls back to that key's default alone", () => {
   // One bad line is not grounds for discarding the lines around it.
-  write('sort = 7\ncrew = "yes"\nhide_stale = true\npreview = "wide"\n');
+  write('sort = 7\ncrew = "yes"\nhide_stale = true\npreview = "wide"\ncompact = "yes"\n');
 
   expect(loadDashPrefs(dir)).toEqual({ ...DEFAULT_DASH_PREFS, hide_stale: true });
+});
+
+/**
+ * Compact mode changes how every row is drawn, so a file that never mentions
+ * it has to mean the ordinary bordered cards -- a dash that came up compact
+ * because the key is absent would look broken to someone who never pressed `c`.
+ */
+test("compact defaults to off and survives a hand-written file", () => {
+  expect(DEFAULT_DASH_PREFS.compact).toBe(false);
+
+  write("compact = true\n");
+  expect(loadDashPrefs(dir).compact).toBe(true);
+
+  write("compact = false\n");
+  expect(loadDashPrefs(dir).compact).toBe(false);
 });
 
 test("comments, blank lines and unknown keys are ignored", () => {

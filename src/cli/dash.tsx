@@ -41,6 +41,7 @@ import {
   dashFooterHints,
   dashHelpSections,
   dashNavigation,
+  dashVisibleCards,
   fetchedText,
   glanceNeedsRefresh,
   glanceViewport,
@@ -260,6 +261,79 @@ function Card({
   );
 }
 
+/**
+ * One agent on one line, for the dense view.
+ *
+ * Painted as a single padded string rather than a row of elements, for the
+ * reason the glance body is: ink allocates a yoga node per element and keeps
+ * every distinct measured string forever, and compact mode exists precisely to
+ * put many more rows on screen. Padding to the full width is what lets the
+ * selection read as a bar -- a `Text` only as wide as its content would leave
+ * the highlight ragged.
+ */
+function CompactRow({
+  pane,
+  selected,
+  cardsFocused,
+  width,
+  glanceLine,
+  now,
+  elementRef,
+}: {
+  pane: PaneView;
+  selected: boolean;
+  cardsFocused: boolean;
+  width: number;
+  glanceLine?: string;
+  now: number;
+  elementRef?: (node: DOMElement | null) => void;
+}) {
+  const state = renderState(pane);
+  const stale = pane.freshness === "stale";
+  const stream = pane.workstream ?? pane.session_name;
+  const flags = [
+    pane.driver === "orchestrated" ? DASH_CHROME.crew : "",
+    stale ? DASH_CHROME.stale : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+  const elapsed = age(pane.updated_at === null ? null : now - pane.updated_at);
+  const head = [
+    DASH_GLYPH[state],
+    agentLabel(pane),
+    pane.local ? DASH_CHROME.here : `${DASH_CHROME.remote} ${terminalText(pane.host)}`,
+    stream ? terminalText(stream) : "",
+    flags,
+    elapsed,
+  ]
+    .filter(Boolean)
+    .join("  ");
+  // The head is the part that must survive a narrow rail, so the summary takes
+  // whatever is left and nothing more.
+  const summary = clipGlanceLine(oneLiner(pane, glanceLine), Math.max(0, width - head.length - 2));
+  const line = clipGlanceLine(summary ? `${head}  ${summary}` : head, width);
+
+  return (
+    <Box ref={elementRef} width={width} height={1}>
+      <Text
+        bold={selected}
+        color={selected ? "#11111b" : DASH_COLOR[state]}
+        backgroundColor={
+          selected
+            ? cardsFocused
+              ? DASH_CHROME_COLOR.accent
+              : DASH_CHROME_COLOR.selectedFallback
+            : undefined
+        }
+        dimColor={!selected && stale}
+        wrap="truncate-end"
+      >
+        {line.padEnd(width)}
+      </Text>
+    </Box>
+  );
+}
+
 function App({ store, initial }: DashProps) {
   const { exit, suspendTerminal } = useApp();
   const { columns, rows: terminalRows } = useWindowSize();
@@ -418,7 +492,13 @@ function App({ store, initial }: DashProps) {
   const bodyRows = Math.max(5, terminalRows - headerRows - 2);
   const cardHeight =
     placement === "bottom" ? Math.max(4, Math.floor(bodyRows * (1 - share))) : bodyRows;
-  const visibleCards = Math.max(1, Math.floor(cardHeight / 5));
+  const visibleCards = dashVisibleCards(cardHeight, prefs.compact);
+  // The rail's own width, used only to pad a compact row to full width so the
+  // selection background spans it. Approximate is fine; the row is clipped.
+  const railWidth = Math.max(
+    1,
+    placement === "right" ? Math.round(columns * (1 - share)) : columns,
+  );
   const window = cardWindow(selectedIndex, panes.length, visibleCards);
   const shown = panes.slice(window.first, window.first + window.shown);
   const scroll = scrollLabel({ ...window, total: panes.length });
@@ -680,6 +760,8 @@ function App({ store, initial }: DashProps) {
       updatePrefs({ hide_stale: !prefs.hide_stale });
     } else if (input === "a") {
       updatePrefs({ crew: !prefs.crew });
+    } else if (input === "c") {
+      updatePrefs({ compact: !prefs.compact });
     } else if (input === "+" || input === "=") {
       updatePrefs({ preview: Math.min(0.85, Number((prefs.preview + 0.05).toFixed(2))) });
     } else if (input === "-") {
@@ -835,7 +917,21 @@ function App({ store, initial }: DashProps) {
           ) : null}
           {shown.map((pane) => {
             const key = paneKey(pane);
-            return (
+            return prefs.compact ? (
+              <CompactRow
+                key={key}
+                pane={pane}
+                selected={key === paneKey(selected ?? pane)}
+                cardsFocused={focus === "cards"}
+                width={railWidth}
+                glanceLine={pane === selected ? glanceLine : undefined}
+                now={now}
+                elementRef={(node) => {
+                  if (node) cardNodesRef.current.set(key, node);
+                  else cardNodesRef.current.delete(key);
+                }}
+              />
+            ) : (
               <Card
                 key={key}
                 pane={pane}
