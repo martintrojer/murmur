@@ -89,9 +89,9 @@ export function isVisible(agent: PaneView): boolean {
  * column once.
  */
 const COLUMNS = {
-  glyph: 3, // marker + state glyph
-  state: 8,
+  marker: 2,
   name: 30,
+  state: 10, // state glyph + space + eight-character state word
   stream: 13,
   streamWide: 18, // when no host column is shown
   host: 14,
@@ -115,9 +115,9 @@ const COLUMNS = {
  */
 export function headerRow(showHost: boolean): string {
   const labels = [
-    " ".repeat(COLUMNS.glyph),
-    pad("state", COLUMNS.state),
+    " ".repeat(COLUMNS.marker),
     pad("agent", COLUMNS.name),
+    pad("state", COLUMNS.state),
     pad("stream", showHost ? COLUMNS.stream : COLUMNS.streamWide),
     showHost ? pad("host", COLUMNS.host) : "",
     "age / flags",
@@ -310,11 +310,11 @@ export function pickerRow(
   // matching (typing "glance" returned 0/4). Eight columns to make the filters
   // and text search share one field set, and the word is worth reading anyway.
   const label = [
-    `${marker} ${colour}${glyph}${RESET}`,
-    `${colour}${pad(state, COLUMNS.state)}${RESET}`,
+    pad(marker, COLUMNS.marker),
     // No `terminalText` here: `agentLabel` already sanitised it, and wrapping it
     // again implied this value was raw.
     pad(`${BOLD}${name}${RESET}`, COLUMNS.name),
+    `${colour}${glyph} ${pad(state, COLUMNS.state - 2)}${RESET}`,
     pad(workstream, showHost ? COLUMNS.stream : COLUMNS.streamWide),
     showHost ? pad(host, COLUMNS.host) : "",
     flags ? `${DIM}${flags}${RESET}` : "",

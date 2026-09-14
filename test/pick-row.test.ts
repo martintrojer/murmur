@@ -102,10 +102,8 @@ test("columns stay aligned when the name carries colour escapes", () => {
   const short = label(pickerRow({ ...base, window_name: "x" }, true, false, false));
   const long = label(pickerRow({ ...base, window_name: "a".repeat(20) }, true, false, false));
   expect(short.indexOf("bubba")).toBe(long.indexOf("bubba"));
-  // And the position is the padded width, not the raw string length: glyph
-  // column (4) + state (9) + name (31) + stream (14) + the arrow's two
-  // columns.
-  expect(short.indexOf("bubba")).toBe(60);
+  expect(short.indexOf("x")).toBe(3);
+  expect(short.indexOf(DASH_GLYPH.blocked)).toBe(34);
 });
 
 test("a remote worker row shows its existing local attachment", () => {
@@ -140,7 +138,8 @@ test("the header lines up with the columns it names", () => {
   // than the numbers, so the test survives a deliberate width change.
   const header = visible(headerRow(true));
   const row = label(pickerRow(base, true, false, false));
-  expect(header.indexOf("state")).toBe(row.indexOf("blocked"));
+  expect(header.indexOf("agent")).toBe(row.indexOf("editor"));
+  expect(header.indexOf("state")).toBe(row.indexOf(DASH_GLYPH.blocked));
   expect(header.indexOf("stream")).toBe(row.indexOf("ws"));
   expect(header.indexOf("host")).toBe(row.indexOf("→"));
 });
@@ -371,7 +370,7 @@ test("the row and the preview name a pane identically", () => {
     // underline's escape bytes are not columns.
     const header = visible(headerRow(false));
     const start = header.indexOf("agent");
-    const width = header.indexOf("stream") - start;
+    const width = header.indexOf("state") - start;
     const cell = label(pickerRow(agent, false, false))
       .slice(start, start + width)
       .trimEnd();

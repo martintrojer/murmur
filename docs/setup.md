@@ -155,6 +155,8 @@ Bind a popup picker:
 bind -N "agent state picker" a display-popup -E -w 80% -h 60% "murmur pick"
 ```
 
+Rows use the shared picker prefix `marker · 30-column agent · state · context`, matching the `tms` session picker while retaining Murmur's state word, stream, host, age, and flags.
+
 Typing in pick matches agent name, workstream or tmux session, host, and the
 state word as literal substrings — so `blocked` narrows without a dedicated
 binding.
