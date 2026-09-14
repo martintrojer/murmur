@@ -44,7 +44,7 @@ import {
   paneFingerprint,
   scrollLabel,
 } from "../dash-tick.js";
-import { dashRows, dashStateCount } from "../dash-view.js";
+import { dashCrewCount, dashRows, dashStateCount } from "../dash-view.js";
 import { runGoto } from "../goto.js";
 import { asPaneId } from "../ids.js";
 import { type Mux, tmux } from "../mux.js";
@@ -651,6 +651,7 @@ function App({ store, initial }: DashProps) {
     state,
     n: dashStateCount(view, state, prefs.crew),
   }));
+  const crewCount = dashCrewCount(view);
 
   return (
     <Box flexDirection="column" width={columns} height={terminalRows}>
@@ -670,6 +671,14 @@ function App({ store, initial }: DashProps) {
             </Text>
           ))
         )}
+        {crewCount > 0 ? (
+          <>
+            <Dot />
+            <Text color={DASH_CHROME_COLOR.furniture}>
+              {DASH_CHROME.crew} crew {crewCount}
+            </Text>
+          </>
+        ) : null}
         <Dot />
         <Text color={DASH_CHROME_COLOR.info}>{fetchedText(view, now, refreshedAt)}</Text>
         <Dot />

@@ -25,6 +25,11 @@ export function dashStateCount(view: StateCounts, state: RenderState, crew: bool
   return view.counts[state] + (showCrew ? view.orchestrated_counts[state] : 0);
 }
 
+/** Total orchestrated agents, independent of whether their cards are visible. */
+export function dashCrewCount(view: StateCounts): number {
+  return RENDER_PRIORITY.reduce((sum, state) => sum + view.orchestrated_counts[state], 0);
+}
+
 /**
  * Whether one row survives the reader's filters.
  *

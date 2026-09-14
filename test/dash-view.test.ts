@@ -1,6 +1,12 @@
 import { expect, test } from "vitest";
 import { type DashPrefs, DEFAULT_DASH_PREFS } from "../src/dash-prefs.js";
-import { dashRows, dashSort, dashStateCount, dashVisible } from "../src/dash-view.js";
+import {
+  dashCrewCount,
+  dashRows,
+  dashSort,
+  dashStateCount,
+  dashVisible,
+} from "../src/dash-view.js";
 import { asPaneId, asSessionId, asWindowId } from "../src/ids.js";
 import { isVisible } from "../src/paint.js";
 import { type PaneView, viewSort } from "../src/view.js";
@@ -77,6 +83,7 @@ test("header state counts include every crew state only when crew is on", () => 
   expect(dashStateCount(status, "idle", true)).toBe(5);
   expect(dashStateCount(status, "blocked", false)).toBe(2);
   expect(dashStateCount(status, "crashed", false)).toBe(1);
+  expect(dashCrewCount(status)).toBe(15);
 });
 
 test("crew rows are hidden unless prefs.crew, and agree with isVisible", () => {
