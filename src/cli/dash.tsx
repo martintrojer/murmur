@@ -37,14 +37,16 @@ import {
   cardWindow,
   clipGlanceLine,
   type DashFocus,
+  type DashFooterMode,
   dashFooterHints,
+  dashHelpSections,
   dashNavigation,
   fetchedText,
-  fitFooterHints,
   glanceNeedsRefresh,
   glanceViewport,
   moveIndex,
   paneFingerprint,
+  routeDashKey,
   scrollLabel,
 } from "../dash-tick.js";
 import { dashCrewCount, dashRows, dashStateCount } from "../dash-view.js";
@@ -140,54 +142,66 @@ function Dot() {
 }
 
 /**
- * One footer hint: coloured chord, dim verb, optional value in text weight.
- * Bold-everything made the line one slab; this keeps key ≠ label ≠ state.
+ * One footer hint: coloured chord, dim verb. Bold-everything made the line one
+ * slab; this keeps key ≠ label.
  */
-function Hint({ chord, label, value }: { chord: string; label: string; value?: string }) {
+function Hint({ chord, label }: { chord: string; label: string }) {
   return (
     <Text>
       <Text color={DASH_CHROME_COLOR.accent}>{chord}</Text>
       {label ? <Text dimColor> {label}</Text> : null}
-      {value !== undefined ? <Text color={DASH_CHROME_COLOR.text}> {value}</Text> : null}
     </Text>
   );
 }
 
-function Footer({
-  columns,
-  prefs,
-  inputMode,
-  filterMode,
-  focus,
-}: {
-  columns: number;
-  prefs: DashPrefs;
-  inputMode: boolean;
-  filterMode: boolean;
-  focus: DashFocus;
-}) {
-  const hints = fitFooterHints(
-    inputMode
-      ? [
-          { chord: "enter", label: "send", drop: 0 },
-          { chord: "^e", label: "stop", drop: 1 },
-          { chord: "esc", label: "leave", drop: 2 },
-        ]
-      : filterMode
-        ? [
-            { chord: "enter", label: "keep", drop: 0 },
-            { chord: "esc", label: "clear", drop: 1 },
-          ]
-        : dashFooterHints(prefs, focus),
-    columns,
-  );
+function Footer({ columns, mode }: { columns: number; mode: DashFooterMode }) {
+  const hints = dashFooterHints(mode);
   return (
     <Box width={columns} height={1}>
       {hints.map((hint, index) => (
-        <Text key={`${hint.chord}:${hint.label}:${hint.value ?? ""}`}>
+        <Text key={`${hint.chord}:${hint.label}`}>
           {index > 0 ? <Dot /> : null}
-          <Hint chord={hint.chord} label={hint.label} value={hint.value} />
+          <Hint chord={hint.chord} label={hint.label} />
         </Text>
+      ))}
+    </Box>
+  );
+}
+
+/**
+ * The `?` panel: the full legend, inside the dash rather than a tmux popup.
+ *
+ * It replaces the body while it is up, because it is modal -- no dashboard key
+ * does anything behind it, so the cards underneath are not actionable and need
+ * not stay visible.
+ */
+function Help({ columns, rows }: { columns: number; rows: number }) {
+  return (
+    <Box
+      borderStyle="double"
+      borderColor={DASH_CHROME_COLOR.accent}
+      flexDirection="column"
+      width={columns}
+      height={rows}
+      paddingX={1}
+      overflow="hidden"
+    >
+      <Text bold color={DASH_CHROME_COLOR.accent}>
+        shortcuts<Text dimColor> · ? or esc closes</Text>
+      </Text>
+      {dashHelpSections().map((section) => (
+        <Box key={section.title} flexDirection="column">
+          <Text bold color={DASH_CHROME_COLOR.info}>
+            {section.title}
+          </Text>
+          {section.hints.map((hint) => (
+            <Text key={hint.chord} wrap="truncate-end">
+              {"  "}
+              <Text color={DASH_CHROME_COLOR.accent}>{hint.chord.padEnd(7)}</Text>
+              <Text dimColor>{hint.label}</Text>
+            </Text>
+          ))}
+        </Box>
       ))}
     </Box>
   );
@@ -266,6 +280,9 @@ function App({ store, initial }: DashProps) {
   // reopened tomorrow shows every agent rather than silently hiding rows
   // behind a filter set days ago.
   const [filter, setFilter] = useState<DashFilter>(emptyFilter);
+  // Process-local and never persisted: help is a glance at a reference, not a
+  // view setting, so a dash reopened tomorrow must not start behind the panel.
+  const [helpOpen, setHelpOpen] = useState(false);
   const [message, setMessage] = useState("");
   const [now, setNow] = useState(Date.now());
   const [collectRevision, setCollectRevision] = useState(0);
@@ -516,6 +533,14 @@ function App({ store, initial }: DashProps) {
   }, []);
 
   useInput((input, key) => {
+    // Checked before the composer and the filter editor, because help is modal:
+    // while it is up, nothing else may see a key. It can only BE up in normal
+    // mode, since `?` typed into either editor is text rather than a chord.
+    if (helpOpen) {
+      if (routeDashKey(true, input, key) === "help-close") setHelpOpen(false);
+      return;
+    }
+
     if (inputTarget) {
       if (key.escape) {
         inputGenerationRef.current += 1;
@@ -591,7 +616,9 @@ function App({ store, initial }: DashProps) {
       return;
     }
 
-    if (input === "/") {
+    if (routeDashKey(false, input, key) === "help-open") {
+      setHelpOpen(true);
+    } else if (input === "/") {
       setFilter((state) => dashFilter(state, { type: "open" }));
     } else if (key.escape && query) {
       // Escape while navigating a filtered list drops the filter, so one key
@@ -711,6 +738,13 @@ function App({ store, initial }: DashProps) {
     n: dashStateCount(view, state, prefs.crew),
   }));
   const crewCount = dashCrewCount(view);
+  const footerMode: DashFooterMode = inputMode
+    ? "input"
+    : filter.editing
+      ? "filter-editing"
+      : query
+        ? "filter-active"
+        : "normal";
 
   return (
     <Box flexDirection="column" width={columns} height={terminalRows}>
@@ -778,7 +812,18 @@ function App({ store, initial }: DashProps) {
         ) : null}
       </Box>
       {notice ? <Text>{notice}</Text> : null}
-      <Box flexDirection={placement === "right" ? "row" : "column"} flexGrow={1}>
+      {helpOpen ? <Help columns={columns} rows={bodyRows} /> : null}
+      {/*
+        Hidden rather than unmounted, so the cards and the glance keep their
+        measured nodes: unmounting would drop every `measureElement` ref the
+        mouse handler reads, and closing help would then need a tick to make
+        clicks land again.
+      */}
+      <Box
+        display={helpOpen ? "none" : "flex"}
+        flexDirection={placement === "right" ? "row" : "column"}
+        flexGrow={1}
+      >
         <Box
           ref={railNodeRef}
           flexDirection="column"
@@ -883,13 +928,7 @@ function App({ store, initial }: DashProps) {
           ) : null}
         </Box>
       </Box>
-      <Footer
-        columns={columns}
-        prefs={prefs}
-        inputMode={inputMode}
-        filterMode={filter.editing}
-        focus={focus}
-      />
+      <Footer columns={columns} mode={footerMode} />
       {message ? (
         <Box width={columns} height={1}>
           <Text color="red" wrap="truncate-end">

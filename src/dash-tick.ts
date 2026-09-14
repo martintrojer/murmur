@@ -155,82 +155,118 @@ export function dashNavigation(
 
 export type FooterHint = {
   chord: string;
-  /** Empty when the compact form drops the verb. */
   label: string;
-  value?: string;
-  /** Higher drops first when the line will not fit. */
-  drop: number;
 };
 
-const DOT = " · ";
-
-export function hintWidth(hint: FooterHint): number {
-  return (
-    hint.chord.length +
-    (hint.label ? 1 + hint.label.length : 0) +
-    (hint.value !== undefined ? 1 + hint.value.length : 0)
-  );
-}
-
-export function hintsWidth(hints: FooterHint[]): number {
-  if (hints.length === 0) return 0;
-  return hints.reduce((sum, hint) => sum + hintWidth(hint), 0) + DOT.length * (hints.length - 1);
-}
+/** Which of the four mutually exclusive key regimes the dash is in. */
+export type DashFooterMode = "normal" | "filter-active" | "filter-editing" | "input";
 
 /**
- * One-line footer budget: drop lowest-priority hints, then strip verbs, until
- * the line fits. Never wraps — a wrapped footer pushed the fixed-height TUI
- * into a scrollable viewport on narrow panes.
+ * The footer names only what this keypress can do, and nothing else.
+ *
+ * It used to carry the whole legend and shed entries by rank as the terminal
+ * narrowed, which made the same chord appear or vanish with the pane width --
+ * the one thing a reference line must not do. Four short fixed lines fit any
+ * pane wide enough to run a dash, so there is no width budget left to spend and
+ * no fitting pass to get wrong. Everything the footer stopped saying lives in
+ * `?` (`dashHelpSections`), which is a panel and can afford to be complete.
  */
-export function fitFooterHints(hints: FooterHint[], columns: number): FooterHint[] {
-  const budget = Math.max(0, columns);
-  let fitted = hints.map((hint) => ({ ...hint }));
-
-  while (fitted.length > 1 && hintsWidth(fitted) > budget) {
-    let dropAt = 0;
-    for (let index = 1; index < fitted.length; index += 1) {
-      if ((fitted[index]?.drop ?? 0) >= (fitted[dropAt]?.drop ?? 0)) dropAt = index;
-    }
-    fitted = fitted.filter((_, index) => index !== dropAt);
-  }
-
-  if (hintsWidth(fitted) <= budget) return fitted;
-
-  fitted = fitted.map((hint) => ({ ...hint, label: "" }));
-  while (fitted.length > 1 && hintsWidth(fitted) > budget) {
-    let dropAt = 0;
-    for (let index = 1; index < fitted.length; index += 1) {
-      if ((fitted[index]?.drop ?? 0) >= (fitted[dropAt]?.drop ?? 0)) dropAt = index;
-    }
-    fitted = fitted.filter((_, index) => index !== dropAt);
-  }
-
-  return fitted;
+export function dashFooterHints(mode: DashFooterMode): FooterHint[] {
+  if (mode === "input")
+    return [
+      { chord: "enter", label: "send" },
+      { chord: "^e", label: "stop" },
+      { chord: "esc", label: "leave" },
+    ];
+  if (mode === "filter-editing")
+    return [
+      { chord: "enter", label: "keep" },
+      { chord: "esc", label: "clear" },
+    ];
+  if (mode === "filter-active")
+    return [
+      { chord: "esc", label: "clear" },
+      { chord: "/", label: "edit" },
+      { chord: "?", label: "shortcuts" },
+    ];
+  return [
+    { chord: "/", label: "filter" },
+    { chord: "?", label: "shortcuts" },
+  ];
 }
 
-export function dashFooterHints(
-  prefs: {
-    sort: string;
-    hide_stale: boolean;
-    crew: boolean;
-  },
-  focus: DashFocus = "cards",
-): FooterHint[] {
+export type DashHelpSection = { title: string; hints: FooterHint[] };
+
+/**
+ * The full legend, grouped, for the `?` panel.
+ *
+ * This is now the only complete list of the dash's bindings, so a chord added
+ * to `useInput` and not added here is undiscoverable. The category test in
+ * `test/dash-tick.test.ts` is what keeps the two in step.
+ */
+export function dashHelpSections(): DashHelpSection[] {
   return [
-    { chord: "j/k", label: focus === "cards" ? "select" : "scroll", drop: 0 },
-    { chord: "enter", label: "jump", drop: 1 },
-    { chord: "tab", label: "focus", value: focus, drop: 2 },
-    { chord: "q", label: "quit", drop: 3 },
-    { chord: "i", label: "input", drop: 4 },
-    { chord: "/", label: "filter", drop: 5 },
-    { chord: "s", label: "sort", value: prefs.sort, drop: 6 },
-    { chord: "a", label: "crew", value: prefs.crew ? "on" : "off", drop: 7 },
-    { chord: "f", label: "stale", value: prefs.hide_stale ? "off" : "on", drop: 8 },
-    { chord: "^r", label: "refresh", drop: 9 },
-    { chord: "^u/^d", label: "page", drop: 10 },
-    { chord: "g/G", label: "top/end", drop: 11 },
-    { chord: "+/-", label: "preview", drop: 12 },
+    {
+      title: "navigation",
+      hints: [
+        { chord: "j/k", label: "select or scroll" },
+        { chord: "^u/^d", label: "page" },
+        { chord: "g/G", label: "top or end" },
+        { chord: "tab", label: "switch cards and preview" },
+      ],
+    },
+    {
+      title: "actions",
+      hints: [
+        { chord: "enter", label: "jump to the agent" },
+        { chord: "i", label: "prompt the agent" },
+        { chord: "^r", label: "refresh now" },
+        { chord: "q", label: "quit" },
+      ],
+    },
+    {
+      title: "filter",
+      hints: [
+        { chord: "/", label: "filter cards" },
+        { chord: "esc", label: "clear the filter" },
+      ],
+    },
+    {
+      title: "view",
+      hints: [
+        { chord: "s", label: "cycle sort" },
+        { chord: "a", label: "toggle crew only" },
+        { chord: "f", label: "toggle stale agents" },
+        { chord: "+/-", label: "resize the preview" },
+      ],
+    },
+    {
+      title: "prompt",
+      hints: [
+        { chord: "^e", label: "send Escape to the agent" },
+        { chord: "?", label: "open or close this help" },
+      ],
+    },
   ];
+}
+
+export type DashKeyRoute = "help-open" | "help-close" | "help-inert" | "dash";
+
+/**
+ * Where a keypress goes once help can be open — the modal precedence, pure.
+ *
+ * Help must be genuinely modal, not merely drawn on top: a reader who opened
+ * `?` to look up the quit key must not lose the dash to the next `q`. So every
+ * key that is not a close is swallowed (`help-inert`) rather than falling
+ * through, and `?` toggles rather than re-opening.
+ */
+export function routeDashKey(
+  helpOpen: boolean,
+  input: string,
+  key: { escape?: boolean; return?: boolean },
+): DashKeyRoute {
+  if (!helpOpen) return input === "?" ? "help-open" : "dash";
+  return input === "?" || key.escape ? "help-close" : "help-inert";
 }
 
 /**

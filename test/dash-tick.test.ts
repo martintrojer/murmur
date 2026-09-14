@@ -3,15 +3,15 @@ import {
   cardWindow,
   clipGlanceLine,
   dashFooterHints,
+  dashHelpSections,
   dashNavigation,
   fetchedText,
-  fitFooterHints,
   formatFetchedAge,
   glanceNeedsRefresh,
   glanceViewport,
-  hintsWidth,
   moveIndex,
   paneFingerprint,
+  routeDashKey,
   scrollLabel,
 } from "../src/dash-tick.js";
 import { asPaneId, asSessionId, asWindowId } from "../src/ids.js";
@@ -157,51 +157,61 @@ test("glanceViewport reserves a chrome row only when content overflows", () => {
   expect(glanceViewport(0, 3)).toEqual({ visible: 1, chrome: false });
 });
 
-test("fitFooterHints drops low-priority items before wrapping", () => {
-  const hints = dashFooterHints({ sort: "priority", hide_stale: false, crew: true });
-  const wide = fitFooterHints(hints, 200);
-  expect(wide).toHaveLength(hints.length);
-  expect(hintsWidth(wide)).toBeLessThanOrEqual(200);
+/**
+ * The footer says only what the reader can do RIGHT NOW.
+ *
+ * The old line listed all thirteen chords and dropped them by rank as the
+ * terminal narrowed, so the same key vanished or reappeared with the pane
+ * width. Four fixed lines fit any pane worth running a dash in, and the full
+ * legend moved into `?`.
+ */
+test("the footer is contextual and short enough never to need fitting", () => {
+  const text = (mode: Parameters<typeof dashFooterHints>[0]) =>
+    dashFooterHints(mode)
+      .map((hint) => `${hint.chord} ${hint.label}`)
+      .join(" · ");
 
-  const mid = fitFooterHints(hints, 72);
-  expect(hintsWidth(mid)).toBeLessThanOrEqual(72);
-  expect(mid.some((hint) => hint.chord === "j/k")).toBe(true);
-  expect(mid.some((hint) => hint.chord === "q")).toBe(true);
-  expect(mid.some((hint) => hint.chord === "+/-")).toBe(false);
-
-  const tight = fitFooterHints(hints, 36);
-  expect(hintsWidth(tight)).toBeLessThanOrEqual(36);
-  expect(tight.every((hint) => hint.label === "" || hintsWidth(tight) <= 36)).toBe(true);
-  expect(tight[0]?.chord).toBe("j/k");
+  expect(text("normal")).toBe("/ filter · ? shortcuts");
+  expect(text("filter-active")).toBe("esc clear · / edit · ? shortcuts");
+  expect(text("filter-editing")).toBe("enter keep · esc clear");
+  expect(text("input")).toBe("enter send · ^e stop · esc leave");
 });
 
-test("dash footer makes input mode and region focus discoverable", () => {
-  const hints = dashFooterHints({ sort: "priority", hide_stale: false, crew: true }, "cards");
-  expect(hints.some((hint) => hint.chord === "i" && hint.label === "input")).toBe(true);
-  expect(hints.some((hint) => hint.chord === "tab" && hint.value === "cards")).toBe(true);
+test("help lists every dashboard shortcut by category", () => {
+  const sections = dashHelpSections();
+  expect(sections.map((section) => section.title)).toEqual([
+    "navigation",
+    "actions",
+    "filter",
+    "view",
+    "prompt",
+  ]);
 
-  const preview = dashFooterHints({ sort: "priority", hide_stale: false, crew: true }, "preview");
-  expect(preview.some((hint) => hint.chord === "tab" && hint.value === "preview")).toBe(true);
-  expect(preview.some((hint) => hint.chord === "j/k" && hint.label === "scroll")).toBe(true);
+  const chords = sections.flatMap((section) => section.hints.map((hint) => hint.chord));
+  // Every chord `useInput` binds has to be discoverable here, since the footer
+  // no longer names them.
+  for (const chord of ["j/k", "^u/^d", "g/G", "tab", "enter", "i", "q", "^r", "/", "esc", "?"])
+    expect(chords).toContain(chord);
+  expect(new Set(chords).size).toBe(chords.length);
 });
 
-test("dash footer advertises the transient filter", () => {
-  const hints = dashFooterHints({ sort: "priority", hide_stale: false, crew: false });
-  expect(hints.some((hint) => hint.chord === "/" && hint.label === "filter")).toBe(true);
-});
+/**
+ * Help is MODAL, which is the whole reason it needs a seam of its own.
+ *
+ * `?` while help is open must close it rather than re-open it, and `q` must not
+ * quit the dash from behind the panel -- a reader who opened help to find the
+ * quit key should not lose the dash to the next keypress.
+ */
+test("an open help panel swallows every other dashboard key", () => {
+  expect(routeDashKey(false, "?", {})).toBe("help-open");
+  expect(routeDashKey(false, "q", {})).toBe("dash");
+  expect(routeDashKey(false, "", { escape: true })).toBe("dash");
 
-test("every footer hint has its own drop rank", () => {
-  // `fitFooterHints` breaks a tie by array POSITION, so two hints sharing a
-  // rank make the drop order depend on the literal order of the list rather
-  // than on the stated priority -- which is exactly what the ranks exist to
-  // decouple. `/ filter` outranking `s sort` is the ordering under test.
-  const hints = dashFooterHints({ sort: "priority", hide_stale: false, crew: false });
-  const drops = hints.map((hint) => hint.drop);
-  expect(new Set(drops).size).toBe(hints.length);
-
-  const rank = (chord: string) => hints.find((hint) => hint.chord === chord)?.drop ?? -1;
-  expect(rank("/")).toBeLessThan(rank("s"));
-  expect(rank("i")).toBeLessThan(rank("/"));
+  expect(routeDashKey(true, "?", {})).toBe("help-close");
+  expect(routeDashKey(true, "", { escape: true })).toBe("help-close");
+  expect(routeDashKey(true, "q", {})).toBe("help-inert");
+  expect(routeDashKey(true, "j", {})).toBe("help-inert");
+  expect(routeDashKey(true, "", { return: true })).toBe("help-inert");
 });
 
 test("navigation keys map to the active region", () => {
