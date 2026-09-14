@@ -1,4 +1,5 @@
-import { mkdtempSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
@@ -71,6 +72,36 @@ function view(over: Partial<PaneView> = {}): PaneView {
 
 function localView(over: Partial<PaneView> = {}): PaneView {
   return view({ host_id: "LOCAL", host: "here", local: true, ...over });
+}
+
+/**
+ * Run a remote command string the way ssh does -- joined and handed to a shell
+ * -- with a `tmux` that succeeds for `list-panes` and fails for anything else.
+ *
+ * That is a remote host whose tmux is healthy but too old for the indexed
+ * one-shot hook, which is the only configuration in which the probe's and the
+ * arm's statuses disagree.
+ */
+function runRemote(command: string): ReturnType<Runner> {
+  const bin = mkdtempSync(join(tmpdir(), "murmur-remote-bin-"));
+  const stub = join(bin, "tmux");
+  writeFileSync(
+    stub,
+    `#!/bin/sh\ncase "$1" in\n  list-panes) echo '%9' ;;\n  *) echo 'invalid option' >&2 ; exit 1 ;;\nesac\n`,
+  );
+  chmodSync(stub, 0o755);
+  try {
+    const stdout = execFileSync("sh", ["-c", command], {
+      encoding: "utf8",
+      timeout: 10_000,
+      stdio: ["ignore", "pipe", "ignore"],
+      env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}` },
+    });
+    return { status: 0, stdout, failed: false };
+  } catch (error) {
+    const failure = error as { status?: number; stdout?: string };
+    return { status: failure.status ?? 1, stdout: failure.stdout ?? "", failed: false };
+  }
 }
 
 /**
@@ -741,6 +772,43 @@ test("the wrapper arms the remote jump marker before its attach, in one ssh", ()
   expect(remoteCommands).toHaveLength(1);
   // Probe and arm in the same remote shell, the probe's output still parseable:
   // the arm is appended, so its output cannot be read as a pane id.
+  expect(remoteCommands[0]).toContain("list-panes");
+  expect(remoteCommands[0]).toContain("client-attached[9000]");
+});
+
+test("a remote tmux that rejects the arm does not turn a healthy probe into a failure", () => {
+  // The arm shares the probe's remote shell, so with a bare `;` the shell's
+  // exit status is the ARM's and the probe's is lost. A remote tmux too old for
+  // the indexed one-shot hook then reports `has no tmux server running` for a
+  // host whose tmux answered the pane list correctly -- the exact misdiagnosis
+  // the probe's own comments exist to prevent.
+  //
+  // The arm is best effort by design: an unmarked jump still lands on the
+  // agent, it just leaves PREFIX G switching to the remote dash instead of
+  // coming home. So a failing arm must be invisible to the probe's status.
+  peer("p", "remote-host");
+  vi.stubEnv("TMUX", "/tmp/tmux-1000/default,123,0");
+  const remoteCommands: string[] = [];
+
+  const result = jumpToAgent(
+    store,
+    view(),
+    fakeMux({ armJumpMarkerCommand: () => "set-hook -g client-attached[9000] 'mark'" }),
+    (file, args) => {
+      const command = args.at(-1) ?? "";
+      remoteCommands.push(command);
+      if (file !== "ssh") return ok();
+      // The composed remote command run through a REAL shell, against a `tmux`
+      // that answers the pane list and rejects the hook. Asserting on the
+      // command string instead would only restate whichever spelling was
+      // written; the claim is about what a remote sh does with it.
+      return runRemote(command);
+    },
+  );
+
+  expect(result).toEqual({ ok: true });
+  // Still one round trip, and the arm still appended so the pane list stays the
+  // readable output.
   expect(remoteCommands[0]).toContain("list-panes");
   expect(remoteCommands[0]).toContain("client-attached[9000]");
 });

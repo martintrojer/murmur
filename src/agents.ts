@@ -313,7 +313,15 @@ export function jumpToAgent(
   // `process.env.TMUX` gates it because the outside-tmux path below has no
   // wrapper and no local client: a detach there would drop the operator out of
   // their own shell's session for nothing.
-  const arm = process.env.TMUX ? ` ; tmux ${mux.armJumpMarkerCommand()}` : "";
+  //
+  // `|| true`, because the remote shell's exit status is its LAST command's: a
+  // bare `;` would report the ARM's status and discard the probe's. The arm is
+  // best effort -- an unmarked jump still lands on the agent, it only leaves
+  // PREFIX G switching to the remote dash instead of coming home -- while the
+  // probe's status is what every branch below reads. Without this, a remote
+  // tmux too old for the indexed hook made every jump to that host report
+  // "has no tmux server running" about a host that had just listed its panes.
+  const arm = process.env.TMUX ? ` ; { tmux ${mux.armJumpMarkerCommand()} || true; }` : "";
   const probe = run("ssh", [
     ...SSH_OPTIONS,
     target,

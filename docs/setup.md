@@ -191,6 +191,11 @@ its marker, so `--goto` checks the pane is still alive before switching.
 cost is that a failure message goes nowhere; run `murmur dash --goto` by hand
 to see it.
 
+The client mark applies to the next client that attaches to the remote tmux
+server. A jump command override that does not itself attach a tmux client, or
+attaches after some other client does, leaves the jump unmarked — then `--goto`
+switches to the remote host's own dash instead of coming home.
+
 ## Jump command override
 
 `target` is always ssh (collector). The jump command is for a human and need not

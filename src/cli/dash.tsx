@@ -851,7 +851,11 @@ export function registerDash(program: Command): void {
       } finally {
         // Best effort: a SIGKILL leaves the option behind, which is exactly why
         // `gotoDecision` re-checks the pane against tmux's live list.
-        if (pane) tmux.markDashPane(null);
+        //
+        // Passes our own pane so the clear is conditional: another dash on this
+        // server may have taken the mark since, and clearing its mark would
+        // report no dash while one is running.
+        if (pane) tmux.unmarkDashPane(asPaneId(pane));
         disableMouse(process.stdout);
         store.close();
         process.title = previousTitle;

@@ -44,8 +44,13 @@ export interface Mux {
   // of these is one option read or one action. See src/goto.ts for why the
   // decision itself is pure and lives outside this file.
   //
-  // Marks (and unmarks) the pane a running dash occupies, for its lifetime.
-  markDashPane(pane: PaneId | null): void;
+  // Marks the pane a running dash occupies, for its lifetime.
+  markDashPane(pane: PaneId): void;
+  // Clears the mark, but only if it still names THIS pane. The option is one
+  // server-global value, so a second dash overwrites the first's mark; an
+  // unconditional unset then let whichever dash exited first clear the
+  // survivor's mark, leaving `--goto` reporting no dash with one on screen.
+  unmarkDashPane(pane: PaneId): void;
   dashPane(): PaneId | null;
   // This client as `name created`. The creation time is what stops a recycled
   // tty path from inheriting a dead jump's marker.
@@ -321,8 +326,18 @@ export const tmux: Mux = {
   },
 
   markDashPane(pane) {
-    if (pane === null) runTmux(["set-option", "-gqu", DASH_PANE_OPTION]);
-    else runTmux(["set-option", "-gq", DASH_PANE_OPTION, pane]);
+    runTmux(["set-option", "-gq", DASH_PANE_OPTION, pane]);
+  },
+
+  unmarkDashPane(pane) {
+    // Read-then-unset is not atomic, and cannot be: tmux has no
+    // compare-and-swap on an option. The race it loses is a dash starting in
+    // the instant between the two calls, whose mark this then clears -- the
+    // same false negative as before, but now confined to one window of
+    // microseconds instead of every second dash's whole lifetime. Both
+    // outcomes are recovered by `gotoDecision`'s own pane liveness check and
+    // by restarting the dash.
+    if (this.dashPane() === pane) runTmux(["set-option", "-gqu", DASH_PANE_OPTION]);
   },
 
   dashPane() {

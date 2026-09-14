@@ -1,12 +1,16 @@
 import { expect, test, vi } from "vitest";
-import { asWindowId } from "../src/ids.js";
+import { DASH_PANE_OPTION } from "../src/goto.js";
+import { asPaneId, asWindowId } from "../src/ids.js";
 import { chosenWindowName, pidAlive, tmux, tmuxBadgeState } from "../src/mux.js";
 
 const tmuxCalls = vi.hoisted(() => [] as string[][]);
+// Queued answers, because a call that DEPENDS on what tmux said cannot be
+// asserted against a fake that only ever says "".
+const tmuxReplies = vi.hoisted(() => [] as string[]);
 vi.mock("node:child_process", () => ({
   execFileSync: (_file: string, args: string[]) => {
     tmuxCalls.push(args);
-    return "";
+    return tmuxReplies.shift() ?? "";
   },
 }));
 
@@ -36,6 +40,36 @@ test("retracting a window badge clears both agent options", () => {
 // pi agents. All three are tmux's `automatic-rename` reporting the foreground
 // process, and `agentLabel` prefers a window name over a session name -- so the
 // process name shadowed `hacking/murmur`, the string a reader searches on.
+test("a dash clears only the marker that names its own pane", () => {
+  // Two dashes on one tmux server: the second overwrites the first's marker,
+  // and an unconditional unset on exit would leave PREFIX G reporting "no
+  // murmur dash is running" while a dash is on screen. The marker is a single
+  // server-global option, so the only way the older dash can tell is to read it
+  // back and compare before clearing.
+  tmuxCalls.length = 0;
+  tmuxReplies.length = 0;
+
+  // A newer dash owns the marker: read it, change nothing.
+  tmuxReplies.push("%9");
+  tmux.unmarkDashPane(asPaneId("%7"));
+  expect(tmuxCalls).toEqual([["show-options", "-gqv", DASH_PANE_OPTION]]);
+
+  // The marker is our own: clear it.
+  tmuxCalls.length = 0;
+  tmuxReplies.push("%7");
+  tmux.unmarkDashPane(asPaneId("%7"));
+  expect(tmuxCalls).toEqual([
+    ["show-options", "-gqv", DASH_PANE_OPTION],
+    ["set-option", "-gqu", DASH_PANE_OPTION],
+  ]);
+
+  // Already unset, or a tmux that would not answer. Nothing to clear and
+  // nothing to guess about.
+  tmuxCalls.length = 0;
+  tmux.unmarkDashPane(asPaneId("%7"));
+  expect(tmuxCalls).toEqual([["show-options", "-gqv", DASH_PANE_OPTION]]);
+});
+
 test("a window tmux is auto-renaming contributes no name", () => {
   // The exact triple this bug produced: pi's interpreter, in a window tmux owns.
   expect(chosenWindowName("Python", "1")).toBe(null);

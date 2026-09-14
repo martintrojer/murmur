@@ -42,6 +42,7 @@ export function fakeMux(over: Partial<Mux> = {}): Mux {
     setSessionOption: () => {},
     switchClient: () => true,
     markDashPane: () => {},
+    unmarkDashPane: () => {},
     dashPane: () => null,
     clientIdentity: () => null,
     jumpClientMarker: () => null,
