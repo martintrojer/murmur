@@ -217,6 +217,19 @@ test("the searchable text is name, workstream, session, host and rendered state"
   }
 });
 
+test("a row with no agent_name is still searchable by the name the card paints", () => {
+  // `agentLabel` falls back to pi_session, then window_name, then the session
+  // leaf. Searching the raw `agent_name` alone would make an adopted pane --
+  // the common case for a human's own shell -- unfindable by the only name it
+  // ever shows.
+  const adopted = view({ agent_name: null, pi_session: null, window_name: "scratchpad" });
+  expect(dashSearchText(adopted)).toContain("scratchpad");
+  expect(dashMatches(adopted, "scratch")).toBe(true);
+
+  const bySession = view({ agent_name: null, pi_session: "review/tick", window_name: null });
+  expect(dashMatches(bySession, "review/tick")).toBe(true);
+});
+
 test("matching is case-insensitive, literal, and not fuzzy", () => {
   const row = view({ agent_name: "worker-1", workstream: "dash-search" });
   expect(dashMatches(row, "WORKER")).toBe(true);

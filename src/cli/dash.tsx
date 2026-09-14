@@ -47,7 +47,7 @@ import {
   paneFingerprint,
   scrollLabel,
 } from "../dash-tick.js";
-import { dashCrewCount, dashMatches, dashRows, dashStateCount } from "../dash-view.js";
+import { dashCrewCount, dashRows, dashStateCount } from "../dash-view.js";
 import { runGoto } from "../goto.js";
 import { asPaneId } from "../ids.js";
 import { type Mux, tmux } from "../mux.js";
@@ -274,10 +274,14 @@ function App({ store, initial }: DashProps) {
   // loop is alive, and the header's only ticking field has to.
   const [refreshedAt, setRefreshedAt] = useState<number | null>(null);
   const query = filter.query.text;
+  // Both lists come from `dashRows`, the one tested composition of gates,
+  // query and sort -- the dash must not re-implement half of it. `allPanes` is
+  // post-gate and pre-query, which is the `M` the header paints; the blank-query
+  // branch reuses it so "no filter" keeps one array identity.
   const allPanes = useMemo(() => dashRows(view.panes, prefs, now), [view, prefs, now]);
   const panes = useMemo(
-    () => (query.trim() ? allPanes.filter((pane) => dashMatches(pane, query)) : allPanes),
-    [allPanes, query],
+    () => (query.trim() ? dashRows(view.panes, prefs, now, query) : allPanes),
+    [view, prefs, now, query, allPanes],
   );
   const selectedIndex = Math.max(
     0,

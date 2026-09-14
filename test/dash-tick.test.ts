@@ -190,6 +190,20 @@ test("dash footer advertises the transient filter", () => {
   expect(hints.some((hint) => hint.chord === "/" && hint.label === "filter")).toBe(true);
 });
 
+test("every footer hint has its own drop rank", () => {
+  // `fitFooterHints` breaks a tie by array POSITION, so two hints sharing a
+  // rank make the drop order depend on the literal order of the list rather
+  // than on the stated priority -- which is exactly what the ranks exist to
+  // decouple. `/ filter` outranking `s sort` is the ordering under test.
+  const hints = dashFooterHints({ sort: "priority", hide_stale: false, crew: false });
+  const drops = hints.map((hint) => hint.drop);
+  expect(new Set(drops).size).toBe(hints.length);
+
+  const rank = (chord: string) => hints.find((hint) => hint.chord === chord)?.drop ?? -1;
+  expect(rank("/")).toBeLessThan(rank("s"));
+  expect(rank("i")).toBeLessThan(rank("/"));
+});
+
 test("navigation keys map to the active region", () => {
   expect(dashNavigation("cards", "down", 4, 2)).toEqual({ type: "cards", offset: 1 });
   expect(dashNavigation("cards", "pageDown", 4, 2)).toEqual({ type: "cards", offset: 4 });
