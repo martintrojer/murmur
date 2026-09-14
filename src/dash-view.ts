@@ -14,6 +14,17 @@ import { type PaneView, RENDER_PRIORITY, type RenderState, renderState, viewSort
 
 const ORDER = new Map<RenderState, number>(RENDER_PRIORITY.map((state, index) => [state, index]));
 
+type StateCounts = {
+  counts: Record<RenderState, number>;
+  orchestrated_counts: Record<RenderState, number>;
+};
+
+/** Count a state using the same crew visibility rule as the dash rows. */
+export function dashStateCount(view: StateCounts, state: RenderState, crew: boolean): number {
+  const showCrew = crew || state === "crashed" || state === "blocked";
+  return view.counts[state] + (showCrew ? view.orchestrated_counts[state] : 0);
+}
+
 /**
  * Whether one row survives the reader's filters.
  *

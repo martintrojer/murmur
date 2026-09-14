@@ -44,7 +44,7 @@ import {
   paneFingerprint,
   scrollLabel,
 } from "../dash-tick.js";
-import { dashRows } from "../dash-view.js";
+import { dashRows, dashStateCount } from "../dash-view.js";
 import { tmux } from "../mux.js";
 import {
   glancePlacement,
@@ -95,11 +95,6 @@ function paneKey(pane: PaneView): string {
 
 function nextSort(sort: DashSort): DashSort {
   return SORTS[(SORTS.indexOf(sort) + 1) % SORTS.length] ?? "priority";
-}
-
-function count(view: Status, state: (typeof RENDER_PRIORITY)[number]): number {
-  const needsHuman = state === "crashed" || state === "blocked";
-  return view.counts[state] + (needsHuman ? view.orchestrated_counts[state] : 0);
 }
 
 /** Middle-dot cluster separator — floats between header/footer items. */
@@ -614,9 +609,11 @@ function App({ store, initial }: DashProps) {
   const draftCursor = draft[composer.cursor] ?? " ";
   const draftAfter = draft.slice(composer.cursor + (draft[composer.cursor] ? 1 : 0)).join("");
 
-  const stateCounts = RENDER_PRIORITY.filter((state) => count(view, state) > 0).map((state) => ({
+  const stateCounts = RENDER_PRIORITY.filter(
+    (state) => dashStateCount(view, state, prefs.crew) > 0,
+  ).map((state) => ({
     state,
-    n: count(view, state),
+    n: dashStateCount(view, state, prefs.crew),
   }));
 
   return (

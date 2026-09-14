@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 import { type DashPrefs, DEFAULT_DASH_PREFS } from "../src/dash-prefs.js";
-import { dashRows, dashSort, dashVisible } from "../src/dash-view.js";
+import { dashRows, dashSort, dashStateCount, dashVisible } from "../src/dash-view.js";
 import { asPaneId, asSessionId, asWindowId } from "../src/ids.js";
 import { isVisible } from "../src/paint.js";
 import { type PaneView, viewSort } from "../src/view.js";
@@ -53,6 +53,31 @@ function view(over: Partial<PaneView> = {}): PaneView {
 function prefs(over: Partial<DashPrefs> = {}): DashPrefs {
   return { ...DEFAULT_DASH_PREFS, hidden_states: [], ...over };
 }
+
+test("header state counts include every crew state only when crew is on", () => {
+  const counts = {
+    crashed: 0,
+    blocked: 0,
+    done: 1,
+    running: 2,
+    idle: 0,
+  };
+  const orchestrated_counts = {
+    crashed: 1,
+    blocked: 2,
+    done: 3,
+    running: 4,
+    idle: 5,
+  };
+  const status = { counts, orchestrated_counts };
+
+  expect(dashStateCount(status, "running", false)).toBe(2);
+  expect(dashStateCount(status, "running", true)).toBe(6);
+  expect(dashStateCount(status, "done", true)).toBe(4);
+  expect(dashStateCount(status, "idle", true)).toBe(5);
+  expect(dashStateCount(status, "blocked", false)).toBe(2);
+  expect(dashStateCount(status, "crashed", false)).toBe(1);
+});
 
 test("crew rows are hidden unless prefs.crew, and agree with isVisible", () => {
   const worker = view({ driver: "orchestrated" });
