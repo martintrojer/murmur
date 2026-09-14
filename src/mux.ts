@@ -366,7 +366,7 @@ export const tmux: Mux = {
     // `-F` expands the format in the VALUE at hook time, when the attaching
     // client exists; expanding it now would record the wrong client or none.
     const hook = `client-attached[${JUMP_HOOK_INDEX}]`;
-    return `set-hook -g ${hook} "set-option -gF ${JUMP_CLIENT_OPTION} '#{client_name} #{client_created}' ; set-hook -gu ${hook}"`;
+    return `set-hook -g '${hook}' "set-option -gF ${JUMP_CLIENT_OPTION} '#{client_name} #{client_created}' ; set-hook -gu '${hook}'"`;
   },
 
   detachClient(client) {

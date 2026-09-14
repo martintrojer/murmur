@@ -813,11 +813,11 @@ test("a remote tmux that rejects the arm does not turn a healthy probe into a fa
   expect(remoteCommands[0]).toContain("client-attached[9000]");
 });
 
-test("reusing a wrapper re-arms the marker, because the earlier hook has fired", () => {
-  // The hook is one-shot by design, so the marker set by the first jump belongs
-  // to a client that may since have detached. Without re-arming, PREFIX G on a
-  // reused wrapper would find a stale or absent marker and switch to the remote
-  // machine's dash instead of coming home.
+test("reusing a wrapper retargets its existing remote client without arming another", () => {
+  // A wrapper session keeps its ssh process and remote tmux client alive while
+  // the local client is elsewhere. Reuse switches back to that SAME client; no
+  // remote client-attached event occurs. Arming a one-shot hook here cannot mark
+  // the reused client and instead leaves a trap for the next unrelated login.
   peer("p", "remote-host");
   vi.stubEnv("TMUX", "/tmp/tmux-1000/default,123,0");
   const remoteCommands: string[] = [];
@@ -836,7 +836,10 @@ test("reusing a wrapper re-arms the marker, because the earlier hook has fired",
   );
 
   expect(result).toEqual({ ok: true });
-  expect(remoteCommands.some((command) => command.includes("client-attached[9000]"))).toBe(true);
+  expect(remoteCommands).toHaveLength(2);
+  expect(remoteCommands[0]).toContain("client-attached[9000]");
+  expect(remoteCommands[1]).toContain("switch-client");
+  expect(remoteCommands[1]).not.toContain("client-attached[9000]");
 });
 
 test("outside tmux the jump arms no marker, because there is nothing to come back to", () => {

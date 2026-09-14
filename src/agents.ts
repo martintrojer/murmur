@@ -417,15 +417,14 @@ export function jumpToAgent(
       // wrapper's own ssh already warmed. A failure here is not fatal: the
       // switch below still lands the operator on the right HOST, which is
       // better than refusing to move, so this reports rather than aborts.
-      // Re-arms the marker alongside the retarget. The hook is one-shot, so the
-      // one armed by the jump that created this wrapper has already fired and
-      // its marker names a client that may since have gone. Without this, a
-      // reused wrapper's PREFIX G would read a stale marker and switch to the
-      // REMOTE machine's dash rather than coming home.
+      // The wrapper's ssh process and remote tmux client stay alive while the
+      // local client is elsewhere, so reuse retargets that existing remote
+      // client. No remote client-attached event occurs here; arming another
+      // one-shot hook would only leave a trap for the next unrelated login.
       const retarget = run("ssh", [
         ...SSH_OPTIONS,
         target,
-        `tmux switch-client -t ${shellQuote(shellQuote(agent.pane))} ; tmux ${mux.armJumpMarkerCommand()}`,
+        `tmux switch-client -t ${shellQuote(shellQuote(agent.pane))}`,
       ]);
       if (!mux.switchClient(client, name)) {
         return {

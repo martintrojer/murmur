@@ -282,7 +282,7 @@ test("the armed jump hook marks exactly one attaching client and then removes it
     // it. Not `run-shell` (which takes a shell command, so the tmux command
     // fails) and not an argv array (which would skip the shell the real path
     // goes through).
-    execFileSync("sh", ["-c", `tmux ${TMUX.join(" ")} ${tmux.armJumpMarkerCommand()}`], {
+    execFileSync("zsh", ["-c", `tmux ${TMUX.join(" ")} ${tmux.armJumpMarkerCommand()}`], {
       encoding: "utf8",
       timeout: 10_000,
       stdio: ["ignore", "pipe", "pipe"],
