@@ -1,6 +1,6 @@
 {
   "name": "@martintrojer/murmur",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "description": "Agent state across every machine you work on, in one view.",
   "publishConfig": {
     "access": "public"

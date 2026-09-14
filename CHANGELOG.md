@@ -3,6 +3,20 @@
 Notable changes per release. Written for someone deciding whether to upgrade,
 so it says what changed for a user rather than listing every commit.
 
+## 0.4.4
+
+Wire-compatible with 0.4.x: the snapshot format is unchanged at version 2.
+
+**The dashboard now shows total crew size.** Its header includes the same
+separate crew count as the tmux agent pill, even when healthy crew cards are
+hidden. Urgent crew still appear in the crashed and blocked counts.
+
+**Fixed: `PREFIX G` failed after a remote jump through zsh.** The destination
+shell treated the indexed tmux hook name as a glob, discarded the marker setup,
+and left `murmur dash --goto` unable to identify its client. The hook name is
+now quoted across the remote shell boundary. Reusing an existing wrapper no
+longer arms a hook that cannot fire and could mark a later unrelated login.
+
 ## 0.4.3
 
 Wire-compatible with 0.4.x: the snapshot format is unchanged at version 2.
