@@ -17,7 +17,12 @@ export default defineConfig({
   esbuildOptions(options) {
     options.jsx = "automatic";
   },
-  splitting: false,
+  // Required for the lazy dash import to survive the bundle. With splitting
+  // off, esbuild inlines `await import("./dash.js")` back into the single
+  // chunk, so ink is statically imported again and every `murmur status` --
+  // which the tmux status bar runs on a loop -- pays ~0.22s to load a TUI it
+  // never renders. See src/cli/dash-register.ts.
+  splitting: true,
   sourcemap: true,
   outDir: "dist",
   shims: false,

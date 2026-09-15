@@ -1,4 +1,3 @@
-import type { Command } from "commander";
 import {
   Box,
   type DOMElement,
@@ -1081,44 +1080,45 @@ export function dashGoto(
   return false;
 }
 
-export function registerDash(program: Command): void {
-  program
-    .command("dash")
-    .description("Watch agents and glance at their panes")
-    .option("--goto", "switch to the running dash, or leave a murmur-controlled remote session")
-    .action(async (options: { goto?: boolean }) => {
-      if (options.goto) {
-        dashGoto();
-        return;
-      }
-      if (!requireDashTmux()) return;
-      const identity = requireIdentity();
-      if (!identity) return;
-      const store = openStore();
-      const previousTitle = process.title;
-      process.title = "murmur";
-      // For the dash's MOUNTED LIFETIME, which is what `--goto` looks for. The
-      // pane comes from $TMUX_PANE rather than from tmux: `display-message`
-      // answers about whichever pane the server thinks is active, so asking
-      // would let a dash started in a popup mark someone else's pane.
-      const pane = process.env.TMUX_PANE;
-      if (pane) tmux.markDashPane(asPaneId(pane));
-      try {
-        const instance = render(<App store={store} initial={status(store, identity)} />, {
-          alternateScreen: true,
-        });
-        await instance.waitUntilExit();
-      } finally {
-        // Best effort: a SIGKILL leaves the option behind, which is exactly why
-        // `gotoDecision` re-checks the pane against tmux's live list.
-        //
-        // Passes our own pane so the clear is conditional: another dash on this
-        // server may have taken the mark since, and clearing its mark would
-        // report no dash while one is running.
-        if (pane) tmux.unmarkDashPane(asPaneId(pane));
-        disableMouse(process.stdout);
-        store.close();
-        process.title = previousTitle;
-      }
+/**
+ * The `murmur dash` action body.
+ *
+ * Split from the command registration (which lives in `dash-register.ts`)
+ * so that declaring the command does not import this module, and with it
+ * ink and react. See that file for the measurements.
+ */
+export async function runDash(options: { goto?: boolean }): Promise<void> {
+  if (options.goto) {
+    dashGoto();
+    return;
+  }
+  if (!requireDashTmux()) return;
+  const identity = requireIdentity();
+  if (!identity) return;
+  const store = openStore();
+  const previousTitle = process.title;
+  process.title = "murmur";
+  // For the dash's MOUNTED LIFETIME, which is what `--goto` looks for. The
+  // pane comes from $TMUX_PANE rather than from tmux: `display-message`
+  // answers about whichever pane the server thinks is active, so asking
+  // would let a dash started in a popup mark someone else's pane.
+  const pane = process.env.TMUX_PANE;
+  if (pane) tmux.markDashPane(asPaneId(pane));
+  try {
+    const instance = render(<App store={store} initial={status(store, identity)} />, {
+      alternateScreen: true,
     });
+    await instance.waitUntilExit();
+  } finally {
+    // Best effort: a SIGKILL leaves the option behind, which is exactly why
+    // `gotoDecision` re-checks the pane against tmux's live list.
+    //
+    // Passes our own pane so the clear is conditional: another dash on this
+    // server may have taken the mark since, and clearing its mark would
+    // report no dash while one is running.
+    if (pane) tmux.unmarkDashPane(asPaneId(pane));
+    disableMouse(process.stdout);
+    store.close();
+    process.title = previousTitle;
+  }
 }

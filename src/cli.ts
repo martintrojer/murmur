@@ -2,7 +2,7 @@
 import { Command } from "commander";
 import { registerClear } from "./cli/clear.js";
 import { registerCollect } from "./cli/collect.js";
-import { registerDash } from "./cli/dash.js";
+import { registerDash } from "./cli/dash-register.js";
 import { registerDoctor } from "./cli/doctor.js";
 import { registerExport } from "./cli/export.js";
 import { registerInit } from "./cli/init.js";
