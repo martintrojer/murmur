@@ -1,3 +1,4 @@
+import { isAbsolute } from "node:path";
 import { asPaneId, asSessionId, asWindowId } from "./ids.js";
 import type {
   Activity,
@@ -8,6 +9,7 @@ import type {
   SnapshotAgent,
   SnapshotAttention,
   SnapshotPane,
+  TmuxServer,
 } from "./types.js";
 import { EFFORTS, SNAPSHOT_VERSION } from "./types.js";
 
@@ -117,6 +119,7 @@ const TOP_KEYS = [
   "panes",
 ] as const;
 const PANE_KEYS = [
+  "server",
   "pane",
   "session",
   "window",
@@ -146,6 +149,7 @@ const AGENT_KEYS = [
   "updated_at",
 ] as const;
 const ATTENTION_KEYS = ["kind", "message", "source", "requested_at"] as const;
+const SERVER_KINDS = ["default", "label", "path"] as const;
 const USAGE_KEYS = [
   "input",
   "output",
@@ -254,6 +258,23 @@ function parseAttention(value: unknown, path: string): SnapshotAttention[] {
   });
 }
 
+function parseServer(value: unknown, path: string): TmuxServer {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    fail(path, "expected an object");
+  }
+  const kind = member((value as Record<string, unknown>).kind, `${path}.kind`, SERVER_KINDS);
+  if (kind === "default") {
+    object(value, path, ["kind"]);
+    return { kind };
+  }
+  const row = object(value, path, ["kind", "value"]);
+  const serverValue = text(row.value, `${path}.value`);
+  if (kind === "path" && !isAbsolute(serverValue)) {
+    fail(`${path}.value`, "expected an absolute path");
+  }
+  return { kind, value: serverValue };
+}
+
 function parsePane(value: unknown, path: string): SnapshotPane {
   const row = object(value, path, PANE_KEYS);
   const agent = parseAgent(row.agent, `${path}.agent`);
@@ -265,6 +286,7 @@ function parsePane(value: unknown, path: string): SnapshotPane {
     fail(path, "a pane with no agent and no attention must not be emitted");
   }
   return {
+    server: parseServer(row.server, `${path}.server`),
     pane: asPaneId(text(row.pane, `${path}.pane`)),
     session: asSessionId(text(row.session, `${path}.session`)),
     window: asWindowId(text(row.window, `${path}.window`)),
@@ -278,7 +300,7 @@ function parsePane(value: unknown, path: string): SnapshotPane {
 /**
  * Parse and totally validate one snapshot document.
  *
- * `murmur_snapshot` must be exactly 2. A higher value is rejected, and so is a
+ * `murmur_snapshot` must be exactly `SNAPSHOT_VERSION`. A higher value is rejected, and so is a
  * LOWER one: compatibility is offered in neither direction, because a reader
  * that accepted an older document would be guessing at the fields that version
  * added -- which is precisely the state a human is acting on. A version mismatch
@@ -304,8 +326,11 @@ export function parseSnapshot(input: string): Snapshot {
   const seen = new Set<string>();
   const owners = new Set<string>();
   for (const pane of panes) {
-    if (seen.has(pane.pane)) fail("panes", `duplicate pane ${pane.pane}`);
-    seen.add(pane.pane);
+    const server =
+      pane.server.kind === "default" ? "default" : `${pane.server.kind}:${pane.server.value}`;
+    const address = `${server}:${pane.pane}`;
+    if (seen.has(address)) fail("panes", `duplicate pane ${address}`);
+    seen.add(address);
 
     // An agent_id is minted per PROCESS INSTANCE when it claims a pane, so the
     // same id in two panes says one process owns two addresses -- a state the

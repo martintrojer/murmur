@@ -22,7 +22,7 @@ function cell(over: Partial<Pick<PeerRecord, "murmur_version" | "snapshot_versio
 /** A document, as a peer's `murmur export` would print it. */
 function wire(over: Partial<Snapshot> = {}): string {
   return JSON.stringify({
-    murmur_snapshot: 2,
+    murmur_snapshot: 3,
     host_id: "REMOTE",
     display_name: "bubba",
     murmur_version: "0.1.4",
@@ -48,7 +48,7 @@ test("this node's own snapshot states its version and speaks the current snapsho
   expect(snapshot.murmur_version).toBe(VERSION);
   // A literal, not the constant. Comparing the document against the constant
   // passes whatever the constant is, so it cannot notice a bump at all.
-  expect(snapshot.murmur_snapshot).toBe(2);
+  expect(snapshot.murmur_snapshot).toBe(3);
 });
 
 test("a collect records what the peer is running, out of the document itself", async () => {
@@ -65,6 +65,22 @@ test("a collect records what the peer is running, out of the document itself", a
     host_id: "REMOTE",
     display_name: "bubba",
   });
+  store.close();
+});
+
+test("a peer speaking snapshot v2 is refused with expected 3 and actual 2", async () => {
+  const store = openStore();
+  store.addPeer("older", "older");
+
+  const results = await collect(
+    store,
+    { exec: async () => wire({ murmur_snapshot: 2 as never, murmur_version: "0.4.4" }) },
+    5_000,
+  );
+
+  expect(results[0]).toMatchObject({ ok: false, unreachable: false });
+  expect(store.peers()[0]?.last_error).toContain("murmur_snapshot: expected 3, got 2");
+  expect(store.peers()[0]?.snapshot).toBeNull();
   store.close();
 });
 
@@ -130,7 +146,7 @@ test("only a snapshot-version mismatch is flagged; a murmur version is shown pla
   });
 
   // The number appears ONLY when it is the problem, or every row would read
-  // "0.1.4 (snapshot 2)" and the signal would be lost in the noise.
+  // "0.1.4 (snapshot 3)" and the signal would be lost in the noise.
   expect(cell({ murmur_version: "0.1.4", snapshot_version: SNAPSHOT_VERSION }).text).not.toContain(
     "snapshot",
   );
@@ -175,7 +191,7 @@ test("peer list shows a VERSION column once a peer has reported, and names a rea
     ok: true,
     at: Date.now(),
     snapshot: {
-      murmur_snapshot: 2,
+      murmur_snapshot: 3,
       host_id: "M",
       display_name: "macmini",
       murmur_version: "0.1.4",

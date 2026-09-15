@@ -1060,8 +1060,8 @@ export function openStore(): Store {
         // outright. Without it, one narrowing of the local read would make this
         // node reachable-but-broken on every peer that collects it, and the
         // symptom would show up on the other machines.
-        panes: readLocalPanes().flatMap(({ server, ...pane }) =>
-          serverKey(server, pane.pane) === serverKey(world.server, pane.pane) ? [pane] : [],
+        panes: readLocalPanes().filter(
+          (pane) => serverKey(pane.server, pane.pane) === serverKey(world.server, pane.pane),
         ),
       };
     },

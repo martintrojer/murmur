@@ -36,6 +36,7 @@ afterEach(() => {
 
 function pane(id: string): SnapshotPane {
   return {
+    server: { kind: "default" },
     pane: asPaneId(id),
     session: asSessionId("$0"),
     window: asWindowId("@0"),
@@ -67,7 +68,7 @@ function pane(id: string): SnapshotPane {
 
 function snapshot(panes: SnapshotPane[], hostId = "REMOTE", over: Partial<Snapshot> = {}): string {
   return JSON.stringify({
-    murmur_snapshot: 2,
+    murmur_snapshot: 3,
     host_id: hostId,
     display_name: "Remote",
     murmur_version: "0.2.0",

@@ -48,8 +48,9 @@ murmur init      # this node's identity
 murmur link pi   # install the agent-side extension
 ```
 
-Agents must run **inside tmux**. A pane is the address; without one there is
-nothing to jump to. Remote agents need tmux on the remote too — the jump uses
+Agents must run **inside tmux**. A tmux server plus pane id is the address;
+without one there is nothing to jump to. Remote agents need tmux on the remote
+too — the jump uses
 `ssh -t <host> env LC_CTYPE=C.UTF-8 tmux attach` unless you override it.
 
 Add focus hooks so looking at a finished agent clears its badge — see
@@ -91,6 +92,7 @@ factor / `BatchMode`, `MaxSessions 1`, Eternal Terminal): [SSH.md](SSH.md).
 | [docs/setup.md](docs/setup.md) | Hooks, harness notify, peers, doctor, jump |
 | [SSH.md](SSH.md) | Auth, session caps, control masters |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Model, design choices, gaps |
+| [docs/VOCABULARY.md](docs/VOCABULARY.md) | Protocol and identity terms |
 | [AGENTS.md](AGENTS.md) | Repo gate for agents working on murmur |
 
 **0.4.4.** Ready for daily use. Known gaps live at the end of

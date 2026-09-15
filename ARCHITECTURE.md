@@ -48,7 +48,7 @@ Three facts, independent, each with exactly one writer:
 | Fact | Meaning | Stored as | Written by |
 | --- | --- | --- | --- |
 | **activity** | is a process working in this pane | `agents.activity` = `running` \| `stopped` | the pane's owning process only |
-| **attention** | does someone need to look at this pane | rows in `attention`, kind `done` \| `blocked` \| `crashed` | owner (`done`), external notifier (`done`/`blocked`, per event type), local reconciliation (`crashed`) |
+| **attention** | does someone need to look at this pane address | rows in `attention`, kind `done` \| `blocked` \| `crashed` | owner (`done`), external notifier (`done`/`blocked`, per event type), local reconciliation (`crashed`) |
 | **freshness** | how recently we reached the node that reported | `peers.fetched_at` | the collector |
 
 They are never folded into one enum, and no stored value spans two of them.
@@ -73,8 +73,10 @@ Identity and address are separated:
   claims a pane. It is not derived from the pane, so a new process in the same
   pane is a different agent, and a late write from a replaced owner matches no
   row.
-- **pane** — the *address*. `UNIQUE` in `agents`, part of the primary key in
-  `attention`. One top-level instrumented agent per pane, enforced by SQLite.
+- **pane address** — the tmux server tag plus pane id. The pair is `UNIQUE` in
+  `agents` and part of the primary key in `attention`. Pane ids are scoped to a
+  tmux server, so `%34` on the default server and `%34` on `tmux -L coop` are
+  different addresses.
 
 Truth about a node lives only on that node. Other nodes hold one opaque,
 validated snapshot per peer, replaced whole or not at all.
@@ -120,13 +122,13 @@ Three consequences worth stating, because each is easy to violate by accident:
   becomes `blocked`, which is the direction that cannot lose information: it
   puts a row in front of a human, and focusing the pane takes it back.
 
-## A tmux pane is the agent's address
+## A tmux server and pane id are the agent's address
 
-Everything below assumes agents run inside tmux. A pane is how murmur names an
-agent and how a jump reaches one.
+Everything below assumes agents run inside tmux. The tagged tmux server and pane
+id together are how murmur names an agent and how a jump reaches one.
 
-An agent IS a pane. A session and a window are only where that pane currently
-lives: a pane keeps its id across `move-pane`, `break-pane`, and a window closed
+An agent IS a pane address. A session and a window are only where that pane
+currently lives: a pane keeps its id across `move-pane`, `break-pane`, and a window closed
 and reopened, while a recorded window id goes stale as a matter of course. So
 **only a pane may decide whether an agent exists** — a window id is location,
 never evidence of life. tmux says the same thing with its sigils, `$25` / `@75`
@@ -231,13 +233,15 @@ command rather than an interface to implement.
 
 ## The data model
 
-Three tables in `state.db`, all `STRICT`, `user_version = 3`. `agents` and
+Three tables in `state.db`, all `STRICT`, `user_version = 6`. `agents` and
 `attention` are local truth; `peers` is a cache of other nodes.
 
 ```sql
 CREATE TABLE agents (
   agent_id     TEXT    NOT NULL PRIMARY KEY,   -- a UUID per process instance
-  pane         TEXT    NOT NULL UNIQUE,        -- the address
+  server_kind  TEXT    NOT NULL CHECK (server_kind IN ('default', 'label', 'path')),
+  server_value TEXT    NOT NULL,
+  pane         TEXT    NOT NULL,               -- id within the tmux server
   owner_pid    INTEGER NOT NULL CHECK (owner_pid > 0),
   activity     TEXT    NOT NULL CHECK (activity IN ('running', 'stopped')),
   session      TEXT    NOT NULL,               -- location, may change
@@ -247,10 +251,13 @@ CREATE TABLE agents (
   cli          TEXT    NOT NULL,
   driver       TEXT    NOT NULL CHECK (driver IN ('human', 'orchestrated')),
   claimed_at   INTEGER NOT NULL,
-  updated_at   INTEGER NOT NULL
+  updated_at   INTEGER NOT NULL,
+  UNIQUE (server_kind, server_value, pane)
 ) STRICT;
 
 CREATE TABLE attention (
+  server_kind  TEXT    NOT NULL CHECK (server_kind IN ('default', 'label', 'path')),
+  server_value TEXT    NOT NULL,
   pane         TEXT    NOT NULL,
   kind         TEXT    NOT NULL CHECK (kind IN ('done', 'blocked', 'crashed')),
   message      TEXT    NOT NULL,
@@ -259,7 +266,7 @@ CREATE TABLE attention (
   window       TEXT    NOT NULL,
   session_name TEXT, window_name TEXT,
   requested_at INTEGER NOT NULL,
-  PRIMARY KEY (pane, kind)
+  PRIMARY KEY (server_kind, server_value, pane, kind)
 ) STRICT;
 
 CREATE TABLE peers (
@@ -274,8 +281,9 @@ CREATE TABLE peers (
 Schema facts that are load-bearing, and the reason each is in the schema rather
 than in a comment:
 
-1. **`agents.pane` is `UNIQUE`.** "One top-level instrumented agent per pane" is
-   enforced by SQLite, not by a caller.
+1. **The server/pane address is `UNIQUE`.** "One top-level instrumented agent
+   per pane address" is enforced by SQLite, while the same pane id may exist on
+   another tmux server.
 2. **`agents.agent_id` is a UUID, not `host:pane`.** A replacement owner is a
    different row, so a late write from the previous owner matches nothing and is
    silently ineffective rather than destructive.
@@ -283,9 +291,9 @@ than in a comment:
 4. **`attention` has no `agent_id` and no `owner_pid` column.** An attention
    writer structurally cannot address an agent's identity, activity or metadata.
    This is the whole fix for the live-corruption incident described above.
-5. **`PRIMARY KEY (pane, kind)`.** Kinds coexist: a `crashed` row is not
-   clobbered by a later `blocked`, and "focus clears all attention for the pane"
-   is one `DELETE ... WHERE pane = ?`.
+5. **`PRIMARY KEY (server_kind, server_value, pane, kind)`.** Kinds coexist: a
+   `crashed` row is not clobbered by a later `blocked`, and focus clears all
+   attention for one address with its full server/pane key.
 6. **`attention` carries its own location.** An attention-only pane — a codex
    agent murmur never instrumented — is listable and jumpable with no agent row.
    `attention.pane` deliberately does not reference `agents.pane`; a constraint
@@ -317,7 +325,7 @@ three surfaces carried machinery for it:
 
 Nothing writes `crashed` from inside an agent, for the obvious reason.
 
-**Versioning is one strategy, not two.** On open, if `user_version` is not 3,
+**Versioning is one strategy, not two.** On open, if `user_version` is not 6,
 murmur salvages `SELECT name, target FROM peers` — the two fields a human typed
 — deletes the database and its `-wal`/`-shm` sidecars, recreates the schema, and
 re-inserts those peers with every observed column `NULL`. There is no
@@ -370,13 +378,14 @@ where the system interpreter is least yours to touch.
 
 ```jsonc
 {
-  "murmur_snapshot": 2,
+  "murmur_snapshot": 3,
   "host_id": "1d2ee96e-3a94-41b2-90fa-5f1ee2f04276",  // from identity.json
   "display_name": "mtrojer-mac",
   "murmur_version": "0.4.0",         // read from package.json, never restated
   "generated_at": 1788105698997,     // this node's clock at build time
   "panes": [
     {
+      "server": { "kind": "default" },
       "pane": "%250",
       "session": "$25",
       "window": "@75",
@@ -432,11 +441,14 @@ Rules, each of which a reader depends on:
 2. `owner_pid` is absent, on purpose. A reader has no pid to probe.
 3. A pane with `"agent": null` is an attention-only pane: valid, listable,
    jumpable. A pane with `"agent": null` and `"attention": []` is not emitted.
-4. `panes` order is presentation-only. Emitted sorted by pane id so the output
-   diffs cleanly; readers sort for themselves.
-5. `generated_at` is the *producing* node's clock. What it is not is when the
+4. `server` is an exact tagged value: `default` has no `value`, `label` has a
+   non-empty value, and `path` has an absolute path. A remote path is interpreted
+   only on the node that owns it.
+5. `panes` order is presentation-only. Emitted sorted by server and pane id so
+   the output diffs cleanly; readers sort for themselves.
+6. `generated_at` is the *producing* node's clock. What it is not is when the
    reader fetched it — see freshness below.
-6. **Runtime fields are reported, never inferred.** They come from the owning
+7. **Runtime fields are reported, never inferred.** They come from the owning
    agent via its harness extension, on the events that move each one: a model
    change, an effort change, a completed turn. murmur does not derive them, does
    not compute one from another, and above all does not read them out of the
@@ -449,7 +461,7 @@ Rules, each of which a reader depends on:
    rounded for a terminal (`↑836k`, not `836123`), so writing them would
    manufacture precision murmur never had and no reader could tell a report from
    a guess.
-7. **`usage` is nullable as a unit.** It arrives as one bundle per turn — one
+8. **`usage` is nullable as a unit.** It arrives as one bundle per turn — one
    clock, one provenance — so a partial write could pair this turn's cost with
    last turn's tokens. An agent that has completed no turn has no usage, which
    is a different claim from zero. Nothing renders these figures yet; they are
@@ -461,9 +473,10 @@ agents whose panes are gone, and a reader has no way to tell.
 
 **Validation is total and strict**, and happens before storage.
 `parseSnapshot` rejects an unknown key, a missing key, a wrong type, a
-`murmur_snapshot` other than `2`, an unknown `activity`, `driver`, `kind` or
-`effort`, a `context_pct` outside 0..100, a negative token count or cost, a
-duplicate pane, and a pane that is neither an agent nor an attention. Nothing is
+`murmur_snapshot` other than `3`, a malformed server tag, an unknown `activity`,
+`driver`, `kind` or `effort`, a `context_pct` outside 0..100, a negative token
+count or cost, a duplicate server/pane address, and a pane that is neither an
+agent nor an attention. Nothing is
 coerced, defaulted or carried through. The error names the first failing path
 (`panes[3].attention[0].kind`), and the collector turns it into a failed fetch:
 a peer that answers with a bad document is **reachable but broken** and visibly
@@ -473,10 +486,9 @@ so, not silently stale.
 rather than a shortcut. A higher `murmur_snapshot` is rejected like any other
 wrong value, because a reader that carried fields it did not understand would be
 guessing about state a human acts on — and a LOWER one is rejected for the
-mirror reason: the fields an older document omits are exactly the ones the newer
-version added, so accepting it means rendering an agent as though it reported
-nothing. A version mismatch is an operator-visible pairing problem: upgrade the
-other node.
+mirror reason: version 2 omits tmux server identity, so defaulting it could
+address a different pane with the same id. A version mismatch is an
+operator-visible pairing problem: upgrade the other node.
 
 The number lives in one place, `SNAPSHOT_VERSION` in `types.ts`. It was once
 four literals — in the type, in `buildLocalSnapshot`, in the validator and again

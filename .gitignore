@@ -10,4 +10,5 @@ dist/
 # screenshot are exceptions below. Use `docs/*` (not `docs/`) so negations work.
 docs/*
 !docs/setup.md
+!docs/VOCABULARY.md
 !docs/dash.png

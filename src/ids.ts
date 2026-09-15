@@ -7,10 +7,11 @@
  * live agents, and a window cached at extension startup badged the window a
  * moved pane had left.
  *
- * An agent is addressed by its PANE, which survives `move-pane`, `break-pane`
- * and a window closed and reopened. A session and a window are only where that
- * pane currently lives and may differ between two reports from one agent. Hence
- * the rule the brands enforce: only a pane may decide whether an agent exists.
+ * An agent is addressed by its tmux server and PANE, which survives `move-pane`,
+ * `break-pane` and a window closed and reopened. A session and a window are only
+ * where that pane currently lives and may differ between two reports from one
+ * agent. Hence the rule the brands enforce: only a pane may decide whether an
+ * agent exists.
  *
  * Compile-time fiction -- at runtime these are the strings tmux printed, which
  * keeps the snapshot document and every stored row byte-identical.
@@ -24,7 +25,7 @@ export type SessionId = string & { readonly [brand]: "session" };
 /** A tmux window id, `@N`. Mutable location -- never an agent's identity. */
 export type WindowId = string & { readonly [brand]: "window" };
 
-/** A tmux pane id, `%N`. The agent's identity, stable for its whole life. */
+/** A tmux pane id, `%N`. Unique within one tmux server. */
 export type PaneId = string & { readonly [brand]: "pane" };
 
 /*

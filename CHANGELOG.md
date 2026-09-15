@@ -3,6 +3,14 @@
 Notable changes per release. Written for someone deciding whether to upgrade,
 so it says what changed for a user rather than listing every commit.
 
+## 0.5.0
+
+**Not wire-compatible with 0.4.x. Every node must be upgraded together.** The
+snapshot format is now version 3. Every pane carries its tmux server identity,
+so panes on private servers such as `tmux -L coop` are not confused with the
+same pane id on the default server. Version 2 snapshots are rejected with the
+expected and actual protocol versions rather than defaulting the missing server.
+
 ## 0.4.4
 
 Wire-compatible with 0.4.x: the snapshot format is unchanged at version 2.

@@ -68,6 +68,7 @@ function agent(pane: string, driver: Driver = "human", agentName: string | null 
 
 function remotePane(pane: string) {
   return {
+    server: { kind: "default" as const },
     pane: asPaneId(pane),
     session: asSessionId("$9"),
     window: asWindowId("@9"),
@@ -186,13 +187,14 @@ test("enter focuses an attached local pane instead of opening another remote ses
     ok: true,
     at: Date.now(),
     snapshot: {
-      murmur_snapshot: 2,
+      murmur_snapshot: 3,
       host_id: "REMOTE",
       display_name: "dev",
       murmur_version: "0.2.0",
       generated_at: 1,
       panes: [
         {
+          server: { kind: "default" },
           pane: asPaneId("%9"),
           session: asSessionId("$9"),
           window: asWindowId("@9"),
@@ -265,7 +267,7 @@ test("a cold remote jump warns and still proceeds when confirmed", async () => {
     ok: true,
     at: Date.now(),
     snapshot: {
-      murmur_snapshot: 2,
+      murmur_snapshot: 3,
       host_id: "REMOTE",
       display_name: "dev",
       murmur_version: "0.2.0",
@@ -312,7 +314,7 @@ test("a cold remote jump can be cancelled after the warning", async () => {
     ok: true,
     at: Date.now(),
     snapshot: {
-      murmur_snapshot: 2,
+      murmur_snapshot: 3,
       host_id: "REMOTE",
       display_name: "dev",
       murmur_version: "0.2.0",
@@ -423,13 +425,14 @@ test("a selection is resolved on host AND pane, not on the pane alone", async ()
     ok: true,
     at: Date.now(),
     snapshot: {
-      murmur_snapshot: 2,
+      murmur_snapshot: 3,
       host_id: "REMOTE",
       display_name: "container-id",
       murmur_version: "0.2.0",
       generated_at: 1,
       panes: [
         {
+          server: { kind: "default" },
           pane: asPaneId("%1"),
           session: asSessionId("$9"),
           window: asWindowId("@9"),

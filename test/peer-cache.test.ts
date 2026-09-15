@@ -61,6 +61,7 @@ function store(): Store {
 
 function pane(id: string, over: Partial<SnapshotPane> = {}): SnapshotPane {
   return {
+    server: { kind: "default" },
     pane: asPaneId(id),
     session: asSessionId("$0"),
     window: asWindowId("@0"),
@@ -93,7 +94,7 @@ function pane(id: string, over: Partial<SnapshotPane> = {}): SnapshotPane {
 
 function document(panes: SnapshotPane[], over: Partial<Snapshot> = {}): Snapshot {
   return {
-    murmur_snapshot: 2,
+    murmur_snapshot: 3,
     host_id: "REMOTE",
     display_name: "dev",
     murmur_version: "0.2.0",

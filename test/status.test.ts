@@ -91,7 +91,7 @@ function localAgent(
 
 function remoteSnapshot(panes: SnapshotPane[], generatedAt = 1_000): Snapshot {
   return {
-    murmur_snapshot: 2,
+    murmur_snapshot: 3,
     host_id: "REMOTE",
     display_name: "container-id-nobody-can-type",
     murmur_version: "0.2.0",
@@ -111,6 +111,7 @@ function remoteAgentPane(pane: string, updatedAt: number): SnapshotPane {
 
 function remotePane(pane: string, over: Partial<SnapshotPane> = {}): SnapshotPane {
   return {
+    server: { kind: "default" },
     pane: asPaneId(pane),
     session: asSessionId("$9"),
     window: asWindowId("@9"),

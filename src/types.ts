@@ -218,7 +218,7 @@ export type PeerRecord = {
  * that every peer speaking the new version was incompatible, because its copy
  * still said 1.
  */
-export const SNAPSHOT_VERSION = 2;
+export const SNAPSHOT_VERSION = 3;
 
 /**
  * One node's whole current state. Complete, never a delta: a peer that returns
@@ -233,9 +233,10 @@ export type Snapshot = {
   panes: SnapshotPane[];
 };
 
-export type LocalPane = SnapshotPane & { server: TmuxServer };
+export type LocalPane = SnapshotPane;
 
 export type SnapshotPane = {
+  server: TmuxServer;
   pane: PaneId;
   session: SessionId;
   window: WindowId;
