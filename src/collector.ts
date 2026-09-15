@@ -66,6 +66,31 @@ export const COLLECT_FLOOR_MS = 30_000;
 export const COLLECT_JITTER_MS = 20_000;
 
 /**
+ * Ceiling on the ambient retry interval for a peer that cannot be reached.
+ *
+ * The floor above bounds how often a REACHABLE peer is asked. It does nothing
+ * for a peer that is simply not here: a laptop at home while you are in the
+ * office answers `Could not resolve hostname` in ~10ms, which looks cheap and
+ * is not. The endpoint-security agents on a managed Mac authorize per EXEC,
+ * not per millisecond -- a failing dial measured ~5.7ms of `CyberhavenSystemMonitor`
+ * CPU against a 0.01s wall clock -- so a fleet of absent peers is a steady
+ * exec tax for an answer the cached error already has.
+ *
+ * So the interval grows with the OUTAGE, doubling from the floor to this cap:
+ * 30s, 60s, 120s, ... 5 min. Five absent peers go from ~10 dials/min to ~1.
+ *
+ * Five minutes, not longer, because this is also the RECOVERY bound. Walking
+ * into the office must reconnect on its own, and the wait is what the reader
+ * experiences as murmur being wrong about their fleet. Anything past a few
+ * minutes and you would reach for the picker instead -- at which point the
+ * backoff has cost more attention than it saved.
+ *
+ * Not applied to a deliberate `murmur collect` (`floorMs <= 0` returns early,
+ * as with the auth skip): a person asking gets the dial and ssh's diagnosis.
+ */
+export const COLLECT_UNREACHABLE_CAP_MS = 300_000;
+
+/**
  * What one pool slot did: settled either way, claimed but unfinished
  * (`pending`), or -- as `undefined` -- never claimed at all.
  *
@@ -165,6 +190,34 @@ export type CollectOptions = {
 };
 
 /**
+ * How long to wait before dialling a peer whose last attempt failed to reach it.
+ *
+ * Doubles with the length of the outage -- measured as the gap between the last
+ * SUCCESS and the last ATTEMPT, which both already exist on the record, so this
+ * needs no schema column and no migration. A peer that has never once been
+ * reached (`fetched_at === null`) is treated as maximally stale and backs off
+ * to the cap, which is the right answer for a typo'd hostname.
+ *
+ * Returns the bare floor for anything that is not an unreachability: an auth
+ * wall has its own skip above, and a reachable-but-broken peer (bad snapshot
+ * version, missing binary) is answering, so its cost is not the one this
+ * bounds.
+ */
+export function unreachableIntervalMs(
+  peer: PeerRecord,
+  floorMs: number,
+  now: number,
+  cap: number = COLLECT_UNREACHABLE_CAP_MS,
+): number {
+  if (peer.last_error === null || !isUnreachable(peer.last_error)) return floorMs;
+  const since = peer.fetched_at === null ? Number.POSITIVE_INFINITY : now - peer.fetched_at;
+  if (!Number.isFinite(since)) return cap;
+  // Double once per elapsed floor: outage < 1 floor -> floor, < 2 -> 2x, ...
+  const doublings = Math.floor(Math.log2(Math.max(since, floorMs) / floorMs));
+  return Math.min(cap, floorMs * 2 ** doublings);
+}
+
+/**
  * The peers an ambient collect should actually reach this run.
  *
  * Keyed on `last_attempt_at`, not `fetched_at`: the point is to bound how often
@@ -208,9 +261,12 @@ function duePeers(
       return false;
     }
     if (peer.last_attempt_at === null) return true;
-    // Centred on the floor: [-span/2, +span/2).
+    // An unreachable peer stretches its own interval with the outage; everyone
+    // else uses the bare floor. Jitter stays centred on whichever applies, so
+    // the herd-breaking property survives the stretch.
+    const interval = unreachableIntervalMs(peer, floorMs, now);
     const jitter = (random() - 0.5) * COLLECT_JITTER_MS;
-    return now - peer.last_attempt_at >= floorMs + jitter;
+    return now - peer.last_attempt_at >= interval + jitter;
   });
 }
 

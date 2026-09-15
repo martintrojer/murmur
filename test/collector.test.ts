@@ -7,11 +7,13 @@ import {
   attachmentHoldingPeer,
   COLLECT_FLOOR_MS,
   COLLECT_JITTER_MS,
+  COLLECT_UNREACHABLE_CAP_MS,
   collect,
   describeFailure,
   MAX_CONCURRENT_PEERS,
   needsInteractiveAuth,
   sessionChannelBusy,
+  unreachableIntervalMs,
 } from "../src/collector.js";
 import { asPaneId, asSessionId, asWindowId } from "../src/ids.js";
 import { openStore, type Store } from "../src/store.js";
@@ -552,6 +554,94 @@ test("the floor is keyed on the attempt, so an unreachable peer is throttled too
 
   await collect(store, dead, 11_000, { floorMs: 30_000, random: centre });
   expect(calls).toBe(1);
+});
+
+test("an unreachable peer's retry interval grows with the outage, to a cap", () => {
+  // An absent peer -- a home laptop while you are in the office -- answers
+  // `Could not resolve hostname` in ~10ms. That looks free and is not: the
+  // endpoint agents on a managed Mac bill per EXEC (~5.7ms of Cyberhaven CPU
+  // per failing dial), so a handful of absent peers is a standing tax for an
+  // answer the cached error already holds.
+  const unreachable = (fetchedAt: number | null) =>
+    ({
+      last_error: "ssh: Could not resolve hostname gardenpc: nodename nor servname provided",
+      fetched_at: fetchedAt,
+    }) as never;
+
+  const floor = 30_000;
+  // Reached moments ago: no stretch yet.
+  expect(unreachableIntervalMs(unreachable(100_000), floor, 110_000)).toBe(floor);
+  // One floor of outage doubles it, two quadruple it.
+  expect(unreachableIntervalMs(unreachable(0), floor, 60_000)).toBe(60_000);
+  expect(unreachableIntervalMs(unreachable(0), floor, 120_000)).toBe(120_000);
+  // And it stops at the cap rather than growing without bound.
+  expect(unreachableIntervalMs(unreachable(0), floor, 86_400_000)).toBe(COLLECT_UNREACHABLE_CAP_MS);
+  // Never once reached (a typo'd hostname) is maximally stale, not zero.
+  expect(unreachableIntervalMs(unreachable(null), floor, 1_000)).toBe(COLLECT_UNREACHABLE_CAP_MS);
+});
+
+test("the backoff is only for unreachability, not for every failure", () => {
+  // A peer that ANSWERS -- wrong snapshot version, missing binary, an auth
+  // wall -- is not the cost this bounds, and an auth wall has its own skip.
+  // Widening the backoff to all errors would slow recovery for peers that are
+  // one fixed config away from working.
+  const floor = 30_000;
+  const answering = {
+    last_error: "murmur: command not found",
+    fetched_at: 0,
+  } as never;
+  expect(unreachableIntervalMs(answering, floor, 86_400_000)).toBe(floor);
+  const healthy = { last_error: null, fetched_at: 0 } as never;
+  expect(unreachableIntervalMs(healthy, floor, 86_400_000)).toBe(floor);
+});
+
+test("an unreachable peer is retried far less often than the bare floor", async () => {
+  // The behaviour the interval exists for, through the real collect path.
+  store.addPeer("gardenpc", "gardenpc");
+  let calls = 0;
+  const absent: Channel = {
+    exec: async () => {
+      calls += 1;
+      throw new Error("ssh: Could not resolve hostname gardenpc: nodename nor servname provided");
+    },
+  };
+
+  // First contact fails, so the outage clock starts with no success ever.
+  await collect(store, absent, 1_000, { floorMs: COLLECT_FLOOR_MS, random: centre });
+  expect(calls).toBe(1);
+
+  // One bare floor later a REACHABLE peer would be due again. This one is not.
+  await collect(store, absent, 1_000 + COLLECT_FLOOR_MS + 1, {
+    floorMs: COLLECT_FLOOR_MS,
+    random: centre,
+  });
+  expect(calls).toBe(1);
+
+  // Past the cap it retries, so walking into the office recovers on its own.
+  await collect(store, absent, 1_000 + COLLECT_UNREACHABLE_CAP_MS + 1, {
+    floorMs: COLLECT_FLOOR_MS,
+    random: centre,
+  });
+  expect(calls).toBe(2);
+});
+
+test("a deliberate collect still dials an unreachable peer", async () => {
+  // Same carve-out the auth skip has: `floorMs <= 0` is how a person asking
+  // now is spelled, and a keypress that sometimes does nothing is worse than
+  // a wasted dial.
+  store.addPeer("gardenpc", "gardenpc");
+  let calls = 0;
+  const absent: Channel = {
+    exec: async () => {
+      calls += 1;
+      throw new Error("ssh: Could not resolve hostname gardenpc: nodename nor servname provided");
+    },
+  };
+
+  await collect(store, absent, 1_000, { floorMs: COLLECT_FLOOR_MS, random: centre });
+  expect(calls).toBe(1);
+  await collect(store, absent, 1_100);
+  expect(calls).toBe(2);
 });
 
 test("a peer that has never been attempted is always due", async () => {
