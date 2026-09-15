@@ -39,6 +39,7 @@ function view(over: Partial<PaneView> = {}): PaneView {
     host_id: "remote-host",
     host: "p",
     local: false,
+    server: { kind: "default" },
     pane: asPaneId("%9"),
     session: asSessionId("$0"),
     window: asWindowId("@9"),
@@ -400,6 +401,59 @@ test("with no existing session, exactly one is opened for the peer", () => {
   expect(opened[0]).toContain("'%9'");
 });
 
+test("private-server preflight and attach use the snapshot's server selector", () => {
+  peer("p", "remote-host");
+  vi.stubEnv("TMUX", "");
+  const calls: [string, string[]][] = [];
+
+  const result = jumpToAgent(
+    store,
+    view({ server: { kind: "label", value: "co'op; echo BAD" } }),
+    fakeMux(),
+    (file, args) => {
+      calls.push([file, args]);
+      return calls.length === 1 ? ok("%9\n") : ok();
+    },
+  );
+
+  expect(result).toEqual({ ok: true });
+  expect(calls[0]?.[1].at(-1)).toBe("tmux -L 'co'\\''op; echo BAD' list-panes -a -F '#{pane_id}'");
+  expect(calls[1]).toEqual([
+    "sh",
+    [
+      "-c",
+      "ssh -t 'p' env LC_CTYPE=C.UTF-8 'tmux -L '\\''co'\\''\\'\\'''\\''op; echo BAD'\\'' attach -t '\\''%9'\\'''",
+    ],
+  ]);
+});
+
+test("a custom {pane} template refuses a private server before opening a connection", () => {
+  peer("dev", "remote-host", [], 'x2ssh -et dev -c "tmux attach -t {pane}"');
+  const calls: string[] = [];
+
+  const result = jumpToAgent(
+    store,
+    view({ server: { kind: "path", value: "/tmp/private.sock" }, agent_name: "coop-af31c5" }),
+    fakeMux(),
+    (file) => {
+      calls.push(file);
+      return ok();
+    },
+  );
+
+  // This runner is the network boundary. An empty call list proves the refusal
+  // happens before either the preflight ssh or the configured transport.
+  expect(calls).toEqual([]);
+  expect(result).toEqual({
+    ok: false,
+    reason: "unsupported_server",
+    message:
+      "murmur: dev's jump command uses {pane}, which cannot identify the tmux server holding coop-af31c5 (%9)\n\n" +
+      "update it:\n" +
+      "  murmur peer set dev --jump-command 'ssh -t '\\''dev'\\'' env LC_CTYPE=C.UTF-8 {attach}'",
+  });
+});
+
 test("the wrapper runs the peer's configured jump command after the ssh probe", () => {
   peer("p", "remote-host", [], 'x2ssh -et dev -c "tmux attach -t {pane}"');
   vi.stubEnv("TMUX", "/tmp/tmux-1000/default,123,0");
@@ -490,7 +544,7 @@ test("the wrapper returns the originating client to where the jump started", () 
   // be shell-inert, so this asserts the STRUCTURE that protects the next value
   // rather than a rescue this one needs.
   expect(command).toBe(
-    `ssh -t 'p' env LC_CTYPE=C.UTF-8 tmux attach -t ''\\''%9'\\'''; ` +
+    `ssh -t 'p' env LC_CTYPE=C.UTF-8 'tmux attach -t '\\''%9'\\'''; ` +
       `tmux switch-client -c '/dev/ttys004' -t '=work:@3'`,
   );
 });
@@ -576,7 +630,7 @@ test("outside tmux, no local wrapper session is created", () => {
   // The configured command is opaque, so the shell parses it just as it does
   // inside a wrapper session.
   expect(attached).toEqual([
-    ["-c", "ssh -t 'p' env LC_CTYPE=C.UTF-8 tmux attach -t ''\\''%9'\\'''"],
+    ["-c", "ssh -t 'p' env LC_CTYPE=C.UTF-8 'tmux attach -t '\\''%9'\\'''"],
   ]);
 });
 
@@ -620,13 +674,27 @@ test("a local jump reports a failed select-window instead of claiming success", 
 });
 
 test("a local jump to a live pane succeeds", () => {
+  const servers: unknown[] = [];
   const result = jumpToAgent(
     store,
-    localView(),
-    fakeMux({ livePanes: () => new Set([asPaneId("%9")]), attach: () => true }),
+    localView({ server: { kind: "label", value: "coop" } }),
+    fakeMux({
+      livePanes: (server) => {
+        servers.push(server);
+        return new Set([asPaneId("%9")]);
+      },
+      attach: (_pane, server) => {
+        servers.push(server);
+        return true;
+      },
+    }),
   );
 
   expect(result).toEqual({ ok: true });
+  expect(servers).toEqual([
+    { kind: "label", value: "coop" },
+    { kind: "label", value: "coop" },
+  ]);
 });
 
 test("a local pane that MOVED window is still jumped to, and nothing is written", () => {

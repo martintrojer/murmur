@@ -39,7 +39,13 @@ export {
   type SessionId,
   type WindowId,
 } from "./ids.js";
-export { defaultJumpCommand, PANE_PLACEHOLDER, renderJumpCommand } from "./jump-command.js";
+export {
+  ATTACH_PLACEHOLDER,
+  defaultJumpCommand,
+  PANE_PLACEHOLDER,
+  renderJumpCommand,
+  tmuxAttachCommand,
+} from "./jump-command.js";
 export { type Mux, pidAlive, tmux } from "./mux.js";
 export { configDir, dbPath, stateDir } from "./paths.js";
 export { parseSnapshot, SnapshotInvalidError } from "./snapshot.js";

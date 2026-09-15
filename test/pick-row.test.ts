@@ -18,6 +18,7 @@ const base: PaneView = {
   host_id: "H",
   host: "bubba",
   local: false,
+  server: { kind: "default" },
   pane: asPaneId("%1"),
   session: asSessionId("$0"),
   window: asWindowId("@6"),

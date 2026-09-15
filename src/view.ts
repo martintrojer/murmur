@@ -9,6 +9,7 @@ import {
   type Driver,
   type Effort,
   type SnapshotPane,
+  type TmuxServer,
 } from "./types.js";
 
 export type Freshness = "fresh" | "stale";
@@ -196,6 +197,7 @@ export type PaneView = {
   /** The name the operator typed, or this node's display_name. */
   host: string;
   local: boolean;
+  server: TmuxServer;
   pane: PaneId;
   session: SessionId;
   window: WindowId;
@@ -334,6 +336,7 @@ function paneView(pane: SnapshotPane, source: ViewSource): PaneView {
     host_id: source.host_id,
     host: source.host,
     local: source.local,
+    server: pane.server,
     pane: pane.pane,
     session: pane.session,
     window: pane.window,

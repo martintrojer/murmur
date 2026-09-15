@@ -25,6 +25,7 @@ function pane(overrides: Partial<PaneView> = {}): PaneView {
     host_id: "host-1",
     host: "here",
     local: true,
+    server: { kind: "default" },
     pane: asPaneId("%1"),
     session: asSessionId("$1"),
     window: asWindowId("@1"),

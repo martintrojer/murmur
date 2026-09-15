@@ -1,7 +1,13 @@
 import { spawnSync } from "node:child_process";
 import { SSH_OPTIONS } from "./channel.js";
 import { asPaneId } from "./ids.js";
-import { currentJumpCommand, renderJumpCommand } from "./jump-command.js";
+import {
+  currentJumpCommand,
+  defaultJumpCommand,
+  shellQuote as quoteCommand,
+  renderJumpCommand,
+  supportsServer,
+} from "./jump-command.js";
 import { type Mux, tmux } from "./mux.js";
 import type { Store } from "./store.js";
 import type { PeerRecord } from "./types.js";
@@ -231,7 +237,13 @@ export type JumpResult =
       ok: false;
       // Local to this process: the picker prints `message` and nothing else, and
       // no reason code here is ever stored or published in a snapshot.
-      reason: "no_peer" | "unreachable" | "no_tmux" | "pane_gone" | "attach_failed";
+      reason:
+        | "no_peer"
+        | "unreachable"
+        | "no_tmux"
+        | "pane_gone"
+        | "unsupported_server"
+        | "attach_failed";
       message: string;
     };
 
@@ -252,7 +264,7 @@ export function jumpToAgent(
     // The PANE decides. This once asked about the WINDOW, which a live pane
     // routinely outlives: after `move-pane -s %0 -t @1`, list-panes still has
     // %0 and list-windows no longer has @0, so healthy agents read as gone.
-    const panes = mux.livePanes();
+    const panes = mux.livePanes(agent.server);
     if (panes && !panes.has(agent.pane)) {
       return {
         ok: false,
@@ -267,7 +279,7 @@ export function jumpToAgent(
     // check above and the action here cannot disagree about what is being
     // jumped to. Passing the recorded window instead meant a pane that had
     // moved passed the liveness check and then failed to attach.
-    if (!mux.attach(agent.pane)) {
+    if (!mux.attach(agent.pane, agent.server)) {
       return {
         ok: false,
         reason: "attach_failed",
@@ -284,6 +296,17 @@ export function jumpToAgent(
       ok: false,
       reason: "no_peer",
       message: `No peer configured for host ${agent.host_id.slice(0, 8)}. Try: murmur peer add <target>`,
+    };
+  }
+
+  const template = currentJumpCommand(peer.jump_command, target);
+  if (!supportsServer(template, agent.server)) {
+    return {
+      ok: false,
+      reason: "unsupported_server",
+      message:
+        `murmur: ${peer.name}'s jump command uses {pane}, which cannot identify the tmux server holding ${agentLabel(agent)} (${agent.pane})\n\n` +
+        `update it:\n  murmur peer set ${/^[\w.-]+$/.test(peer.name) ? peer.name : quoteCommand(peer.name)} --jump-command ${quoteCommand(defaultJumpCommand(target))}`,
     };
   }
 
@@ -321,11 +344,15 @@ export function jumpToAgent(
   // probe's status is what every branch below reads. Without this, a remote
   // tmux too old for the indexed hook made every jump to that host report
   // "has no tmux server running" about a host that had just listed its panes.
-  const arm = process.env.TMUX ? ` ; { tmux ${mux.armJumpMarkerCommand()} || true; }` : "";
+  const tmuxPrefix =
+    agent.server.kind === "default"
+      ? "tmux"
+      : `tmux ${agent.server.kind === "label" ? "-L" : "-S"} ${shellQuote(agent.server.value)}`;
+  const arm = process.env.TMUX ? ` ; { ${tmuxPrefix} ${mux.armJumpMarkerCommand()} || true; }` : "";
   const probe = run("ssh", [
     ...SSH_OPTIONS,
     target,
-    `tmux list-panes -a -F ${shellQuote("#{pane_id}")}${arm}`,
+    `${tmuxPrefix} list-panes -a -F ${shellQuote("#{pane_id}")}${arm}`,
   ]);
   if (probe.status !== 0) {
     // 255 is ssh's own failure code; anything else came from the remote command.
@@ -373,7 +400,7 @@ export function jumpToAgent(
   // "only a pane may decide whether an agent exists" exists to prevent, applied
   // one level short of the action. `tmux attach -t %pane` resolves session,
   // window and pane together, verified against a real tmux server.
-  const attach = renderJumpCommand(currentJumpCommand(peer.jump_command, target), agent.pane);
+  const attach = renderJumpCommand(template, agent);
 
   // Hand the ssh to tmux as its own detached SESSION rather than running it
   // here: `murmur pick` is usually a display-popup, and a popup is modal, so an
@@ -424,7 +451,7 @@ export function jumpToAgent(
       const retarget = run("ssh", [
         ...SSH_OPTIONS,
         target,
-        `tmux switch-client -t ${shellQuote(shellQuote(agent.pane))}`,
+        `${tmuxPrefix} switch-client -t ${shellQuote(shellQuote(agent.pane))}`,
       ]);
       if (!mux.switchClient(client, name)) {
         return {

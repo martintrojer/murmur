@@ -40,6 +40,7 @@ function view(over: Partial<PaneView> = {}): PaneView {
     host_id: "H",
     host: "here",
     local: true,
+    server: { kind: "default" },
     pane: asPaneId("%1"),
     session: asSessionId("$0"),
     window: asWindowId("@0"),

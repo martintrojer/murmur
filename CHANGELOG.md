@@ -11,6 +11,11 @@ so panes on private servers such as `tmux -L coop` are not confused with the
 same pane id on the default server. Version 2 snapshots are rejected with the
 expected and actual protocol versions rather than defaulting the missing server.
 
+Peer jump templates now support `{attach}`, a shell-quoted complete tmux attach
+command that includes `-L` or `-S` for private servers. Generated defaults
+migrate automatically. Custom `{pane}` templates remain valid for the default
+server and refuse private-server jumps with a pasteable migration command.
+
 ## 0.4.4
 
 Wire-compatible with 0.4.x: the snapshot format is unchanged at version 2.

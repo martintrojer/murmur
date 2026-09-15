@@ -5,6 +5,7 @@ import { beforeEach, expect, test } from "vitest";
 import { formatTable, lastSeen, parseSshHosts, peerAddDecision } from "../src/cli/peer.js";
 import { openStore } from "../src/store.js";
 import type { PeerRecord, Snapshot } from "../src/types.js";
+import { runBuiltCli } from "./helpers/built.js";
 
 /** A probe result: what `peer add` parsed out of the far side's `murmur export`. */
 function probe(hostId: string, displayName: string): Snapshot {
@@ -37,6 +38,13 @@ function existing(name: string, hostId: string): PeerRecord {
 
 beforeEach(() => {
   process.env.MURMUR_STATE_DIR = mkdtempSync(join(tmpdir(), "murmur-peer-"));
+});
+
+test("peer set help defines both jump placeholders tersely", () => {
+  const help = runBuiltCli(["peer", "set", "--help"]);
+
+  expect(help).toContain("{attach}: quoted tmux attach command, including private server");
+  expect(help).toContain("{pane}: pane id only; default tmux server only");
 });
 
 test("parses literal Host names and skips wildcards and Match blocks", () => {

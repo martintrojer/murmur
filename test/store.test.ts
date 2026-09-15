@@ -691,20 +691,19 @@ test("a new peer defaults to today's ssh attach command", () => {
   const s = store();
   s.addPeer("dev", "dev.example");
 
-  expect(s.peers()[0]?.jump_command).toBe(
-    "ssh -t 'dev.example' env LC_CTYPE=C.UTF-8 tmux attach -t ''\\''{pane}'\\'''",
-  );
+  expect(s.peers()[0]?.jump_command).toBe("ssh -t 'dev.example' env LC_CTYPE=C.UTF-8 {attach}");
 });
 
-test("addPeer upgrades the previous generated jump command", () => {
+test.each([
+  "ssh -t 'dev.example' tmux attach -t ''\\''{pane}'\\'''",
+  "ssh -t 'dev.example' env LC_CTYPE=C.UTF-8 tmux attach -t ''\\''{pane}'\\'''",
+])("addPeer upgrades a previous generated jump command", (generated) => {
   const s = store();
-  s.addPeer("dev", "dev.example", "ssh -t 'dev.example' tmux attach -t ''\\''{pane}'\\'''");
+  s.addPeer("dev", "dev.example", generated);
 
   s.addPeer("dev", "dev.example");
 
-  expect(s.peers()[0]?.jump_command).toBe(
-    "ssh -t 'dev.example' env LC_CTYPE=C.UTF-8 tmux attach -t ''\\''{pane}'\\'''",
-  );
+  expect(s.peers()[0]?.jump_command).toBe("ssh -t 'dev.example' env LC_CTYPE=C.UTF-8 {attach}");
 });
 
 test("a stored jump command round-trips", () => {
@@ -843,7 +842,7 @@ test("an existing database upgrades without losing peers", () => {
     {
       name: "dev",
       target: "dev.example",
-      jump_command: "ssh -t 'dev.example' env LC_CTYPE=C.UTF-8 tmux attach -t ''\\''{pane}'\\'''",
+      jump_command: "ssh -t 'dev.example' env LC_CTYPE=C.UTF-8 {attach}",
       host_id: null,
       display_name: null,
       snapshot: null,

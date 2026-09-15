@@ -259,7 +259,7 @@ export async function runPick(
     const peer = store.peers().find((candidate) => candidate.host_id === agent.host_id);
     const needsTap = latest.peers.find((candidate) => candidate.name === agent.host)?.needs_session;
     if (peer && needsTap) {
-      const command = renderJumpCommand(peer.jump_command, agent.pane);
+      const command = renderJumpCommand(peer.jump_command, agent);
       const confirmed = fzf(
         [
           "--ansi",

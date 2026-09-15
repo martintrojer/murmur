@@ -163,7 +163,10 @@ export function registerPeer(program: Command): void {
     // without an ssh binary or a commander harness.
     .argument("<name>")
     .argument("[target]")
-    .option("--jump-command <template>", "interactive command template; {pane} is substituted")
+    .option(
+      "--jump-command <template>",
+      "interactive template; {attach} is a quoted tmux command, {pane} is a default-server pane id",
+    )
     .action(async (name: string, target = name, options: { jumpCommand?: string }) => {
       const store = openStore();
       try {
@@ -234,9 +237,10 @@ export function registerPeer(program: Command): void {
     .command("set")
     .description("Set peer properties")
     .argument("<name>", "peer to update")
-    .requiredOption(
-      "--jump-command <template>",
-      "interactive command template; {pane} is substituted",
+    .requiredOption("--jump-command <template>", "interactive command template")
+    .addHelpText(
+      "after",
+      "\n{attach}: quoted tmux attach command, including private server\n{pane}: pane id only; default tmux server only\n",
     )
     .action((name: string, options: { jumpCommand: string }) => {
       const store = openStore();

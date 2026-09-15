@@ -191,7 +191,7 @@ export type AgentMeta = {
 export type PeerRecord = {
   name: string;
   target: string;
-  /** Opaque command template for interactive access; `{pane}` is substituted. */
+  /** Opaque command template for interactive access; `{attach}` or `{pane}` is substituted. */
   jump_command: string;
   host_id: string | null;
   display_name: string | null;

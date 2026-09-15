@@ -45,6 +45,7 @@ function pane(local: boolean, id = "%9"): PaneView {
     host_id: local ? "LOCAL" : "remote-host",
     host: local ? "here" : "dev",
     local,
+    server: { kind: "default" },
     pane: asPaneId(id),
     session: asSessionId("$1"),
     window: asWindowId("@1"),
