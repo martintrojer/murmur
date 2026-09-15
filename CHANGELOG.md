@@ -20,6 +20,22 @@ coop 0.1.2 supplies crew metadata to its job shell by default, so a real pi
 launched through coop appears as `coop-<job-id>` on server label `coop` and
 survives export liveness. Use `coop run --human` for an ad-hoc agent.
 
+**The dashboard handles larger fleets without becoming a wall of cards.** Press
+`/` to filter by agent, workstream, session, host, or rendered state. The filter
+is literal, transient, and never saved. Press `c` for persisted compact rows
+that fit about five times as many agents, or `?` for the full shortcut panel.
+The footer now shows only actions relevant to the current mode, including
+`esc clear` for an active filter.
+
+**Routine polling costs less.** Non-dashboard commands no longer load Ink, which
+cuts measured `murmur --version` startup from 0.22s to 0.04s. Ambient collection
+backs off unreachable peers to a five-minute cap while explicit collects still
+retry immediately.
+
+**The dashboard follows a replaced state database.** A schema rebuild can unlink
+`state.db` while the dashboard is mounted. It now detects the replacement and
+reopens it instead of remaining attached to a deleted inode.
+
 ## 0.4.4
 
 Wire-compatible with 0.4.x: the snapshot format is unchanged at version 2.

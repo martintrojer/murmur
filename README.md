@@ -27,12 +27,10 @@ agents. Local jump is a window switch; remote jump opens over ssh (or your
 `--jump-command`).
 
 `murmur dash` wants a [Nerd Font](https://www.nerdfonts.com/) and a Catppuccin
-Mocha terminal. Press `tab` to focus the cards or pane preview; `j`/`k`, arrow
-keys, page keys, `ctrl-u`/`ctrl-d`, and home/end navigate the focused region.
-Clicking a region focuses it. Enter jumps, double-click jumps, the wheel scrolls
-the region under it, `s` cycles sort, and `q` quits. Press `i` to compose a
-prompt for the selected local or remote agent. In input
-mode, enter sends, `ctrl-e` stops the agent, and escape returns to the dashboard.
+Mocha terminal. Press `?` for its shortcut panel. `/` filters cards by agent,
+workstream, session, host, or state; `c` toggles compact one-line rows. Press
+`i` to compose a prompt for the selected local or remote agent. In input mode,
+enter sends, `ctrl-e` stops the agent, and escape returns to the dashboard.
 `s` **node** sort is local cards first, then remotes A–Z.
 
 ## Install
@@ -95,5 +93,5 @@ factor / `BatchMode`, `MaxSessions 1`, Eternal Terminal): [SSH.md](SSH.md).
 | [docs/VOCABULARY.md](docs/VOCABULARY.md) | Protocol and identity terms |
 | [AGENTS.md](AGENTS.md) | Repo gate for agents working on murmur |
 
-**0.4.4.** Ready for daily use. Known gaps live at the end of
+**0.5.0.** Ready for daily use. Known gaps live at the end of
 [ARCHITECTURE.md](ARCHITECTURE.md#known-gaps).
