@@ -36,7 +36,7 @@ function elapsedText(ms: number): string {
 
 /** How long ago the oldest peer fetch was. */
 export function formatFetchedAge(ms: number): string {
-  return `fetched ${elapsedText(ms)}`;
+  return `stalest fetch ${elapsedText(ms)}`;
 }
 
 /**
@@ -64,7 +64,8 @@ export function fetchedText(
 ): string {
   if (view.peers.length === 0)
     return refreshedAt === null ? "local" : `local · refreshed ${elapsedText(now - refreshedAt)}`;
-  if (view.peers.some((peer) => peer.fetched_at === null)) return "fetched never";
+  const neverFetched = view.peers.filter((peer) => peer.fetched_at === null).length;
+  if (neverFetched > 0) return `${neverFetched} peer${neverFetched === 1 ? "" : "s"} never fetched`;
   const fetched = view.peers.flatMap((peer) => (peer.fetched_at === null ? [] : [peer.fetched_at]));
   const oldest = Math.min(...fetched);
   return formatFetchedAge(now - oldest);

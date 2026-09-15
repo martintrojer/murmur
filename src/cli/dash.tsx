@@ -32,6 +32,7 @@ import {
 } from "../dash-mouse.js";
 import { DASH_CHROME, DASH_CHROME_COLOR, DASH_COLOR, DASH_GLYPH } from "../dash-paint.js";
 import { type DashPrefs, type DashSort, loadDashPrefs, saveDashPrefs } from "../dash-prefs.js";
+import { type DashStore, openDashStore, refreshDashStore } from "../dash-store.js";
 import {
   cardWindow,
   clipGlanceLine,
@@ -63,7 +64,6 @@ import {
   sessionNotice,
 } from "../paint.js";
 import { type Status, status, statusWithCollect } from "../status.js";
-import { openStore, type Store } from "../store.js";
 import { age, oneLiner, type PaneView, RENDER_PRIORITY, renderState } from "../view.js";
 import { requireIdentity } from "./identity-guard.js";
 
@@ -94,7 +94,7 @@ const INPUT_PREVIEW_MS = 500;
 const SORTS: DashSort[] = ["priority", "node", "age"];
 
 type DashProps = {
-  store: Store;
+  dashStore: DashStore;
   initial: Status;
 };
 
@@ -348,8 +348,10 @@ function CompactRow({
   );
 }
 
-function App({ store, initial }: DashProps) {
+function App({ dashStore, initial }: DashProps) {
   const { exit, suspendTerminal } = useApp();
+  const [, setStoreRevision] = useState(0);
+  const store = dashStore.store;
   const { columns, rows: terminalRows } = useWindowSize();
   const [prefs, setPrefs] = useState(loadDashPrefs);
   const [view, setView] = useState(initial);
@@ -420,8 +422,10 @@ function App({ store, initial }: DashProps) {
     async (floored: boolean) => {
       const identity = requireIdentity();
       if (!identity) return;
+      if (refreshDashStore(dashStore)) setStoreRevision((revision) => revision + 1);
+      const activeStore = dashStore.store;
       const updated = await statusWithCollect(
-        store,
+        activeStore,
         identity,
         Date.now(),
         ssh,
@@ -433,7 +437,7 @@ function App({ store, initial }: DashProps) {
       setRefreshedAt(at);
       setCollectRevision((revision) => revision + 1);
     },
-    [store],
+    [dashStore],
   );
 
   useEffect(() => {
@@ -1095,7 +1099,7 @@ export async function runDash(options: { goto?: boolean }): Promise<void> {
   if (!requireDashTmux()) return;
   const identity = requireIdentity();
   if (!identity) return;
-  const store = openStore();
+  const dashStore = openDashStore();
   const previousTitle = process.title;
   process.title = "murmur";
   // For the dash's MOUNTED LIFETIME, which is what `--goto` looks for. The
@@ -1105,9 +1109,10 @@ export async function runDash(options: { goto?: boolean }): Promise<void> {
   const pane = process.env.TMUX_PANE;
   if (pane) tmux.markDashPane(asPaneId(pane));
   try {
-    const instance = render(<App store={store} initial={status(store, identity)} />, {
-      alternateScreen: true,
-    });
+    const instance = render(
+      <App dashStore={dashStore} initial={status(dashStore.store, identity)} />,
+      { alternateScreen: true },
+    );
     await instance.waitUntilExit();
   } finally {
     // Best effort: a SIGKILL leaves the option behind, which is exactly why
@@ -1118,7 +1123,7 @@ export async function runDash(options: { goto?: boolean }): Promise<void> {
     // report no dash while one is running.
     if (pane) tmux.unmarkDashPane(asPaneId(pane));
     disableMouse(process.stdout);
-    store.close();
+    dashStore.store.close();
     process.title = previousTitle;
   }
 }

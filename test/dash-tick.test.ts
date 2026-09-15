@@ -82,15 +82,15 @@ test("glance refreshes only for a new non-null fingerprint", () => {
 });
 
 test("fetched age speaks in seconds so the header can tick", () => {
-  expect(formatFetchedAge(0)).toBe("fetched just now");
-  expect(formatFetchedAge(999)).toBe("fetched just now");
-  expect(formatFetchedAge(1_000)).toBe("fetched 1s ago");
-  expect(formatFetchedAge(3_000)).toBe("fetched 3s ago");
-  expect(formatFetchedAge(59_000)).toBe("fetched 59s ago");
-  expect(formatFetchedAge(60_000)).toBe("fetched 1m ago");
+  expect(formatFetchedAge(0)).toBe("stalest fetch just now");
+  expect(formatFetchedAge(999)).toBe("stalest fetch just now");
+  expect(formatFetchedAge(1_000)).toBe("stalest fetch 1s ago");
+  expect(formatFetchedAge(3_000)).toBe("stalest fetch 3s ago");
+  expect(formatFetchedAge(59_000)).toBe("stalest fetch 59s ago");
+  expect(formatFetchedAge(60_000)).toBe("stalest fetch 1m ago");
 });
 
-test("fetchedText picks the oldest peer fetch", () => {
+test("fetchedText labels worst-case peer freshness honestly", () => {
   const peer = (
     overrides: Partial<Status["peers"][number]> &
       Pick<Status["peers"][number], "name" | "fetched_at">,
@@ -120,8 +120,20 @@ test("fetchedText picks the oldest peer fetch", () => {
   // No refresh has completed yet, so there is no age to state.
   expect(fetchedText({ peers: [] }, 10_000, null)).toBe("local");
   expect(fetchedText({ peers: [peer({ name: "a", fetched_at: null })] }, 10_000)).toBe(
-    "fetched never",
+    "1 peer never fetched",
   );
+  expect(
+    fetchedText(
+      {
+        peers: [
+          peer({ name: "a", fetched_at: 9_000 }),
+          peer({ name: "b", fetched_at: null }),
+          peer({ name: "c", fetched_at: null }),
+        ],
+      },
+      10_000,
+    ),
+  ).toBe("2 peers never fetched");
   expect(
     fetchedText(
       {
@@ -129,7 +141,7 @@ test("fetchedText picks the oldest peer fetch", () => {
       },
       10_000,
     ),
-  ).toBe("fetched 3s ago");
+  ).toBe("stalest fetch 3s ago");
 });
 
 test("moveIndex wraps for j/k and clamps for page jumps", () => {
