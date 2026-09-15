@@ -65,7 +65,10 @@ test("every identity this module can produce survives its own validator", () => 
   const identity = createIdentity("box");
   const store = openStore();
   try {
-    const snapshot = store.buildLocalSnapshot(identity, { panes: new Set() });
+    const snapshot = store.buildLocalSnapshot(identity, {
+      server: { kind: "default" },
+      panes: new Set(),
+    });
     // The real round trip: serialise exactly as `murmur export` does, then feed
     // it to the validator a peer runs. No throw means a peer accepts us.
     expect(() => parseSnapshot(JSON.stringify(snapshot))).not.toThrow();

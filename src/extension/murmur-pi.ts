@@ -394,7 +394,7 @@ export default function murmurPi(pi: ExtensionAPI): void {
       badge(location, null);
       try {
         if (state.kind === "open" && agentId) {
-          state.store.releaseAgent({ agent_id: agentId, owner_pid: process.pid });
+          state.store.releaseAgent({ agent_id: agentId, owner_pid: process.pid, location });
         }
       } catch {
         // The handle goes either way.

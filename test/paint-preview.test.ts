@@ -27,6 +27,7 @@ afterEach(() => {
 
 function location(pane: string): Location {
   return {
+    server: { kind: "default" },
     session: asSessionId("$0"),
     window: asWindowId("@1"),
     pane: asPaneId(pane),

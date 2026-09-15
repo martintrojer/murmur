@@ -3,7 +3,6 @@ import { closeSync, mkdirSync, openSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
 import Database from "better-sqlite3";
 import type { NodeIdentity } from "./identity.js";
-import type { PaneId } from "./ids.js";
 import { asPaneId, asSessionId, asWindowId } from "./ids.js";
 import { currentJumpCommand, defaultJumpCommand } from "./jump-command.js";
 import { pidAlive } from "./mux.js";
@@ -17,8 +16,10 @@ import type {
   AttentionKind,
   AttentionRequest,
   ClaimResult,
+  LocalPane,
   LocalWorld,
   Location,
+  PaneIdentity,
   PeerFetch,
   PeerRecord,
   ReconcileSummary,
@@ -26,7 +27,7 @@ import type {
   Snapshot,
   SnapshotAgent,
   SnapshotAttention,
-  SnapshotPane,
+  TmuxServer,
 } from "./types.js";
 import { ATTENTION_PRIORITY, EFFORTS, SNAPSHOT_VERSION } from "./types.js";
 import { MURMUR_VERSION } from "./version.js";
@@ -38,7 +39,7 @@ import { MURMUR_VERSION } from "./version.js";
  * typed, deletes the file, and recreates the schema. No ALTER TABLE anywhere, so
  * there is no additive path to forget to use.
  */
-const SCHEMA_USER_VERSION = 5;
+const SCHEMA_USER_VERSION = 6;
 
 /**
  * The effort vocabulary as a SQL value list, generated from the one tuple.
@@ -85,7 +86,9 @@ const RESET_LOCK_TIMEOUT_MS = 5_000;
 const SCHEMA = `
   CREATE TABLE agents (
     agent_id     TEXT    NOT NULL PRIMARY KEY,
-    pane         TEXT    NOT NULL UNIQUE,
+    server_kind  TEXT    NOT NULL CHECK (server_kind IN ('default', 'label', 'path')),
+    server_value TEXT    NOT NULL,
+    pane         TEXT    NOT NULL,
     owner_pid    INTEGER NOT NULL CHECK (owner_pid > 0),
     activity     TEXT    NOT NULL CHECK (activity IN ('running', 'stopped')),
     session      TEXT    NOT NULL,
@@ -117,10 +120,13 @@ const SCHEMA = `
     effort       TEXT    CHECK (effort IS NULL OR effort IN (${EFFORT_SQL_LIST})),
     context_pct  REAL    CHECK (context_pct IS NULL OR (context_pct >= 0 AND context_pct <= 100)),
     claimed_at   INTEGER NOT NULL,
-    updated_at   INTEGER NOT NULL
+    updated_at   INTEGER NOT NULL,
+    UNIQUE (server_kind, server_value, pane)
   ) STRICT;
 
   CREATE TABLE attention (
+    server_kind  TEXT    NOT NULL CHECK (server_kind IN ('default', 'label', 'path')),
+    server_value TEXT    NOT NULL,
     pane         TEXT    NOT NULL,
     kind         TEXT    NOT NULL CHECK (kind IN ('done', 'blocked', 'crashed')),
     message      TEXT    NOT NULL,
@@ -130,7 +136,7 @@ const SCHEMA = `
     session_name TEXT,
     window_name  TEXT,
     requested_at INTEGER NOT NULL,
-    PRIMARY KEY (pane, kind)
+    PRIMARY KEY (server_kind, server_value, pane, kind)
   ) STRICT;
 
   CREATE TABLE peers (
@@ -187,11 +193,11 @@ export interface Store {
    * manufacturing a fact it cannot observe.
    */
   recordCrash(location: Location, now?: number): void;
-  acknowledgePane(pane: PaneId): number;
+  acknowledgePane(location: PaneIdentity): number;
 
   // --- local truth --------------------------------------------------------
-  /** The one local read. Joins agents and attention by pane. No reconciliation. */
-  localPanes(): SnapshotPane[];
+  /** The one local read. Joins agents and attention by server and pane. */
+  localPanes(): LocalPane[];
   reconcileLocal(world: LocalWorld): ReconcileSummary;
   buildLocalSnapshot(identity: NodeIdentity, world: LocalWorld): Snapshot;
 
@@ -207,6 +213,8 @@ export interface Store {
 
 type AgentDbRow = {
   agent_id: string;
+  server_kind: TmuxServer["kind"];
+  server_value: string;
   pane: string;
   owner_pid: number;
   activity: string;
@@ -233,6 +241,8 @@ type AgentDbRow = {
 };
 
 type AttentionDbRow = {
+  server_kind: TmuxServer["kind"];
+  server_value: string;
   pane: string;
   kind: string;
   message: string;
@@ -401,6 +411,16 @@ function needsReset(path: string): boolean {
   } finally {
     existing.close();
   }
+}
+
+function serverFromRow(row: AgentDbRow | AttentionDbRow): TmuxServer {
+  return row.server_kind === "default"
+    ? { kind: "default" }
+    : { kind: row.server_kind, value: row.server_value };
+}
+
+function serverKey(server: TmuxServer, pane: string): string {
+  return `${server.kind}\0${"value" in server ? server.value : ""}\0${pane}`;
 }
 
 function toAttention(row: AttentionDbRow): SnapshotAttention {
@@ -597,13 +617,15 @@ export function openStore(): Store {
     return opened;
   });
 
-  const selectAgentByPane = database.prepare("SELECT * FROM agents WHERE pane = ?");
+  const selectAgentByPane = database.prepare(
+    "SELECT * FROM agents WHERE server_kind = ? AND server_value = ? AND pane = ?",
+  );
   const insertAgent = database.prepare(`
-    INSERT INTO agents (agent_id, pane, owner_pid, activity, session, window,
-                        session_name, window_name, agent_name, pi_session,
+    INSERT INTO agents (agent_id, server_kind, server_value, pane, owner_pid, activity,
+                        session, window, session_name, window_name, agent_name, pi_session,
                         workstream, role, cli, driver, claimed_at, updated_at)
-    VALUES (@agent_id, @pane, @owner_pid, @activity, @session, @window,
-            @session_name, @window_name, @agent_name, @pi_session,
+    VALUES (@agent_id, @server_kind, @server_value, @pane, @owner_pid, @activity,
+            @session, @window, @session_name, @window_name, @agent_name, @pi_session,
             @workstream, @role, @cli, @driver, @claimed_at, @updated_at)
   `);
   const retainAgent = database.prepare(`
@@ -614,24 +636,30 @@ export function openStore(): Store {
            cli = @cli, driver = @driver, updated_at = @updated_at
      WHERE agent_id = @agent_id
   `);
-  const deleteAgentByPane = database.prepare("DELETE FROM agents WHERE pane = ?");
-  const deleteAttentionForPane = database.prepare("DELETE FROM attention WHERE pane = ?");
+  const deleteAgentByPane = database.prepare(
+    "DELETE FROM agents WHERE server_kind = ? AND server_value = ? AND pane = ?",
+  );
+  const deleteAttentionForPane = database.prepare(
+    "DELETE FROM attention WHERE server_kind = ? AND server_value = ? AND pane = ?",
+  );
   const updateActivity = database.prepare(`
     UPDATE agents
        SET activity = @activity, session = @session, window = @window,
            session_name = @session_name, window_name = @window_name,
            updated_at = @updated_at
      WHERE agent_id = @agent_id AND owner_pid = @owner_pid
+       AND server_kind = @server_kind AND server_value = @server_value AND pane = @pane
   `);
   const deleteAgentOwned = database.prepare(
-    "DELETE FROM agents WHERE agent_id = ? AND owner_pid = ?",
+    `DELETE FROM agents
+      WHERE agent_id = ? AND owner_pid = ? AND server_kind = ? AND server_value = ? AND pane = ?`,
   );
   const upsertAttention = database.prepare(`
-    INSERT INTO attention (pane, kind, message, source, session, window,
-                           session_name, window_name, requested_at)
-    VALUES (@pane, @kind, @message, @source, @session, @window,
-            @session_name, @window_name, @requested_at)
-    ON CONFLICT (pane, kind) DO UPDATE SET
+    INSERT INTO attention (server_kind, server_value, pane, kind, message, source,
+                           session, window, session_name, window_name, requested_at)
+    VALUES (@server_kind, @server_value, @pane, @kind, @message, @source,
+            @session, @window, @session_name, @window_name, @requested_at)
+    ON CONFLICT (server_kind, server_value, pane, kind) DO UPDATE SET
       message = excluded.message,
       source = excluded.source,
       session = excluded.session,
@@ -662,7 +690,8 @@ export function openStore(): Store {
   };
 
   const setActivityByPane = database.prepare(
-    "UPDATE agents SET activity = ?, updated_at = ? WHERE pane = ?",
+    `UPDATE agents SET activity = ?, updated_at = ?
+      WHERE server_kind = ? AND server_value = ? AND pane = ?`,
   );
 
   /**
@@ -677,9 +706,14 @@ export function openStore(): Store {
     const now = claim.now ?? Date.now();
     const isAlive = claim.isAlive ?? pidAlive;
     const { location, meta, owner_pid } = claim;
-    const incumbent = selectAgentByPane.get(location.pane) as AgentDbRow | undefined;
+    const serverValue = "value" in location.server ? location.server.value : "";
+    const incumbent = selectAgentByPane.get(location.server.kind, serverValue, location.pane) as
+      | AgentDbRow
+      | undefined;
 
     const values = {
+      server_kind: location.server.kind,
+      server_value: serverValue,
       pane: location.pane,
       owner_pid,
       session: location.session,
@@ -720,8 +754,8 @@ export function openStore(): Store {
 
     // The previous occupant is gone. Its attention described a process that no
     // longer exists, and a human looking at the pane now sees a different agent.
-    deleteAgentByPane.run(location.pane);
-    deleteAttentionForPane.run(location.pane);
+    deleteAgentByPane.run(location.server.kind, serverValue, location.pane);
+    deleteAttentionForPane.run(location.server.kind, serverValue, location.pane);
     const agentId = randomUUID();
     insertAgent.run({ ...values, agent_id: agentId, activity: "stopped", claimed_at: now });
     return { outcome: "replaced", agent_id: agentId, previous_agent_id: incumbent.agent_id };
@@ -738,6 +772,7 @@ export function openStore(): Store {
     const summary: ReconcileSummary = { crashed: [], removed: [], attention_removed: [] };
     if (world.panes === null) return summary;
     const live = world.panes;
+    const worldServerValue = "value" in world.server ? world.server.value : "";
     const isAlive = world.isAlive ?? pidAlive;
     const now = world.now ?? Date.now();
 
@@ -746,14 +781,15 @@ export function openStore(): Store {
     const alreadyCrashed = new Set(
       (selectAttention.all() as AttentionDbRow[])
         .filter((row) => row.kind === "crashed")
-        .map((row) => row.pane),
+        .map((row) => serverKey(serverFromRow(row), row.pane)),
     );
 
     for (const row of selectAgents.all() as AgentDbRow[]) {
+      if (row.server_kind !== world.server.kind || row.server_value !== worldServerValue) continue;
       const pane = asPaneId(row.pane);
       if (!live.has(pane)) {
-        deleteAgentByPane.run(row.pane);
-        deleteAttentionForPane.run(row.pane);
+        deleteAgentByPane.run(row.server_kind, row.server_value, row.pane);
+        deleteAttentionForPane.run(row.server_kind, row.server_value, row.pane);
         summary.removed.push(pane);
         continue;
       }
@@ -764,8 +800,10 @@ export function openStore(): Store {
       // normally, so its row is noise — but any `done` it raised is a fact a
       // human has not yet seen, so the attention stays.
       if (row.activity === "running") {
-        setActivityByPane.run("stopped", now, row.pane);
+        setActivityByPane.run("stopped", now, row.server_kind, row.server_value, row.pane);
         upsertAttention.run({
+          server_kind: row.server_kind,
+          server_value: row.server_value,
           pane: row.pane,
           kind: "crashed",
           message: "",
@@ -777,8 +815,8 @@ export function openStore(): Store {
           requested_at: now,
         });
         summary.crashed.push(pane);
-      } else if (!alreadyCrashed.has(row.pane)) {
-        deleteAgentByPane.run(row.pane);
+      } else if (!alreadyCrashed.has(serverKey(serverFromRow(row), row.pane))) {
+        deleteAgentByPane.run(row.server_kind, row.server_value, row.pane);
         summary.removed.push(pane);
       }
       // A pane already recorded as crashed keeps its agent row, the one place
@@ -797,9 +835,10 @@ export function openStore(): Store {
     // Reaps attention for a pane that never had an agent row — an
     // attention-only codex pane whose window was closed. Nothing else would.
     for (const row of selectAttention.all() as AttentionDbRow[]) {
+      if (row.server_kind !== world.server.kind || row.server_value !== worldServerValue) continue;
       const pane = asPaneId(row.pane);
       if (live.has(pane)) continue;
-      deleteAttentionForPane.run(row.pane);
+      deleteAttentionForPane.run(row.server_kind, row.server_value, row.pane);
       if (!summary.attention_removed.includes(pane)) summary.attention_removed.push(pane);
     }
 
@@ -810,15 +849,18 @@ export function openStore(): Store {
    * Both tables read at ONE point in time, or a pane can appear with an agent
    * and without the attention that was there when the agent was read.
    */
-  const readLocalPanes = database.transaction((): SnapshotPane[] => {
+  const readLocalPanes = database.transaction((): LocalPane[] => {
     const agents = selectAgents.all() as AgentDbRow[];
     const attention = selectAttention.all() as AttentionDbRow[];
-    const panes = new Map<string, SnapshotPane>();
+    const panes = new Map<string, LocalPane>();
 
-    const locate = (row: AgentDbRow | AttentionDbRow): SnapshotPane => {
-      const existing = panes.get(row.pane);
+    const locate = (row: AgentDbRow | AttentionDbRow): LocalPane => {
+      const server = serverFromRow(row);
+      const key = serverKey(server, row.pane);
+      const existing = panes.get(key);
       if (existing) return existing;
-      const created: SnapshotPane = {
+      const created: LocalPane = {
+        server,
         pane: asPaneId(row.pane),
         session: asSessionId(row.session),
         window: asWindowId(row.window),
@@ -827,7 +869,7 @@ export function openStore(): Store {
         agent: null,
         attention: [],
       };
-      panes.set(row.pane, created);
+      panes.set(key, created);
       return created;
     };
 
@@ -835,7 +877,9 @@ export function openStore(): Store {
     for (const row of attention) locate(row).attention.push(toAttention(row));
 
     for (const pane of panes.values()) pane.attention.sort(attentionOrder);
-    return [...panes.values()].sort((left, right) => left.pane.localeCompare(right.pane));
+    return [...panes.values()].sort((left, right) =>
+      serverKey(left.server, left.pane).localeCompare(serverKey(right.server, right.pane)),
+    );
   });
 
   function peerRecord(row: PeerDbRow): PeerRecord {
@@ -926,6 +970,9 @@ export function openStore(): Store {
           updated_at: update.now ?? Date.now(),
           agent_id: update.agent_id,
           owner_pid: update.owner_pid,
+          server_kind: update.location.server.kind,
+          server_value: "value" in update.location.server ? update.location.server.value : "",
+          pane: update.location.pane,
         }).changes === 1
       );
     },
@@ -934,11 +981,21 @@ export function openStore(): Store {
       // Attention is deliberately NOT deleted: a `done` raised at settle must
       // survive the agent exiting, or completion becomes invisible the moment
       // the process quits.
-      return deleteAgentOwned.run(release.agent_id, release.owner_pid).changes === 1;
+      return (
+        deleteAgentOwned.run(
+          release.agent_id,
+          release.owner_pid,
+          release.location.server.kind,
+          "value" in release.location.server ? release.location.server.value : "",
+          release.location.pane,
+        ).changes === 1
+      );
     },
 
     recordCrash(location, now = Date.now()) {
       upsertAttention.run({
+        server_kind: location.server.kind,
+        server_value: "value" in location.server ? location.server.value : "",
         pane: location.pane,
         kind: "crashed",
         message: "",
@@ -957,6 +1014,8 @@ export function openStore(): Store {
       // which also makes crash attention idempotent for free. Touches no
       // `agents` row, ever; there is no column here that could.
       upsertAttention.run({
+        server_kind: request.location.server.kind,
+        server_value: "value" in request.location.server ? request.location.server.value : "",
         pane: request.location.pane,
         kind: request.kind,
         message: request.message,
@@ -969,11 +1028,12 @@ export function openStore(): Store {
       });
     },
 
-    acknowledgePane(pane) {
-      // Every kind, one statement, no agent row touched: focusing a pane cannot
-      // alter activity or owner metadata. This is the whole `murmur clear`
-      // write path.
-      return deleteAttentionForPane.run(pane).changes;
+    acknowledgePane(location) {
+      return deleteAttentionForPane.run(
+        location.server.kind,
+        "value" in location.server ? location.server.value : "",
+        location.pane,
+      ).changes;
     },
 
     localPanes() {
@@ -1000,7 +1060,9 @@ export function openStore(): Store {
         // outright. Without it, one narrowing of the local read would make this
         // node reachable-but-broken on every peer that collects it, and the
         // symptom would show up on the other machines.
-        panes: readLocalPanes().filter((pane) => pane.agent !== null || pane.attention.length > 0),
+        panes: readLocalPanes().flatMap(({ server, ...pane }) =>
+          serverKey(server, pane.pane) === serverKey(world.server, pane.pane) ? [pane] : [],
+        ),
       };
     },
 

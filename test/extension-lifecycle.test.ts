@@ -32,7 +32,7 @@ type Rig = {
   handlers: Map<string, () => void | Promise<void>>;
   claims: { owner_pid: number; pane: string }[];
   writes: { activity: string; agent_id: string; owner_pid: number }[];
-  releases: { agent_id: string; owner_pid: number }[];
+  releases: { agent_id: string; owner_pid: number; location: { pane: string } }[];
   badges: [string, string | null][];
   opens: () => number;
   closes: () => number;
@@ -72,7 +72,11 @@ async function rig(claimAnswers: Claim[], options: { setActivity?: boolean } = {
           return options.setActivity ?? true;
         },
         requestAttention: () => {},
-        releaseAgent: (release: { agent_id: string; owner_pid: number }) => {
+        releaseAgent: (release: {
+          agent_id: string;
+          owner_pid: number;
+          location: { pane: string };
+        }) => {
           releases.push(release);
           return true;
         },
@@ -158,7 +162,9 @@ test("a reload re-claims the pane at once, leaving no unowned window to lose it 
 
   await r.handlers.get("session_shutdown")?.();
   await until(() => r.releases.length === 1);
-  expect(r.releases).toEqual([{ agent_id: "a1", owner_pid: process.pid }]);
+  expect(r.releases).toMatchObject([
+    { agent_id: "a1", owner_pid: process.pid, location: { pane: "%1" } },
+  ]);
 
   await r.handlers.get("session_start")?.();
   // No agent event: the point is that ownership does not wait for one.
@@ -291,7 +297,9 @@ test("a release only ever quotes this process's own claim", async () => {
   await r.handlers.get("session_shutdown")?.();
   await until(() => r.releases.length > 1);
 
-  expect(r.releases).toEqual([{ agent_id: "a1", owner_pid: process.pid }]);
+  expect(r.releases).toMatchObject([
+    { agent_id: "a1", owner_pid: process.pid, location: { pane: "%1" } },
+  ]);
 
   unmock();
 });

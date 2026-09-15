@@ -1,7 +1,15 @@
 import { expect, test, vi } from "vitest";
 import { DASH_PANE_OPTION } from "../src/goto.js";
 import { asPaneId, asWindowId } from "../src/ids.js";
-import { chosenWindowName, pidAlive, tmux, tmuxBadgeState } from "../src/mux.js";
+import {
+  chosenWindowName,
+  conventionalTmuxDirectory,
+  deriveTmuxServer,
+  pidAlive,
+  tmux,
+  tmuxArgs,
+  tmuxBadgeState,
+} from "../src/mux.js";
 
 const tmuxCalls = vi.hoisted(() => [] as string[][]);
 // Queued answers, because a call that DEPENDS on what tmux said cannot be
@@ -13,6 +21,45 @@ vi.mock("node:child_process", () => ({
     return tmuxReplies.shift() ?? "";
   },
 }));
+
+test.each([
+  ["/tmp/tmux-501/default", { kind: "default" }],
+  ["/tmp/tmux-501/coop", { kind: "label", value: "coop" }],
+  ["/var/run/private.sock", { kind: "path", value: "/var/run/private.sock" }],
+  ["/var/run/private,one.sock", { kind: "path", value: "/var/run/private,one.sock" }],
+])("derives the tmux server from socket path %s", (socketPath, expected) => {
+  expect(deriveTmuxServer(socketPath, "/tmp/tmux-501")).toEqual(expected);
+});
+
+test("tmux argv selects default, label, and path servers without a shell", () => {
+  expect(tmuxArgs({ kind: "default" }, ["list-panes", "-a"])).toEqual(["list-panes", "-a"]);
+  expect(tmuxArgs({ kind: "label", value: "coop" }, ["list-panes", "-a"])).toEqual([
+    "-L",
+    "coop",
+    "list-panes",
+    "-a",
+  ]);
+  expect(tmuxArgs({ kind: "path", value: "/tmp/a,b.sock" }, ["list-panes", "-a"])).toEqual([
+    "-S",
+    "/tmp/a,b.sock",
+    "list-panes",
+    "-a",
+  ]);
+});
+
+test("currentWindow records the socket-derived server", () => {
+  const socket = `${conventionalTmuxDirectory()}/coop`;
+  tmuxReplies.push(`$1\t@2\twork\treviewer\t0\t${socket}`);
+  process.env.TMUX_PANE = "%34";
+  try {
+    expect(tmux.currentWindow()).toMatchObject({
+      pane: "%34",
+      server: { kind: "label", value: "coop" },
+    });
+  } finally {
+    delete process.env.TMUX_PANE;
+  }
+});
 
 test("pidAlive is true for self and false for an unused pid", () => {
   expect(pidAlive(process.pid)).toBe(true);

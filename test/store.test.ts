@@ -41,6 +41,7 @@ function store(): Store {
 
 function location(pane = "%1", over: Partial<Location> = {}): Location {
   return {
+    server: { kind: "default" },
     session: asSessionId("$0"),
     window: asWindowId("@0"),
     pane: asPaneId(pane),
@@ -235,7 +236,7 @@ test("a dead owner is replaced with a new agent_id, and its writes then fail", (
       location: location(),
     }),
   ).toBe(false);
-  expect(s.releaseAgent({ agent_id: oldId, owner_pid: 100 })).toBe(false);
+  expect(s.releaseAgent({ agent_id: oldId, owner_pid: 100, location: location() })).toBe(false);
 });
 
 test("replacing a dead owner clears the previous occupant's attention", () => {
@@ -248,6 +249,75 @@ test("replacing a dead owner clears the previous occupant's attention", () => {
   s.claimAgent({ location: location(), owner_pid: 200, meta: meta(), isAlive: dead });
 
   expect(s.localPanes()[0]?.attention).toEqual([]);
+});
+
+test("the same pane id on default and labelled servers has independent ownership", () => {
+  const s = store();
+  const defaultLocation = location("%34");
+  const labelledLocation = location("%34", { server: { kind: "label", value: "coop" } });
+
+  const first = s.claimAgent({ location: defaultLocation, owner_pid: 100, meta: meta(), now: 1 });
+  const second = s.claimAgent({
+    location: labelledLocation,
+    owner_pid: 200,
+    meta: meta({ agent_name: "coop-agent" }),
+    now: 2,
+  });
+
+  expect(first.outcome).toBe("claimed");
+  expect(second.outcome).toBe("claimed");
+  expect(s.localPanes()).toMatchObject([
+    { pane: "%34", server: { kind: "default" }, agent: { agent_name: "worker-1" } },
+    {
+      pane: "%34",
+      server: { kind: "label", value: "coop" },
+      agent: { agent_name: "coop-agent" },
+    },
+  ]);
+});
+
+test("claim, reclaim, refusal, release, and attention use the full server-pane key", () => {
+  const s = store();
+  const defaultLocation = location("%34");
+  const labelledLocation = location("%34", { server: { kind: "label", value: "coop" } });
+  const first = s.claimAgent({ location: defaultLocation, owner_pid: 100, meta: meta(), now: 1 });
+  const second = s.claimAgent({ location: labelledLocation, owner_pid: 200, meta: meta(), now: 2 });
+  if (!("agent_id" in first) || !("agent_id" in second)) throw new Error("claim refused");
+
+  expect(
+    s.claimAgent({
+      location: labelledLocation,
+      owner_pid: 300,
+      meta: meta(),
+      isAlive: alive([200]),
+    }),
+  ).toEqual({ outcome: "refused", held_by_pid: 200 });
+  expect(s.claimAgent({ location: defaultLocation, owner_pid: 100, meta: meta(), now: 3 })).toEqual(
+    { outcome: "retained", agent_id: first.agent_id },
+  );
+
+  s.requestAttention({
+    kind: "done",
+    location: defaultLocation,
+    message: "default",
+    source: "pi",
+  });
+  s.requestAttention({
+    kind: "done",
+    location: labelledLocation,
+    message: "coop",
+    source: "pi",
+  });
+  expect(s.acknowledgePane(defaultLocation)).toBe(1);
+  expect(s.localPanes().find((pane) => pane.server.kind === "label")?.attention).toMatchObject([
+    { message: "coop" },
+  ]);
+  expect(
+    s.releaseAgent({ agent_id: first.agent_id, owner_pid: 100, location: defaultLocation }),
+  ).toBe(true);
+  expect(s.localPanes().find((pane) => pane.server.kind === "label")?.agent?.agent_id).toBe(
+    second.agent_id,
+  );
 });
 
 // --- activity -------------------------------------------------------------
@@ -297,7 +367,7 @@ test("releaseAgent keeps attention, so a done raised at settle survives the exit
   const agentId = "agent_id" in claim ? claim.agent_id : "";
   s.requestAttention({ kind: "done", location: location(), message: "finished", source: "pi" });
 
-  expect(s.releaseAgent({ agent_id: agentId, owner_pid: 100 })).toBe(true);
+  expect(s.releaseAgent({ agent_id: agentId, owner_pid: 100, location: location() })).toBe(true);
 
   const panes = s.localPanes();
   expect(panes[0]?.agent).toBeNull();
@@ -350,7 +420,7 @@ test("notify then clear leaves a live agent's row byte-for-byte unchanged", () =
     source: "stdin-probe",
     now: 3,
   });
-  s.acknowledgePane(asPaneId("%250"));
+  s.acknowledgePane(location("%250"));
 
   expect(agentRows()).toEqual(before);
   expect(before[0]).toMatchObject({
@@ -386,7 +456,7 @@ test("kinds coexist on one pane, and acknowledge clears them all for that pane o
     "blocked",
     "done",
   ]);
-  expect(s.acknowledgePane(asPaneId("%1"))).toBe(3);
+  expect(s.acknowledgePane(location("%1"))).toBe(3);
   expect(s.localPanes().map((pane) => pane.pane)).toEqual(["%2"]);
 });
 
@@ -399,7 +469,7 @@ test("reconcileLocal with panes null writes nothing", () => {
   s.requestAttention({ kind: "done", location: location(), message: "", source: "pi" });
   const before = agentRows();
 
-  expect(s.reconcileLocal({ panes: null, isAlive: dead })).toEqual({
+  expect(s.reconcileLocal({ server: { kind: "default" }, panes: null, isAlive: dead })).toEqual({
     crashed: [],
     removed: [],
     attention_removed: [],
@@ -412,7 +482,9 @@ test("reconcileLocal distinguishes an empty pane list from a failed read", () =>
   const s = store();
   s.claimAgent({ location: location(), owner_pid: 100, meta: meta() });
 
-  expect(s.reconcileLocal({ panes: new Set(), isAlive: dead }).removed).toEqual(["%1"]);
+  expect(
+    s.reconcileLocal({ server: { kind: "default" }, panes: new Set(), isAlive: dead }).removed,
+  ).toEqual(["%1"]);
   expect(s.localPanes()).toEqual([]);
 });
 
@@ -429,6 +501,7 @@ test("a dead running owner becomes stopped plus one crashed row, idempotently", 
   });
 
   const first = s.reconcileLocal({
+    server: { kind: "default" },
     panes: new Set([asPaneId("%1")]),
     isAlive: dead,
     now: 10,
@@ -441,7 +514,12 @@ test("a dead running owner becomes stopped plus one crashed row, idempotently", 
   ]);
 
   const after = agentRows();
-  s.reconcileLocal({ panes: new Set([asPaneId("%1")]), isAlive: dead, now: 999 });
+  s.reconcileLocal({
+    server: { kind: "default" },
+    panes: new Set([asPaneId("%1")]),
+    isAlive: dead,
+    now: 999,
+  });
   expect(agentRows()).toEqual(after);
   expect(s.localPanes()[0]?.attention[0]?.requested_at).toBe(10);
 });
@@ -455,7 +533,11 @@ test("a vanished pane loses its agent and its attention; a stopped dead owner ke
   s.claimAgent({ location: location("%2"), owner_pid: 200, meta: meta() });
   s.requestAttention({ kind: "done", location: location("%2"), message: "seen me", source: "pi" });
 
-  const summary = s.reconcileLocal({ panes: new Set([asPaneId("%2")]), isAlive: dead });
+  const summary = s.reconcileLocal({
+    server: { kind: "default" },
+    panes: new Set([asPaneId("%2")]),
+    isAlive: dead,
+  });
 
   expect(summary.removed).toEqual(["%1", "%2"]);
   const panes = s.localPanes();
@@ -468,7 +550,11 @@ test("attention for a pane that never had an agent is reaped when the pane goes"
   const s = store();
   s.requestAttention({ kind: "blocked", location: location("%7"), message: "", source: "codex" });
 
-  const summary = s.reconcileLocal({ panes: new Set<PaneId>(), isAlive: dead });
+  const summary = s.reconcileLocal({
+    server: { kind: "default" },
+    panes: new Set<PaneId>(),
+    isAlive: dead,
+  });
 
   expect(summary.attention_removed).toEqual(["%7"]);
   expect(s.localPanes()).toEqual([]);
@@ -505,7 +591,12 @@ test("buildLocalSnapshot reconciles, drops empty panes and never carries a pid",
 
   const snapshot = s.buildLocalSnapshot(
     { host_id: "H", display_name: "here" },
-    { panes: new Set([asPaneId("%1")]), isAlive: alive([process.pid]), now: 42 },
+    {
+      server: { kind: "default" },
+      panes: new Set([asPaneId("%1")]),
+      isAlive: alive([process.pid]),
+      now: 42,
+    },
   );
 
   expect(snapshot).toMatchObject({
@@ -658,9 +749,9 @@ test("SQLite refuses a second agent row for one pane", () => {
     const insert = () =>
       database
         .prepare(
-          `INSERT INTO agents (agent_id, pane, owner_pid, activity, session, window, cli,
+          `INSERT INTO agents (agent_id, server_kind, server_value, pane, owner_pid, activity, session, window, cli,
                                driver, claimed_at, updated_at)
-           VALUES (?, '%1', 1, 'running', '$0', '@0', 'pi', 'human', 0, 0)`,
+           VALUES (?, 'default', '', '%1', 1, 'running', '$0', '@0', 'pi', 'human', 0, 0)`,
         )
         .run("second");
     expect(insert).toThrow(/UNIQUE/);
@@ -672,19 +763,19 @@ test("SQLite refuses a second agent row for one pane", () => {
 test.each([
   [
     "activity",
-    "INSERT INTO agents (agent_id, pane, owner_pid, activity, session, window, cli, driver, claimed_at, updated_at) VALUES ('a', '%9', 1, 'working', '$0', '@0', 'pi', 'human', 0, 0)",
+    "INSERT INTO agents (agent_id, server_kind, server_value, pane, owner_pid, activity, session, window, cli, driver, claimed_at, updated_at) VALUES ('a', 'default', '', '%9', 1, 'working', '$0', '@0', 'pi', 'human', 0, 0)",
   ],
   [
     "driver",
-    "INSERT INTO agents (agent_id, pane, owner_pid, activity, session, window, cli, driver, claimed_at, updated_at) VALUES ('a', '%9', 1, 'running', '$0', '@0', 'pi', 'robot', 0, 0)",
+    "INSERT INTO agents (agent_id, server_kind, server_value, pane, owner_pid, activity, session, window, cli, driver, claimed_at, updated_at) VALUES ('a', 'default', '', '%9', 1, 'running', '$0', '@0', 'pi', 'robot', 0, 0)",
   ],
   [
     "owner_pid",
-    "INSERT INTO agents (agent_id, pane, owner_pid, activity, session, window, cli, driver, claimed_at, updated_at) VALUES ('a', '%9', 0, 'running', '$0', '@0', 'pi', 'human', 0, 0)",
+    "INSERT INTO agents (agent_id, server_kind, server_value, pane, owner_pid, activity, session, window, cli, driver, claimed_at, updated_at) VALUES ('a', 'default', '', '%9', 0, 'running', '$0', '@0', 'pi', 'human', 0, 0)",
   ],
   [
     "kind",
-    "INSERT INTO attention (pane, kind, message, source, session, window, requested_at) VALUES ('%9', 'working', '', 'x', '$0', '@0', 0)",
+    "INSERT INTO attention (server_kind, server_value, pane, kind, message, source, session, window, requested_at) VALUES ('default', '', '%9', 'working', '', 'x', '$0', '@0', 0)",
   ],
 ])("SQLite refuses an out-of-enum %s", (_field, sql) => {
   const s = store();

@@ -48,6 +48,7 @@ function store(): Store {
 
 function location(pane: string, window = "@1"): Location {
   return {
+    server: { kind: "default" },
     session: asSessionId("$0"),
     window: asWindowId(window),
     pane: asPaneId(pane),
@@ -101,6 +102,7 @@ test("a built snapshot validates as one, and survives serialisation unchanged", 
   });
 
   const built = s.buildLocalSnapshot(IDENTITY, {
+    server: { kind: "default" },
     panes: live("%1", "%2"),
     isAlive: alive([process.pid]),
     now: 42,
@@ -127,6 +129,7 @@ test("the document carries exactly the keys it declares, and no others", () => {
   s.claimAgent({ location: location("%1"), owner_pid: process.pid, meta: META, now: 1 });
 
   const built = s.buildLocalSnapshot(IDENTITY, {
+    server: { kind: "default" },
     panes: live("%1"),
     isAlive: alive([process.pid]),
     now: 2,
@@ -162,6 +165,7 @@ test("panes are emitted sorted by pane id, and order carries no meaning", () => 
   }
 
   const built = s.buildLocalSnapshot(IDENTITY, {
+    server: { kind: "default" },
     panes: live("%30", "%4", "%100"),
     isAlive: alive([]),
     now: 1,
@@ -190,6 +194,7 @@ test("absence from a snapshot is absence: a build reconciles before it publishes
   });
 
   const built = s.buildLocalSnapshot(IDENTITY, {
+    server: { kind: "default" },
     panes: live("%live"),
     isAlive: alive([process.pid]),
     now: 9,
@@ -209,6 +214,7 @@ test("a snapshot never carries owner_pid, so remote liveness is unrepresentable"
 
   const text = JSON.stringify(
     s.buildLocalSnapshot(IDENTITY, {
+      server: { kind: "default" },
       panes: live("%1"),
       isAlive: alive([process.pid]),
       now: 2,
@@ -234,13 +240,14 @@ test("a pane with nothing to say is a pane nobody mentions, locally or on the wi
   // %1 loses its agent and never had attention; %2 keeps a `done` its agent
   // never owned. Releasing deliberately does not clear attention, so this is
   // the state a settled-then-exited agent actually leaves behind.
-  s.releaseAgent({ agent_id: agentId, owner_pid: process.pid });
+  s.releaseAgent({ agent_id: agentId, owner_pid: process.pid, location: location("%1") });
 
   expect(s.localPanes().map((pane) => pane.pane)).toEqual(["%2"]);
   for (const pane of s.localPanes()) {
     expect(pane.agent !== null || pane.attention.length > 0).toBe(true);
   }
   const built = s.buildLocalSnapshot(IDENTITY, {
+    server: { kind: "default" },
     panes: live("%1", "%2"),
     isAlive: alive([process.pid]),
     now: 3,
@@ -250,7 +257,11 @@ test("a pane with nothing to say is a pane nobody mentions, locally or on the wi
 });
 
 test("a snapshot states its own version and speaks snapshot 2", () => {
-  const built = store().buildLocalSnapshot(IDENTITY, { panes: live(), now: 1 });
+  const built = store().buildLocalSnapshot(IDENTITY, {
+    server: { kind: "default" },
+    panes: live(),
+    now: 1,
+  });
 
   expect(built.murmur_snapshot).toBe(2);
   expect(built.murmur_version).toMatch(/^\d+\.\d+\.\d+/);

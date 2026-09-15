@@ -35,7 +35,10 @@ function wire(over: Partial<Snapshot> = {}): string {
 test("this node's own snapshot states its version and speaks the current snapshot", () => {
   const identity = createIdentity("here");
   const store = openStore();
-  const snapshot = store.buildLocalSnapshot(identity, { panes: new Set() });
+  const snapshot = store.buildLocalSnapshot(identity, {
+    server: { kind: "default" },
+    panes: new Set(),
+  });
   store.close();
 
   // A real semver, and the SAME one the SDK advertises. Two readers of

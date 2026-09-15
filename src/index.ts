@@ -56,8 +56,10 @@ export type {
   ClaimResult,
   Driver,
   LiveCheck,
+  LocalPane,
   LocalWorld,
   Location,
+  PaneIdentity,
   PeerFetch,
   PeerRecord,
   ReconcileSummary,
@@ -65,6 +67,7 @@ export type {
   SnapshotAgent,
   SnapshotAttention,
   SnapshotPane,
+  TmuxServer,
 } from "./types.js";
 export { DEFAULT_DRIVER } from "./types.js";
 export { MURMUR_VERSION as VERSION } from "./version.js";

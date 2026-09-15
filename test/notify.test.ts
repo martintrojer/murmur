@@ -35,6 +35,7 @@ afterEach(() => {
 function inPane(panes: string[] = ["%1"]) {
   return fakeMux({
     currentWindow: () => ({
+      server: { kind: "default" },
       session: asSessionId("$0"),
       window: asWindowId("@1"),
       pane: asPaneId("%1"),
@@ -60,6 +61,7 @@ test("a notification cannot downgrade a crashed glyph on a sibling pane", () => 
 
   // A crashed agent in %2, the same window the notifier is reporting from.
   store.recordCrash({
+    server: { kind: "default" },
     session: asSessionId("$0"),
     window: asWindowId("@1"),
     pane: asPaneId("%2"),
@@ -147,6 +149,7 @@ test("the badge shows the kind actually recorded, not a fixed word", () => {
   const badges: [WindowId, RenderState | null][] = [];
   const mux = fakeMux({
     currentWindow: () => ({
+      server: { kind: "default" },
       session: asSessionId("$0"),
       window: asWindowId("@1"),
       pane: asPaneId("%1"),
@@ -334,6 +337,7 @@ test("the window badge is set, so the status bar does not wait for a collect", (
   // its own test above.
   const mux = fakeMux({
     currentWindow: () => ({
+      server: { kind: "default" },
       session: asSessionId("$0"),
       window: asWindowId("@1"),
       pane: asPaneId("%1"),
@@ -381,6 +385,7 @@ test("a notification leaves the pane's live agent untouched and joins onto it", 
   // row, and `status` counts one blocked pane rather than two agents.
   const claim = store.claimAgent({
     location: {
+      server: { kind: "default" },
       session: asSessionId("$0"),
       window: asWindowId("@1"),
       pane: asPaneId("%1"),
@@ -402,6 +407,7 @@ test("a notification leaves the pane's live agent untouched and joins onto it", 
     owner_pid: process.pid,
     activity: "running",
     location: {
+      server: { kind: "default" },
       session: asSessionId("$0"),
       window: asWindowId("@1"),
       pane: asPaneId("%1"),

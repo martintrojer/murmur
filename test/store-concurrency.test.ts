@@ -73,6 +73,7 @@ const CHILD = `
   try {
     const result = store.claimAgent({
       location: {
+        server: { kind: "default" },
         session: "$0", window: "@0", pane: process.argv[1],
         session_name: null, window_name: null,
       },

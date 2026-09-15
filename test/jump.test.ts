@@ -144,7 +144,11 @@ function ok(stdout = ""): ReturnType<Runner> {
  * own panes, and a jump is a read.
  */
 function snapshotOfEverything(): string {
-  return JSON.stringify({ panes: store.localPanes(), peers: store.peers() });
+  return JSON.stringify({
+    server: { kind: "default" },
+    panes: store.localPanes(),
+    peers: store.peers(),
+  });
 }
 
 test("agentLabel prefers a human name over any tmux id", () => {
@@ -632,6 +636,7 @@ test("a local pane that MOVED window is still jumped to, and nothing is written"
   // permanent for a local pane.
   store.claimAgent({
     location: {
+      server: { kind: "default" },
       session: asSessionId("$0"),
       window: asWindowId("@9"),
       pane: asPaneId("%9"),
@@ -682,6 +687,7 @@ test("a local pane that is really gone is pane_gone, and still writes nothing", 
   store.requestAttention({
     kind: "done",
     location: {
+      server: { kind: "default" },
       session: asSessionId("$0"),
       window: asWindowId("@9"),
       pane: asPaneId("%9"),

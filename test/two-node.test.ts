@@ -79,6 +79,7 @@ const IDENTITY_B: NodeIdentity = { host_id: "HOST-B", display_name: "bubba" };
 
 function location(pane: string, window = "@1"): Location {
   return {
+    server: { kind: "default" },
     session: asSessionId("$0"),
     window: asWindowId(window),
     pane: asPaneId(pane),
@@ -148,7 +149,12 @@ function onlyPane(views: PaneView[]): PaneView {
  */
 function exportFrom(
   storeB: Store,
-  world: { panes: Set<PaneId> | null; isAlive?: (pid: number) => boolean; now?: number },
+  world: {
+    server: { kind: "default" };
+    panes: Set<PaneId> | null;
+    isAlive?: (pid: number) => boolean;
+    now?: number;
+  },
 ): Channel {
   return {
     exec: async () => JSON.stringify(storeB.buildLocalSnapshot(IDENTITY_B, world)),
@@ -188,7 +194,12 @@ test("a remote RUNNING agent renders running on the other node, never crashed", 
 
   await collect(
     a,
-    exportFrom(b, { panes: live("%11"), isAlive: () => true, now: 1_000 }),
+    exportFrom(b, {
+      server: { kind: "default" },
+      panes: live("%11"),
+      isAlive: () => true,
+      now: 1_000,
+    }),
     2_000,
     reconciling(),
   );
@@ -219,7 +230,12 @@ test("a node that goes quiet keeps its last-known panes and only loses freshness
   a.addPeer("bubba", "bubba");
   await collect(
     a,
-    exportFrom(b, { panes: live("%11"), isAlive: () => true, now: 1_000 }),
+    exportFrom(b, {
+      server: { kind: "default" },
+      panes: live("%11"),
+      isAlive: () => true,
+      now: 1_000,
+    }),
     1_000,
     reconciling(),
   );
@@ -256,7 +272,12 @@ test("an owner replaced on one node replaces it on the other, leaving one row", 
   a.addPeer("bubba", "bubba");
   await collect(
     a,
-    exportFrom(b, { panes: live("%11"), isAlive: () => true, now: 1_000 }),
+    exportFrom(b, {
+      server: { kind: "default" },
+      panes: live("%11"),
+      isAlive: () => true,
+      now: 1_000,
+    }),
     1_000,
     reconciling(),
   );
@@ -289,7 +310,12 @@ test("an owner replaced on one node replaces it on the other, leaving one row", 
 
   await collect(
     a,
-    exportFrom(b, { panes: live("%11"), isAlive: () => true, now: 3_000 }),
+    exportFrom(b, {
+      server: { kind: "default" },
+      panes: live("%11"),
+      isAlive: () => true,
+      now: 3_000,
+    }),
     4_000,
     reconciling(),
   );
@@ -316,7 +342,12 @@ test("attention raised on one node is visible on the other, and acknowledging it
     now: 1_500,
   });
   a.addPeer("bubba", "bubba");
-  const world = { panes: live("%11", "%12"), isAlive: () => true, now: 2_000 };
+  const world = {
+    server: { kind: "default" as const },
+    panes: live("%11", "%12"),
+    isAlive: () => true,
+    now: 2_000,
+  };
 
   await collect(a, exportFrom(b, world), 2_000, reconciling());
 
@@ -331,13 +362,13 @@ test("attention raised on one node is visible on the other, and acknowledging it
     { kind: "blocked", requested_at: expect.any(Number), message: "needs a decision" },
   ]);
 
-  expect(b.acknowledgePane(asPaneId("%12"))).toBe(1);
+  expect(b.acknowledgePane(location("%12"))).toBe(1);
   // Acknowledge the pane that DOES hold a running agent too. This is the
   // measured incident's shape, across the wire: focus must clear attention and
   // leave the run alone, so a pane with nothing to acknowledge is a no-op rather
   // than a state change. Asserted here because acknowledging %12 alone could not
   // catch it -- %12 has no agent row for a bad acknowledge to damage.
-  expect(b.acknowledgePane(asPaneId("%11"))).toBe(0);
+  expect(b.acknowledgePane(location("%11"))).toBe(0);
   await collect(a, exportFrom(b, { ...world, now: 3_000 }), 3_000, reconciling());
 
   const after = paneViews(a, IDENTITY_A, 3_000);
@@ -357,11 +388,21 @@ test("a crash detected on one node reaches the other as crashed, with the dead a
   a.addPeer("bubba", "bubba");
 
   // The pane is still live; the process in it is not.
-  const summary = b.reconcileLocal({ panes: live("%11"), isAlive: () => false, now: 5_000 });
+  const summary = b.reconcileLocal({
+    server: { kind: "default" },
+    panes: live("%11"),
+    isAlive: () => false,
+    now: 5_000,
+  });
   expect(summary.crashed).toEqual(["%11"]);
   await collect(
     a,
-    exportFrom(b, { panes: live("%11"), isAlive: () => false, now: 5_000 }),
+    exportFrom(b, {
+      server: { kind: "default" },
+      panes: live("%11"),
+      isAlive: () => false,
+      now: 5_000,
+    }),
     5_000,
     reconciling(),
   );
@@ -391,7 +432,7 @@ test("a node whose tmux cannot answer publishes its last-known panes rather than
 
   await collect(
     a,
-    exportFrom(b, { panes: null, isAlive: () => false, now: 2_000 }),
+    exportFrom(b, { server: { kind: "default" }, panes: null, isAlive: () => false, now: 2_000 }),
     2_000,
     reconciling(),
   );
@@ -412,7 +453,12 @@ test("a peer serving a document this version cannot read is broken, not absent",
   a.addPeer("bubba", "bubba");
   await collect(
     a,
-    exportFrom(b, { panes: live("%11"), isAlive: () => true, now: 1_000 }),
+    exportFrom(b, {
+      server: { kind: "default" },
+      panes: live("%11"),
+      isAlive: () => true,
+      now: 1_000,
+    }),
     1_000,
     reconciling(),
   );
@@ -448,7 +494,12 @@ test("two nodes' clocks stay separate: a freshly fetched old fact is fresh and o
 
   await collect(
     a,
-    exportFrom(b, { panes: live("%11"), isAlive: () => true, now: threeHoursAgo }),
+    exportFrom(b, {
+      server: { kind: "default" },
+      panes: live("%11"),
+      isAlive: () => true,
+      now: threeHoursAgo,
+    }),
     100_000_000,
     reconciling(),
   );
@@ -479,7 +530,12 @@ test("each node authors only its own panes, so identically-numbered panes do not
 
   await collect(
     a,
-    exportFrom(b, { panes: live("%1"), isAlive: () => true, now: 1_000 }),
+    exportFrom(b, {
+      server: { kind: "default" },
+      panes: live("%1"),
+      isAlive: () => true,
+      now: 1_000,
+    }),
     1_000,
     // A holds %1 locally too -- that collision is the point of this test.
     reconciling("%1"),

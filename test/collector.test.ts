@@ -371,6 +371,7 @@ test("an empty peer list touches no channel and still reconciles locally", async
   // call and this test stayed green while its own name promised otherwise.
   store.claimAgent({
     location: {
+      server: { kind: "default" },
       session: asSessionId("$0"),
       window: asWindowId("@1"),
       pane: asPaneId("%99"),

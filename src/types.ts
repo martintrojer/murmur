@@ -38,6 +38,13 @@ export type Driver = "human" | "orchestrated";
 
 export const DEFAULT_DRIVER: Driver = "human";
 
+export type TmuxServer =
+  | { kind: "default" }
+  | { kind: "label"; value: string }
+  | { kind: "path"; value: string };
+
+export const DEFAULT_TMUX_SERVER: TmuxServer = { kind: "default" };
+
 /**
  * Where a pane currently lives. Location, never identity.
  *
@@ -46,7 +53,12 @@ export const DEFAULT_DRIVER: Driver = "human";
  * move-pane and break-pane. Only a pane may decide whether an agent exists,
  * which is what the brands in ./ids.js enforce.
  */
-export type Location = {
+export type PaneIdentity = {
+  server: TmuxServer;
+  pane: PaneId;
+};
+
+export type Location = PaneIdentity & {
   session: SessionId;
   window: WindowId;
   pane: PaneId;
@@ -221,6 +233,8 @@ export type Snapshot = {
   panes: SnapshotPane[];
 };
 
+export type LocalPane = SnapshotPane & { server: TmuxServer };
+
 export type SnapshotPane = {
   pane: PaneId;
   session: SessionId;
@@ -296,7 +310,11 @@ export type RuntimeUpdate = Partial<AgentRuntime> & {
   now?: number;
 };
 
-export type AgentRelease = { agent_id: string; owner_pid: number };
+export type AgentRelease = {
+  agent_id: string;
+  owner_pid: number;
+  location: PaneIdentity;
+};
 
 /**
  * The kinds an EXTERNAL writer may request.
@@ -334,6 +352,7 @@ export type AttentionRequest = {
  * clock control.
  */
 export type LocalWorld = {
+  server: TmuxServer;
   panes: Set<PaneId> | null;
   isAlive?: LiveCheck;
   now?: number;

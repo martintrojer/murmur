@@ -1,7 +1,9 @@
 import { execFileSync } from "node:child_process";
+import { realpathSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { DASH_PANE_OPTION, JUMP_CLIENT_OPTION, JUMP_HOOK_INDEX } from "./goto.js";
 import { asPaneId, asSessionId, asWindowId, type PaneId, type WindowId } from "./ids.js";
-import type { Location } from "./types.js";
+import type { Location, TmuxServer } from "./types.js";
 import type { RenderState } from "./view.js";
 
 export type LocalPaneProcess = {
@@ -63,9 +65,31 @@ export interface Mux {
   detachClient(client: string): boolean;
 }
 
-function runTmux(args: string[]): string | null {
+export function tmuxArgs(server: TmuxServer, args: string[]): string[] {
+  if (server.kind === "label") return ["-L", server.value, ...args];
+  if (server.kind === "path") return ["-S", server.value, ...args];
+  return args;
+}
+
+export function conventionalTmuxDirectory(): string {
+  return join(
+    realpathSync(process.env.TMUX_TMPDIR || "/tmp"),
+    `tmux-${process.getuid?.() ?? process.geteuid?.()}`,
+  );
+}
+
+export function deriveTmuxServer(
+  socketPath: string,
+  conventionalDirectory = conventionalTmuxDirectory(),
+): TmuxServer {
+  if (dirname(socketPath) !== conventionalDirectory) return { kind: "path", value: socketPath };
+  const label = basename(socketPath);
+  return label === "default" ? { kind: "default" } : { kind: "label", value: label };
+}
+
+function runTmux(args: string[], server: TmuxServer = { kind: "default" }): string | null {
   try {
-    return execFileSync("tmux", args, {
+    return execFileSync("tmux", tmuxArgs(server, args), {
       encoding: "utf8",
       timeout: 3000,
       stdio: ["ignore", "pipe", "ignore"],
@@ -154,11 +178,13 @@ export const tmux: Mux = {
       "-t",
       pane,
       "-p",
-      "#{session_id}\t#{window_id}\t#{session_name}\t#{window_name}\t#{?automatic-rename,1,0}",
+      "#{session_id}\t#{window_id}\t#{session_name}\t#{window_name}\t#{?automatic-rename,1,0}\t#{socket_path}",
     ]);
-    const [session, window, sessionName, windowName, autoRename] = fields?.split("\t") ?? [];
-    if (!session || !window) return null;
+    const [session, window, sessionName, windowName, autoRename, socketPath] =
+      fields?.split("\t") ?? [];
+    if (!session || !window || !socketPath) return null;
     return {
+      server: deriveTmuxServer(socketPath),
       session: asSessionId(session),
       window: asWindowId(window),
       pane,

@@ -14,6 +14,7 @@ beforeEach(() => {
 
 function location(pane: string, window = "@1"): Location {
   return {
+    server: { kind: "default" },
     session: asSessionId("$1"),
     window: asWindowId(window),
     pane: asPaneId(pane),

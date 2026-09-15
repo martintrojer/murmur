@@ -55,11 +55,18 @@ export function clearPane(raw: string, mux: Mux = tmux): void {
     // The badge is a tmux option, not murmur state, so resolving it needs no
     // murmur knowledge -- and a pane murmur has never seen can still carry an
     // orphan badge nothing else will clear.
-    const window = mux.windowForPane(pane);
+    const current = mux.currentWindow();
+    const window = current?.pane === pane ? current.window : mux.windowForPane(pane);
+    const location =
+      current?.pane === pane
+        ? current
+        : window
+          ? { server: { kind: "default" } as const, pane }
+          : null;
 
     try {
       store = openStore();
-      store.acknowledgePane(pane);
+      if (location) store.acknowledgePane(location);
     } catch {
       // No database, or an unwritable one. Nothing was read, so there is no
       // evidence the request was satisfied -- and clearing on no evidence is the

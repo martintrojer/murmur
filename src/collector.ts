@@ -577,7 +577,7 @@ export async function collect(
   // single-machine node would reconcile never. Idempotent, so
   // `buildLocalSnapshot` calling it too is a cheap repeat, not a second policy.
   try {
-    store.reconcileLocal({ panes: mux.livePanes(), now });
+    store.reconcileLocal({ server: { kind: "default" }, panes: mux.livePanes(), now });
   } catch {
     // Housekeeping must not fail a command, and it must not report either.
   }

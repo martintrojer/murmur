@@ -76,6 +76,7 @@ const CLEARED = [
   "MU_ROLE",
   "TMUX",
   "TMUX_PANE",
+  "TMUX_TMPDIR",
 ] as const;
 
 /**
