@@ -1,6 +1,6 @@
 {
   "name": "@martintrojer/murmur",
-  "version": "0.4.4",
+  "version": "0.5.0",
   "description": "Agent state across every machine you work on, in one view.",
   "publishConfig": {
     "access": "public"
@@ -50,9 +50,10 @@
     "build": "tsup",
     "test": "npm run build && vitest run",
     "test:only": "vitest run",
-    "lint": "biome check --error-on-warnings src test",
-    "lint:fix": "biome check --write src test",
-    "format": "biome format --write src test",
+    "test:private-tmux-e2e": "npm run build && node scripts/private-tmux-e2e.mjs",
+    "lint": "biome check --error-on-warnings src test scripts",
+    "lint:fix": "biome check --write src test scripts",
+    "format": "biome format --write src test scripts",
     "typecheck": "tsc --noEmit",
     "check": "npm run typecheck && npm run lint && npm run test",
     "prepare": "npm run build && node scripts/install-hooks.mjs"

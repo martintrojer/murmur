@@ -183,6 +183,29 @@ test("panes are emitted sorted by pane id, and order carries no meaning", () => 
   );
 });
 
+test("a snapshot reconciles and publishes every known tmux server", () => {
+  const s = store();
+  const privateLocation: Location = {
+    ...location("%2", "@2"),
+    server: { kind: "label", value: "coop" },
+  };
+  s.claimAgent({ location: location("%1"), owner_pid: process.pid, meta: META, now: 1 });
+  s.claimAgent({ location: privateLocation, owner_pid: process.pid, meta: META, now: 1 });
+
+  const built = s.buildLocalSnapshot(IDENTITY, [
+    { server: { kind: "default" }, panes: live(), isAlive: alive([process.pid]), now: 2 },
+    {
+      server: { kind: "label", value: "coop" },
+      panes: live("%2"),
+      isAlive: alive([process.pid]),
+      now: 2,
+    },
+  ]);
+
+  expect(built.panes).toMatchObject([{ server: { kind: "label", value: "coop" }, pane: "%2" }]);
+  expect(s.localPanes()).toHaveLength(1);
+});
+
 test("absence from a snapshot is absence: a build reconciles before it publishes", () => {
   // The whole reason `buildLocalSnapshot` reconciles rather than trusting the
   // caller to: a document built from unreconciled rows publishes agents whose

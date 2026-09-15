@@ -4,7 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "vitest";
 import { asPaneId } from "../src/ids.js";
-import { defaultJumpCommand, renderJumpCommand, tmuxAttachCommand } from "../src/jump-command.js";
+import {
+  defaultJumpCommand,
+  renderJumpCommand,
+  suggestedJumpCommand,
+  tmuxAttachCommand,
+} from "../src/jump-command.js";
 
 test("the default gives the remote tmux client a UTF-8 locale", () => {
   expect(
@@ -58,6 +63,12 @@ test("the quoted attach command executes hostile values as argv, not shell synta
     "-S\n/tmp/a b'$(touch PWNED).sock\nattach\n-t\n%9; touch PWNED\n",
   );
   expect(() => readFileSync(join(dir, "PWNED"))).toThrow();
+});
+
+test("the migration suggestion preserves a custom transport", () => {
+  expect(suggestedJumpCommand("x2ssh -et dev -c 'tmux attach -t {pane}'", "dev")).toBe(
+    "x2ssh -et dev -c {attach}",
+  );
 });
 
 test("{attach} is one quoted argument in an opaque transport template", () => {

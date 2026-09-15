@@ -16,6 +16,10 @@ command that includes `-L` or `-S` for private servers. Generated defaults
 migrate automatically. Custom `{pane}` templates remain valid for the default
 server and refuse private-server jumps with a pasteable migration command.
 
+coop 0.1.2 supplies crew metadata to its job shell by default, so a real pi
+launched through coop appears as `coop-<job-id>` on server label `coop` and
+survives export liveness. Use `coop run --human` for an ad-hoc agent.
+
 ## 0.4.4
 
 Wire-compatible with 0.4.x: the snapshot format is unchanged at version 2.

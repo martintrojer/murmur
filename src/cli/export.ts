@@ -18,10 +18,18 @@ export function registerExport(program: Command): void {
         // `buildLocalSnapshot` reconciles first, which is what makes the
         // document authoritative: a snapshot built from unreconciled rows would
         // publish agents whose panes are gone, and a reader has no way to tell.
-        const snapshot = store.buildLocalSnapshot(identity, {
-          server: { kind: "default" },
-          panes: tmux.livePanes(),
-        });
+        const servers = new Map(
+          store
+            .localPanes()
+            .map(({ server }) => [
+              `${server.kind}\0${"value" in server ? server.value : ""}`,
+              server,
+            ]),
+        );
+        const snapshot = store.buildLocalSnapshot(
+          identity,
+          [...servers.values()].map((server) => ({ server, panes: tmux.livePanes(server) })),
+        );
         process.stdout.write(`${JSON.stringify(snapshot)}\n`);
       } finally {
         store.close();

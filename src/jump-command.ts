@@ -28,6 +28,12 @@ export function currentJumpCommand(template: string, target: string): string {
     : template;
 }
 
+/** Preserve a custom transport while replacing its legacy tmux command. */
+export function suggestedJumpCommand(template: string, target: string): string {
+  const migrated = template.replace(/(["'])tmux attach -t \{pane\}\1/, ATTACH_PLACEHOLDER);
+  return migrated === template ? defaultJumpCommand(target) : migrated;
+}
+
 export function tmuxAttachCommand({ server, pane }: PaneIdentity): string {
   const selector =
     server.kind === "default"

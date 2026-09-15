@@ -199,7 +199,7 @@ export interface Store {
   /** The one local read. Joins agents and attention by server and pane. */
   localPanes(): LocalPane[];
   reconcileLocal(world: LocalWorld): ReconcileSummary;
-  buildLocalSnapshot(identity: NodeIdentity, world: LocalWorld): Snapshot;
+  buildLocalSnapshot(identity: NodeIdentity, worlds: LocalWorld | readonly LocalWorld[]): Snapshot;
 
   // --- peer cache ---------------------------------------------------------
   peers(): PeerRecord[];
@@ -1040,29 +1040,24 @@ export function openStore(): Store {
       return readLocalPanes();
     },
 
-    buildLocalSnapshot(identity, world) {
+    buildLocalSnapshot(identity, worlds) {
       // Reconcile first, which is what makes "a snapshot is authoritative"
       // true: absence from a successful snapshot means absence, so it must
       // never be produced from unreconciled rows. Two transactions rather than
       // one — a write transaction held open across the read would serialise
       // every focus hook on the machine behind an export.
-      reconcileLocal(world);
+      const allWorlds = Array.isArray(worlds) ? worlds : [worlds];
+      for (const world of allWorlds) reconcileLocal(world);
       return {
         murmur_snapshot: SNAPSHOT_VERSION,
         host_id: identity.host_id,
         display_name: identity.display_name,
         murmur_version: MURMUR_VERSION,
-        generated_at: world.now ?? Date.now(),
+        generated_at: allWorlds[0]?.now ?? Date.now(),
         // Rule 3: a pane with no agent and no attention must not be published.
-        // A no-op against today's `readLocalPanes`, which builds a pane entry
-        // only from a row and so cannot produce an empty one -- kept because the
-        // rule belongs to the DOCUMENT, and the validator rejects such an entry
-        // outright. Without it, one narrowing of the local read would make this
-        // node reachable-but-broken on every peer that collects it, and the
-        // symptom would show up on the other machines.
-        panes: readLocalPanes().filter(
-          (pane) => serverKey(pane.server, pane.pane) === serverKey(world.server, pane.pane),
-        ),
+        // `readLocalPanes` builds a pane entry only from a row, so it cannot
+        // produce an empty one.
+        panes: readLocalPanes(),
       };
     },
 

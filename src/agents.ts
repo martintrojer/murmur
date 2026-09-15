@@ -3,9 +3,9 @@ import { SSH_OPTIONS } from "./channel.js";
 import { asPaneId } from "./ids.js";
 import {
   currentJumpCommand,
-  defaultJumpCommand,
   shellQuote as quoteCommand,
   renderJumpCommand,
+  suggestedJumpCommand,
   supportsServer,
 } from "./jump-command.js";
 import { type Mux, tmux } from "./mux.js";
@@ -306,7 +306,7 @@ export function jumpToAgent(
       reason: "unsupported_server",
       message:
         `murmur: ${peer.name}'s jump command uses {pane}, which cannot identify the tmux server holding ${agentLabel(agent)} (${agent.pane})\n\n` +
-        `update it:\n  murmur peer set ${/^[\w.-]+$/.test(peer.name) ? peer.name : quoteCommand(peer.name)} --jump-command ${quoteCommand(defaultJumpCommand(target))}`,
+        `update it:\n  murmur peer set ${/^[\w.-]+$/.test(peer.name) ? peer.name : quoteCommand(peer.name)} --jump-command ${quoteCommand(suggestedJumpCommand(peer.jump_command, target))}`,
     };
   }
 

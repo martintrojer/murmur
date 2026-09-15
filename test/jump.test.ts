@@ -428,7 +428,7 @@ test("private-server preflight and attach use the snapshot's server selector", (
 });
 
 test("a custom {pane} template refuses a private server before opening a connection", () => {
-  peer("dev", "remote-host", [], 'x2ssh -et dev -c "tmux attach -t {pane}"');
+  peer("dev", "remote-host", [], "x2ssh -et dev -c 'tmux attach -t {pane}'");
   const calls: string[] = [];
 
   const result = jumpToAgent(
@@ -450,7 +450,7 @@ test("a custom {pane} template refuses a private server before opening a connect
     message:
       "murmur: dev's jump command uses {pane}, which cannot identify the tmux server holding coop-af31c5 (%9)\n\n" +
       "update it:\n" +
-      "  murmur peer set dev --jump-command 'ssh -t '\\''dev'\\'' env LC_CTYPE=C.UTF-8 {attach}'",
+      "  murmur peer set dev --jump-command 'x2ssh -et dev -c {attach}'",
   });
 });
 
