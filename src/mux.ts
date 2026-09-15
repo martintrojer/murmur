@@ -14,22 +14,22 @@ export type LocalPaneProcess = {
 
 export interface Mux {
   currentWindow(): Location | null;
-  livePanes(): Set<PaneId> | null;
+  livePanes(server?: TmuxServer): Set<PaneId> | null;
   localPaneProcesses(): LocalPaneProcess[];
   // Sets `@agent_state` on a WINDOW though the attention belongs to a pane. The
   // asymmetry is tmux's: the status bar and the `tms` picker read a window
   // option and there is no per-pane equivalent. The consequence is that a pane
   // moving between windows must clear the badge it left behind, since nothing
   // else knows it moved.
-  setWindowBadge(window: WindowId, state: RenderState | null): void;
+  setWindowBadge(window: WindowId, state: RenderState | null, server?: TmuxServer): void;
   // Takes the PANE, which is the address, so one call resolves session, window
   // and pane together. Reports whether the attach happened: runTmux swallows
   // failures into null, and a silently failed jump looked exactly like "enter
   // did nothing" -- the symptom the remote probe exists to prevent, reproduced
   // locally.
   attach(pane: PaneId): boolean;
-  windowForPane(pane: PaneId): WindowId | null;
-  panesInWindow(window: WindowId): PaneId[];
+  windowForPane(pane: PaneId, server?: TmuxServer): WindowId | null;
+  panesInWindow(window: WindowId, server?: TmuxServer): PaneId[];
   capture(pane: PaneId, lines?: number): string | null;
   // --- remote-jump session seam -------------------------------------------
   // A remote attach lives in its own local session rather than a window, so it
@@ -200,8 +200,8 @@ export const tmux: Mux = {
   //
   // null means tmux could not answer, an empty set means there are none.
   // Conflating them would delete every agent the moment tmux was unreachable.
-  livePanes() {
-    const out = runTmux(["list-panes", "-a", "-F", "#{pane_id}"]);
+  livePanes(server = { kind: "default" }) {
+    const out = runTmux(["list-panes", "-a", "-F", "#{pane_id}"], server);
     if (out === null) return null;
     return new Set(out.split("\n").filter(Boolean).map(asPaneId));
   },
@@ -263,16 +263,19 @@ export const tmux: Mux = {
     });
   },
 
-  setWindowBadge(window, state) {
+  setWindowBadge(window, state, server = { kind: "default" }) {
     if (state === null) {
-      runTmux(["set-window-option", "-qu", "-t", window, "@agent_state"]);
-      runTmux(["set-window-option", "-qu", "-t", window, "@pane_agent"]);
+      runTmux(["set-window-option", "-qu", "-t", window, "@agent_state"], server);
+      runTmux(["set-window-option", "-qu", "-t", window, "@pane_agent"], server);
     } else {
-      runTmux(["set-window-option", "-q", "-t", window, "@agent_state", tmuxBadgeState(state)]);
+      runTmux(
+        ["set-window-option", "-q", "-t", window, "@agent_state", tmuxBadgeState(state)],
+        server,
+      );
       // The tmux status bar and picker read this as "an agent is in this window".
-      runTmux(["set-window-option", "-q", "-t", window, "@pane_agent", "1"]);
+      runTmux(["set-window-option", "-q", "-t", window, "@pane_agent", "1"], server);
     }
-    runTmux(["refresh-client", "-S"]);
+    runTmux(["refresh-client", "-S"], server);
   },
 
   attach(pane) {
@@ -303,8 +306,8 @@ export const tmux: Mux = {
   // Sibling panes, for deciding whether an unowned pane may clear the window's
   // badge: a window holding an agent and a shell must keep it when you focus
   // the shell.
-  panesInWindow(window) {
-    const out = runTmux(["list-panes", "-t", window, "-F", "#{pane_id}"]);
+  panesInWindow(window, server = { kind: "default" }) {
+    const out = runTmux(["list-panes", "-t", window, "-F", "#{pane_id}"], server);
     return out?.split("\n").filter(Boolean).map(asPaneId) ?? [];
   },
 
@@ -401,8 +404,8 @@ export const tmux: Mux = {
 
   // The window a pane belongs to, for a pane murmur holds no row for: clearing a
   // badge is a tmux operation and does not require owning the pane.
-  windowForPane(pane) {
-    const out = runTmux(["display-message", "-t", pane, "-p", "#{window_id}"]);
+  windowForPane(pane, server = { kind: "default" }) {
+    const out = runTmux(["display-message", "-t", pane, "-p", "#{window_id}"], server);
     return out ? asWindowId(out) : null;
   },
 

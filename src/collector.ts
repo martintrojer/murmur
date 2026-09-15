@@ -2,7 +2,7 @@ import { type Channel, hasWarmSocket } from "./channel.js";
 import { type Mux, tmux } from "./mux.js";
 import { parseSnapshot, SnapshotInvalidError } from "./snapshot.js";
 import type { Store } from "./store.js";
-import type { PeerRecord } from "./types.js";
+import type { PeerRecord, TmuxServer } from "./types.js";
 import { STALENESS_MS } from "./view.js";
 
 export { STALENESS_MS };
@@ -576,10 +576,17 @@ export async function collect(
   // rather than on `export` -- that only runs when a peer asks over ssh, so a
   // single-machine node would reconcile never. Idempotent, so
   // `buildLocalSnapshot` calling it too is a cheap repeat, not a second policy.
-  try {
-    store.reconcileLocal({ server: { kind: "default" }, panes: mux.livePanes(), now });
-  } catch {
-    // Housekeeping must not fail a command, and it must not report either.
+  const servers = new Map<string, TmuxServer>();
+  for (const { server } of store.localPanes()) {
+    const key = `${server.kind}\0${"value" in server ? server.value : ""}`;
+    servers.set(key, server);
+  }
+  for (const server of servers.values()) {
+    try {
+      store.reconcileLocal({ server, panes: mux.livePanes(server), now });
+    } catch {
+      // Housekeeping must not fail a command, and it must not report either.
+    }
   }
   return results;
 }

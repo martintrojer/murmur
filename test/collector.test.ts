@@ -398,6 +398,49 @@ test("an empty peer list touches no channel and still reconciles locally", async
   expect(store.localPanes()).toEqual([]);
 });
 
+test("collect reconciles each tmux server independently with one query per server", async () => {
+  const base = {
+    session: asSessionId("$0"),
+    window: asWindowId("@1"),
+    pane: asPaneId("%34"),
+    session_name: null,
+    window_name: null,
+  };
+  const meta = {
+    agent_name: null,
+    pi_session: null,
+    workstream: null,
+    role: null,
+    cli: "pi",
+    driver: "human" as const,
+  };
+  store.claimAgent({
+    location: { ...base, server: { kind: "default" } },
+    owner_pid: process.pid,
+    meta,
+  });
+  store.claimAgent({
+    location: { ...base, server: { kind: "label", value: "coop" } },
+    owner_pid: process.pid,
+    meta,
+  });
+
+  const queried: string[] = [];
+  await collect(store, { exec: async () => "" }, Date.now(), {
+    mux: fakeMux({
+      livePanes: (server = { kind: "default" }) => {
+        queried.push(server.kind === "default" ? "default" : `${server.kind}:${server.value}`);
+        return server.kind === "default" ? new Set() : null;
+      },
+    }),
+  });
+
+  expect(queried).toEqual(["default", "label:coop"]);
+  expect(store.localPanes()).toMatchObject([
+    { server: { kind: "label", value: "coop" }, pane: "%34" },
+  ]);
+});
+
 test("collect never writes to stderr, whatever the peer does", async () => {
   // The contract that makes the polling paths usable. `collect` is called by
   // `murmur status` on every tmux status-bar tick and by `pick` inside a

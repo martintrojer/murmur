@@ -91,8 +91,12 @@ function safeSessionName(pi: ExtensionAPI): string | null {
 }
 
 export default function murmurPi(pi: ExtensionAPI): void {
-  const startLocation = tmux.currentWindow();
-  if (!startLocation) return;
+  const observedStartLocation = tmux.currentWindow();
+  if (!observedStartLocation) return;
+  const startLocation: Location = {
+    ...observedStartLocation,
+    server: observedStartLocation.server ?? { kind: "default" },
+  };
 
   /**
    * Where this agent is NOW, not where it started.
@@ -106,19 +110,28 @@ export default function murmurPi(pi: ExtensionAPI): void {
    * re-read. Falls back to the startup location when tmux cannot answer, so a
    * transient failure does not rewrite an agent's address to nothing.
    */
-  let lastWindow = startLocation.window;
+  let lastLocation = startLocation;
   const here = (): Location => {
-    const location = tmux.currentWindow() ?? startLocation;
+    const observed = tmux.currentWindow();
+    const location: Location = observed
+      ? { ...observed, server: observed.server ?? startLocation.server }
+      : startLocation;
     // A move leaves a badge on the old window, which nothing else will ever
     // clear: the badge belongs to the window, and this is the only process that
     // knows the agent left.
-    if (location.window !== lastWindow) {
+    if (
+      location.window !== lastLocation.window ||
+      location.server.kind !== lastLocation.server.kind ||
+      ("value" in location.server &&
+        "value" in lastLocation.server &&
+        location.server.value !== lastLocation.server.value)
+    ) {
       try {
-        tmux.setWindowBadge(lastWindow, null);
+        tmux.setWindowBadge(lastLocation.window, null, lastLocation.server);
       } catch {
         // Best effort; the new window's badge matters more than the old one's.
       }
-      lastWindow = location.window;
+      lastLocation = location;
     }
     return location;
   };
@@ -293,7 +306,7 @@ export default function murmurPi(pi: ExtensionAPI): void {
   /** Paint only if we own the pane. A nested agent is deliberately invisible. */
   const badge = (location: Location, state: "running" | null): void => {
     if (refused) return;
-    tmux.setWindowBadge(location.window, state);
+    tmux.setWindowBadge(location.window, state, location.server);
   };
 
   pi.on("agent_start", (_event, ctx) => {
@@ -373,7 +386,7 @@ export default function murmurPi(pi: ExtensionAPI): void {
           message: "",
           source: "pi",
         });
-        tmux.setWindowBadge(location.window, settled);
+        tmux.setWindowBadge(location.window, settled, location.server);
       } catch {
         dropStore();
       }
@@ -411,7 +424,7 @@ export default function murmurPi(pi: ExtensionAPI): void {
     void enqueue(async () => {
       if (state.kind === "absent") state = { kind: "untried" };
       const location = here();
-      lastWindow = location.window;
+      lastLocation = location;
       // Re-claim NOW, not on the next agent event. `session_shutdown` released
       // the row, so until this runs the pane has no owner and `claimAgent` would
       // refuse nobody. Waiting for an agent event -- minutes away, or never,

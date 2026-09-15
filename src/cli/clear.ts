@@ -2,6 +2,7 @@ import type { Command } from "commander";
 import { asPaneId, type WindowId } from "../ids.js";
 import { type Mux, tmux } from "../mux.js";
 import { openStore, type Store } from "../store.js";
+import type { TmuxServer } from "../types.js";
 import { RENDER_PRIORITY, type RenderState, renderState } from "../view.js";
 
 /**
@@ -22,11 +23,22 @@ import { RENDER_PRIORITY, type RenderState, renderState } from "../view.js";
  * that module is pure and knows nothing of `Mux` or `Store`, and giving it a
  * projection that needs both would invert the layering.
  */
-export function windowBadge(window: WindowId, mux: Mux, store: Store): RenderState | null {
-  const panes = new Set(mux.panesInWindow(window));
+export function windowBadge(
+  window: WindowId,
+  mux: Mux,
+  store: Store,
+  server: TmuxServer = { kind: "default" },
+): RenderState | null {
+  const panes = new Set(mux.panesInWindow(window, server));
   const states = store
     .localPanes()
-    .filter((pane) => panes.has(pane.pane))
+    .filter(
+      (pane) =>
+        pane.server.kind === server.kind &&
+        (pane.server.kind === "default" ||
+          ("value" in server && pane.server.value === server.value)) &&
+        panes.has(pane.pane),
+    )
     .map((pane) =>
       renderState({
         activity: pane.agent?.activity ?? null,
@@ -56,13 +68,9 @@ export function clearPane(raw: string, mux: Mux = tmux): void {
     // murmur knowledge -- and a pane murmur has never seen can still carry an
     // orphan badge nothing else will clear.
     const current = mux.currentWindow();
-    const window = current?.pane === pane ? current.window : mux.windowForPane(pane);
-    const location =
-      current?.pane === pane
-        ? current
-        : window
-          ? { server: { kind: "default" } as const, pane }
-          : null;
+    const server = current?.server ?? ({ kind: "default" } as const);
+    const window = current?.pane === pane ? current.window : mux.windowForPane(pane, server);
+    const location = current?.pane === pane ? current : window ? { server, pane } : null;
 
     try {
       store = openStore();
@@ -90,7 +98,7 @@ export function clearPane(raw: string, mux: Mux = tmux): void {
     // after the delete: blindly clearing the option made a live running agent
     // display as idle though its agent row was untouched.
     try {
-      mux.setWindowBadge(window, windowBadge(window, mux, store));
+      mux.setWindowBadge(window, windowBadge(window, mux, store, server), server);
     } catch {
       // Unreadable projection: leave the badge. Stale is recoverable, erasing a
       // real signal is not.

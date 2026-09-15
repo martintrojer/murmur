@@ -83,6 +83,22 @@ test("retracting a window badge clears both agent options", () => {
   ]);
 });
 
+test("badge reads and writes select the location's private server", () => {
+  tmuxCalls.length = 0;
+  tmuxReplies.length = 0;
+  tmuxReplies.push("%34");
+
+  expect(tmux.panesInWindow(asWindowId("@7"), { kind: "label", value: "coop" })).toEqual(["%34"]);
+  tmux.setWindowBadge(asWindowId("@7"), "done", { kind: "label", value: "coop" });
+
+  expect(tmuxCalls).toEqual([
+    ["-L", "coop", "list-panes", "-t", "@7", "-F", "#{pane_id}"],
+    ["-L", "coop", "set-window-option", "-q", "-t", "@7", "@agent_state", "done"],
+    ["-L", "coop", "set-window-option", "-q", "-t", "@7", "@pane_agent", "1"],
+    ["-L", "coop", "refresh-client", "-S"],
+  ]);
+});
+
 // The picker's `agent` column showed `Python`, `node` and `zsh` for three real
 // pi agents. All three are tmux's `automatic-rename` reporting the foreground
 // process, and `agentLabel` prefers a window name over a session name -- so the

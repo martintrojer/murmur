@@ -291,7 +291,11 @@ export function runNotify(
   // agent row was untouched" -- so writing borrows its recomputation rather
   // than growing a second rule. A null answer cannot happen here (the row this
   // call just wrote is in that window), but it is honoured rather than asserted.
-  mux.setWindowBadge(location.window, windowBadge(location.window, mux, store));
+  mux.setWindowBadge(
+    location.window,
+    windowBadge(location.window, mux, store, location.server),
+    location.server,
+  );
   return true;
 }
 
@@ -322,7 +326,7 @@ function resolveLocation(pane: string | undefined, mux: Mux): Location | null {
   if (!pane) return here;
   const target = asPaneId(pane);
   if (here && here.pane === target) return here;
-  if (here && mux.panesInWindow(here.window).includes(target)) {
+  if (here && mux.panesInWindow(here.window, here.server).includes(target)) {
     return { ...here, pane: target };
   }
   return null;

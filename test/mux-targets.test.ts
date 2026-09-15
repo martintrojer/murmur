@@ -1,9 +1,13 @@
 import { execFileSync } from "node:child_process";
-import { rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterAll, expect, test } from "vitest";
 import { remoteSessionName } from "../src/agents.js";
 import { DASH_PANE_OPTION, JUMP_CLIENT_OPTION } from "../src/goto.js";
+import { asPaneId, asSessionId, asWindowId } from "../src/ids.js";
 import { exactPaneTarget, exactSession, tmux } from "../src/mux.js";
+import { openStore } from "../src/store.js";
 
 // A private tmux server, so nothing here can touch the developer's session.
 // Every call carries -L; a bare `tmux` would hit whatever server is running.
@@ -61,6 +65,48 @@ afterAll(() => {
 // These two spellings are the whole reason this file talks to a real tmux.
 // Every other test fakes the Mux, so a wrong target string passes them all --
 // and both of these were wrong at first, in ways only tmux itself reports.
+test("a claim on a real labeled server survives export liveness", () => {
+  rig("new-session", "-d", "-s", "private-live", "sleep 300");
+  const pane = asPaneId(rig("list-panes", "-t", "private-live", "-F", "#{pane_id}"));
+  const server = { kind: "label", value: SOCKET } as const;
+  const previous = process.env.MURMUR_STATE_DIR;
+  process.env.MURMUR_STATE_DIR = mkdtempSync(join(tmpdir(), "murmur-private-tmux-"));
+  const store = openStore();
+  try {
+    store.claimAgent({
+      location: {
+        server,
+        session: asSessionId("$0"),
+        window: asWindowId("@0"),
+        pane,
+        session_name: "private-live",
+        window_name: null,
+      },
+      owner_pid: process.pid,
+      meta: {
+        agent_name: "private",
+        pi_session: null,
+        workstream: null,
+        role: null,
+        cli: "pi",
+        driver: "human",
+      },
+    });
+
+    const snapshot = store.buildLocalSnapshot(
+      { host_id: "HOST", display_name: "host" },
+      { server, panes: tmux.livePanes(server) },
+    );
+    expect(snapshot.panes.map((entry) => entry.pane)).toEqual([pane]);
+  } finally {
+    store.close();
+    rmSync(process.env.MURMUR_STATE_DIR, { recursive: true, force: true });
+    if (previous === undefined) delete process.env.MURMUR_STATE_DIR;
+    else process.env.MURMUR_STATE_DIR = previous;
+    rig("kill-session", "-t", exactSession("private-live"));
+  }
+});
+
 test("the option target needs a trailing colon and the client target must not have one", () => {
   rig("new-session", "-d", "-s", "keep", "sleep 300");
 
