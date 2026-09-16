@@ -182,6 +182,23 @@ export function dashNavigation(
   return { type, offset: direction * (key === "pageUp" || key === "pageDown" ? page : 1) };
 }
 
+/**
+ * Focus plus the region input mode was opened from.
+ *
+ * `origin` is transient by design: it exists only while input mode is open, so
+ * there is nothing to persist and nothing to migrate. Input always renders in
+ * the preview, so entering it has to move focus there; remembering where focus
+ * came from is the only way Escape can put it back.
+ */
+export type DashInputFocus = { focus: DashFocus; origin: DashFocus | null };
+export type DashInputFocusEvent = "enter" | "send" | "leave";
+
+export function dashInputFocus(state: DashInputFocus, event: DashInputFocusEvent): DashInputFocus {
+  if (event === "enter") return { focus: "preview", origin: state.focus };
+  if (event === "send") return state;
+  return { focus: state.origin ?? state.focus, origin: null };
+}
+
 export type FooterHint = {
   chord: string;
   label: string;

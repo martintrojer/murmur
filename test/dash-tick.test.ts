@@ -8,6 +8,7 @@ import {
   compactSelectionMarker,
   dashFooterHints,
   dashHelpSections,
+  dashInputFocus,
   dashNavigation,
   dashVisibleCards,
   fetchedText,
@@ -411,6 +412,30 @@ test("navigation keys map to the active region", () => {
   expect(dashNavigation("preview", "pageDown", 4, 2)).toEqual({ type: "preview", offset: 2 });
   expect(dashNavigation("preview", "home", 4, 2)).toEqual({ type: "preview-edge", edge: "top" });
   expect(dashNavigation("cards", "end", 4, 2)).toEqual({ type: "cards-edge", edge: "bottom" });
+});
+
+test("leaving input mode restores the focus it was opened from", () => {
+  const fromCards = dashInputFocus({ focus: "cards", origin: null }, "enter");
+  expect(fromCards).toEqual({ focus: "preview", origin: "cards" });
+  expect(dashInputFocus(fromCards, "leave")).toEqual({ focus: "cards", origin: null });
+
+  const fromPreview = dashInputFocus({ focus: "preview", origin: null }, "enter");
+  expect(fromPreview).toEqual({ focus: "preview", origin: "preview" });
+  expect(dashInputFocus(fromPreview, "leave")).toEqual({ focus: "preview", origin: null });
+});
+
+test("sending keeps input mode and its remembered origin", () => {
+  const open = dashInputFocus({ focus: "cards", origin: null }, "enter");
+  const sent = dashInputFocus(open, "send");
+  expect(sent).toEqual({ focus: "preview", origin: "cards" });
+  expect(dashInputFocus(sent, "leave")).toEqual({ focus: "cards", origin: null });
+});
+
+test("leaving without a remembered origin keeps the current focus", () => {
+  expect(dashInputFocus({ focus: "preview", origin: null }, "leave")).toEqual({
+    focus: "preview",
+    origin: null,
+  });
 });
 
 /**

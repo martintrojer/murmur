@@ -42,9 +42,11 @@ import {
   compactSelectionMarker,
   type DashFocus,
   type DashFooterMode,
+  type DashInputFocus,
   type DashViewState,
   dashFooterHints,
   dashHelpSections,
+  dashInputFocus,
   dashNavigation,
   dashVisibleCards,
   fetchedText,
@@ -360,7 +362,9 @@ export function App({ dashStore, initial }: DashProps) {
   );
   const [glance, setGlance] = useState("");
   const [glanceScroll, setGlanceScroll] = useState(0);
-  const [focus, setFocus] = useState<DashFocus>("cards");
+  const [focusState, setFocusState] = useState<DashInputFocus>({ focus: "cards", origin: null });
+  const focus = focusState.focus;
+  const setFocus = (next: DashFocus) => setFocusState((state) => ({ ...state, focus: next }));
   const [inputTarget, setInputTarget] = useState<PaneView | null>(null);
   const [composer, setComposer] = useState<Composer>(emptyComposer);
   const [inputError, setInputError] = useState("");
@@ -588,7 +592,7 @@ export function App({ dashStore, initial }: DashProps) {
         if (event.kind === "press" && event.button === "left") {
           for (const [key, node] of cardNodesRef.current) {
             if (!pointInRect(event.x, event.y, measureElement(node))) continue;
-            setFocus("cards");
+            setFocusState((state) => ({ ...state, focus: "cards" }));
             const classified = classifyClick(clickMemoryRef.current, key, Date.now());
             clickMemoryRef.current = classified.next;
             if (classified.double) {
@@ -601,7 +605,7 @@ export function App({ dashStore, initial }: DashProps) {
           }
           const glanceBox = glanceNodeRef.current;
           if (glanceBox && pointInRect(event.x, event.y, measureElement(glanceBox))) {
-            setFocus("preview");
+            setFocusState((state) => ({ ...state, focus: "preview" }));
             return;
           }
         }
@@ -642,6 +646,7 @@ export function App({ dashStore, initial }: DashProps) {
     if (inputTarget) {
       if (key.escape) {
         inputGenerationRef.current += 1;
+        setFocusState((state) => dashInputFocus(state, "leave"));
         setInputTarget(null);
         setComposer(emptyComposer());
         setInputError("");
@@ -725,7 +730,7 @@ export function App({ dashStore, initial }: DashProps) {
     } else if (input === "q" || (key.ctrl && input === "c")) {
       exit();
     } else if (key.tab) {
-      setFocus((current) => (current === "cards" ? "preview" : "cards"));
+      setFocus(focus === "cards" ? "preview" : "cards");
     } else if (
       input === "j" ||
       key.downArrow ||
@@ -766,7 +771,7 @@ export function App({ dashStore, initial }: DashProps) {
       void activatePane(selected);
     } else if (input === "i" && selected) {
       inputGenerationRef.current += 1;
-      setFocus("preview");
+      setFocusState((state) => dashInputFocus(state, "enter"));
       setInputTarget(selected);
       setComposer(emptyComposer());
       setInputError("");
