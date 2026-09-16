@@ -3,16 +3,34 @@
 Notable changes per release. Written for someone deciding whether to upgrade,
 so it says what changed for a user rather than listing every commit.
 
-## Unreleased
+## 0.5.1
+
+Wire-compatible with 0.5.0: the snapshot format remains version 3.
 
 **The pane preview keeps its colours.** `murmur dash` and the `pick` preview
 capture with `capture-pane -e`, locally and over ssh, so a previewed pane looks
 the way it does on its own screen -- red failures, green diffs, inverse
 selections, and the rest of the cell styling. Only SGR survives: cursor
-movement, erases, window titles, clipboard writes, and image payloads are
-stripped, and each line is reset at its boundary so a half-drawn progress bar
-cannot bleed into the dashboard's own chrome. Card summaries and the `/` filter
-stay plain text, so search and column widths are unaffected.
+movement, erases, window titles, clipboard writes, private keyboard modes, and
+image payloads are stripped, and each line is reset at its boundary so a
+half-drawn progress bar cannot bleed into the dashboard's own chrome. Local and
+remote previews now address the pane's recorded tmux server as well. Card
+summaries and the `/` filter stay plain text, so search and column widths are
+unaffected.
+
+**Dashboard input returns to where it started.** Opening the prompt from the
+card rail still moves input to the preview, but Escape now restores card focus.
+Opening from the preview returns there instead.
+
+**Compact rows align their fields and survive narrow terminals.** Host, stream,
+flags, age, and summary columns stay stable while scrolling; optional columns
+drop before the agent name is trimmed. Also fixed a startup crash caused by
+deriving compact rows before the selected glance line was initialized. A
+first-frame render test now exercises the component with a real pane.
+
+**Jump commands can be rendered without connecting.** `murmur jump-command`
+resolves cached hosts and agents, including hidden crew, and prints the exact
+private-server-aware attach command for scripts and diagnostics.
 
 ## 0.5.0
 
