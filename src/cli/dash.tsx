@@ -34,8 +34,11 @@ import { DASH_CHROME, DASH_CHROME_COLOR, DASH_COLOR, DASH_GLYPH } from "../dash-
 import { type DashPrefs, type DashSort, loadDashPrefs, saveDashPrefs } from "../dash-prefs.js";
 import { type DashStore, openDashStore, refreshDashStore } from "../dash-store.js";
 import {
+  type CompactRowFields,
   cardWindow,
   clipGlanceLine,
+  compactRow,
+  compactRowLayout,
   compactSelectionMarker,
   type DashFocus,
   type DashFooterMode,
@@ -279,56 +282,53 @@ function Card({
  * selection read as a bar -- a `Text` only as wide as its content would leave
  * the highlight ragged.
  */
+function compactFields(
+  pane: PaneView,
+  glanceLine: string | undefined,
+  now: number,
+): CompactRowFields {
+  const state = renderState(pane);
+  const stream = pane.workstream ?? pane.session_name;
+  return {
+    state: DASH_GLYPH[state],
+    agent: agentLabel(pane),
+    host: pane.local ? DASH_CHROME.here : `${DASH_CHROME.remote} ${terminalText(pane.host)}`,
+    stream: stream ? terminalText(stream) : "",
+    flags: [
+      pane.driver === "orchestrated" ? DASH_CHROME.crew : "",
+      pane.freshness === "stale" ? DASH_CHROME.stale : "",
+    ]
+      .filter(Boolean)
+      .join(" "),
+    age: age(pane.updated_at === null ? null : now - pane.updated_at),
+    summary: terminalText(oneLiner(pane, glanceLine)),
+  };
+}
+
 function CompactRow({
   pane,
+  fields,
+  layout,
   selected,
   cardsFocused,
-  width,
-  glanceLine,
-  now,
   elementRef,
 }: {
   pane: PaneView;
+  fields: CompactRowFields;
+  layout: ReturnType<typeof compactRowLayout>;
   selected: boolean;
   cardsFocused: boolean;
-  width: number;
-  glanceLine?: string;
-  now: number;
   elementRef?: (node: DOMElement | null) => void;
 }) {
   const state = renderState(pane);
   const stale = pane.freshness === "stale";
-  const stream = pane.workstream ?? pane.session_name;
-  const flags = [
-    pane.driver === "orchestrated" ? DASH_CHROME.crew : "",
-    stale ? DASH_CHROME.stale : "",
-  ]
-    .filter(Boolean)
-    .join(" ");
-  const elapsed = age(pane.updated_at === null ? null : now - pane.updated_at);
-  const head = [
-    DASH_GLYPH[state],
-    agentLabel(pane),
-    pane.local ? DASH_CHROME.here : `${DASH_CHROME.remote} ${terminalText(pane.host)}`,
-    stream ? terminalText(stream) : "",
-    flags,
-    elapsed,
-  ]
-    .filter(Boolean)
-    .join("  ");
-  // The head is the part that must survive a narrow rail, so the summary takes
-  // whatever is left and nothing more.
   // Colour alone carried selection and focus on a borderless line; the gutter
   // makes both survive a low-contrast or colour-blind terminal.
   const marker = compactSelectionMarker(selected, cardsFocused);
-  const summary = clipGlanceLine(
-    oneLiner(pane, glanceLine),
-    Math.max(0, width - marker.length - head.length - 2),
-  );
-  const line = clipGlanceLine(`${marker}${summary ? `${head}  ${summary}` : head}`, width);
+  const line = compactRow(fields, layout, marker);
 
   return (
-    <Box ref={elementRef} width={width} height={1}>
+    <Box ref={elementRef} width={layout.width} height={1}>
       <Text
         bold={selected}
         color={selected ? "#11111b" : DASH_COLOR[state]}
@@ -342,7 +342,7 @@ function CompactRow({
         dimColor={!selected && stale}
         wrap="truncate-end"
       >
-        {line.padEnd(width)}
+        {line}
       </Text>
     </Box>
   );
@@ -517,6 +517,13 @@ function App({ dashStore, initial }: DashProps) {
     1,
     placement === "right" ? Math.round(columns * (1 - share)) : columns,
   );
+  const compactFieldsByPane = new Map(
+    panes.map((pane) => [
+      paneKey(pane),
+      compactFields(pane, pane === selected ? glanceLine : undefined, now),
+    ]),
+  );
+  const compactLayout = compactRowLayout([...compactFieldsByPane.values()], railWidth);
   const window = cardWindow(selectedIndex, panes.length, visibleCards);
   const shown = panes.slice(window.first, window.first + window.shown);
   const scroll = scrollLabel({ ...window, total: panes.length });
@@ -950,11 +957,10 @@ function App({ dashStore, initial }: DashProps) {
               <CompactRow
                 key={key}
                 pane={pane}
+                fields={compactFieldsByPane.get(key) ?? compactFields(pane, undefined, now)}
+                layout={compactLayout}
                 selected={key === paneKey(selected ?? pane)}
                 cardsFocused={focus === "cards"}
-                width={railWidth}
-                glanceLine={pane === selected ? glanceLine : undefined}
-                now={now}
                 elementRef={(node) => {
                   if (node) cardNodesRef.current.set(key, node);
                   else cardNodesRef.current.delete(key);

@@ -2,6 +2,8 @@ import { expect, test } from "vitest";
 import {
   cardWindow,
   clipGlanceLine,
+  compactRow,
+  compactRowLayout,
   compactSelectionMarker,
   dashFooterHints,
   dashHelpSections,
@@ -314,6 +316,91 @@ test("a compact row marks selection and focus in the gutter", () => {
   // Unselected rows still pay the gutter, so the text columns stay aligned.
   expect(compactSelectionMarker(false, true)).toBe("  ");
   expect(compactSelectionMarker(false, false)).toBe("  ");
+});
+
+const COMPACT_ROWS = [
+  {
+    state: "R",
+    agent: "a",
+    host: "here",
+    stream: "dash",
+    flags: "",
+    age: "2m",
+    summary: "short",
+  },
+  {
+    state: "B",
+    agent: "worker-eleven",
+    host: "build-server",
+    stream: "release",
+    flags: "crew",
+    age: "12m",
+    summary: "waiting for input",
+  },
+] as const;
+
+test("compact rows align fields of different lengths", () => {
+  const layout = compactRowLayout(COMPACT_ROWS, 80);
+  const lines = COMPACT_ROWS.map((row) => compactRow(row, layout, "  "));
+
+  expect(lines[0]?.indexOf("here")).toBe(lines[1]?.indexOf("build-server"));
+  expect(lines[0]?.indexOf("dash")).toBe(lines[1]?.indexOf("release"));
+  expect(lines.every((line) => [...line].length === 80)).toBe(true);
+});
+
+test("compact column widths stay stable across visible windows and cap outliers", () => {
+  const outlier = { ...COMPACT_ROWS[0], agent: "a".repeat(40), host: "h".repeat(30) };
+  const layout = compactRowLayout([...COMPACT_ROWS, outlier], 100);
+
+  expect(layout.widths.agent).toBe(24);
+  expect(layout.widths.host).toBe(18);
+  expect(COMPACT_ROWS.map((row) => compactRow(row, layout, "  "))[0]?.indexOf("here")).toBe(31);
+  expect(COMPACT_ROWS.map((row) => compactRow(row, layout, "  "))[1]?.indexOf("build-server")).toBe(
+    31,
+  );
+});
+
+test("compact rows count characters rather than UTF-16 units", () => {
+  const row = {
+    state: "󰚩",
+    agent: "bot",
+    host: "",
+    stream: "",
+    flags: "",
+    age: "",
+    summary: "",
+  };
+
+  expect(compactRow(row, compactRowLayout([row], 10), "  ")).toBe("  󰚩  bot  ");
+  expect([...compactRow(row, compactRowLayout([row], 10), "  ")]).toHaveLength(10);
+});
+
+test("compact rows drop extra fields before trimming the agent", () => {
+  const row = {
+    state: "R",
+    agent: "agent",
+    host: "host",
+    stream: "stream",
+    flags: "crew",
+    age: "2m",
+    summary: "summary text",
+  };
+
+  expect(compactRowLayout([row], 44)).toMatchObject({
+    columns: ["host", "stream", "flags", "age"],
+    summary: true,
+  });
+  expect(compactRowLayout([row], 43)).toMatchObject({
+    columns: ["host", "stream", "flags", "age"],
+    summary: false,
+  });
+  expect(compactRowLayout([row], 33).columns).toEqual(["host", "stream", "age"]);
+  expect(compactRowLayout([row], 27).columns).toEqual(["host", "stream"]);
+  expect(compactRowLayout([row], 23).columns).toEqual(["host"]);
+  expect(compactRowLayout([row], 15).columns).toEqual([]);
+  expect(compactRow({ ...row, agent: "agent-name" }, compactRowLayout([row], 9), "  ")).toBe(
+    "  R  age…",
+  );
 });
 
 test("navigation keys map to the active region", () => {

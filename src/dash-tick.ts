@@ -309,6 +309,93 @@ export function compactSelectionMarker(selected: boolean, cardsFocused: boolean)
   return cardsFocused ? "\u25b8 " : "\u00b7 ";
 }
 
+export type CompactRowFields = {
+  state: string;
+  agent: string;
+  host: string;
+  stream: string;
+  flags: string;
+  age: string;
+  summary: string;
+};
+
+type CompactOptionalColumn = "host" | "stream" | "flags" | "age";
+
+export type CompactRowLayout = {
+  width: number;
+  widths: Record<"state" | "agent" | CompactOptionalColumn, number>;
+  columns: CompactOptionalColumn[];
+  summary: boolean;
+};
+
+const COMPACT_CAPS = { agent: 24, host: 18, stream: 18 } as const;
+const COMPACT_SUMMARY_MIN = 8;
+const COMPACT_SEPARATOR = "  ";
+
+function textWidth(value: string): number {
+  return [...value].length;
+}
+
+function compactCell(value: string, width: number): string {
+  const visible = textWidth(value);
+  if (visible <= width) return value + " ".repeat(width - visible);
+  if (width <= 1) return [...value].slice(0, width).join("");
+  return `${[...value].slice(0, width - 1).join("")}…`;
+}
+
+/** Derive stable compact-table columns from every filtered row. */
+export function compactRowLayout(
+  rows: readonly CompactRowFields[],
+  width: number,
+): CompactRowLayout {
+  const measured = (key: keyof CompactRowFields, cap = Number.POSITIVE_INFINITY) =>
+    Math.min(cap, Math.max(0, ...rows.map((row) => textWidth(row[key]))));
+  const widths = {
+    state: Math.max(1, measured("state")),
+    agent: Math.max(1, measured("agent", COMPACT_CAPS.agent)),
+    host: measured("host", COMPACT_CAPS.host),
+    stream: measured("stream", COMPACT_CAPS.stream),
+    flags: measured("flags"),
+    age: measured("age"),
+  };
+  const optionalColumns: CompactOptionalColumn[] = ["host", "stream", "flags", "age"];
+  const columns = optionalColumns.filter((column) => widths[column] > 0);
+  const used = () =>
+    2 +
+    widths.state +
+    widths.agent +
+    columns.reduce((sum, column) => sum + widths[column], 0) +
+    COMPACT_SEPARATOR.length * (1 + columns.length);
+  let summary = rows.some((row) => row.summary.length > 0);
+  if (summary && width - used() < COMPACT_SEPARATOR.length + COMPACT_SUMMARY_MIN) summary = false;
+  for (const column of ["flags", "age", "stream", "host"] as const) {
+    if (used() <= width) break;
+    const index = columns.indexOf(column);
+    if (index >= 0) columns.splice(index, 1);
+  }
+  widths.agent = Math.max(1, Math.min(widths.agent, width - (used() - widths.agent)));
+  return { width, widths, columns, summary };
+}
+
+/** Format one compact row; Ink only has to apply its selection styling. */
+export function compactRow(
+  row: CompactRowFields,
+  layout: CompactRowLayout,
+  marker: string,
+): string {
+  const cells = [
+    compactCell(row.state, layout.widths.state),
+    compactCell(row.agent, layout.widths.agent),
+    ...layout.columns.map((column) => compactCell(row[column], layout.widths[column])),
+  ];
+  let line = `${marker}${cells.join(COMPACT_SEPARATOR)}`;
+  if (layout.summary) {
+    const remaining = layout.width - textWidth(line) - COMPACT_SEPARATOR.length;
+    line += `${COMPACT_SEPARATOR}${compactCell(row.summary, Math.max(0, remaining))}`;
+  }
+  return compactCell(line, layout.width);
+}
+
 export type DashKeyRoute = "help-open" | "help-close" | "help-inert" | "dash";
 
 /**
