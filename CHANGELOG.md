@@ -3,6 +3,17 @@
 Notable changes per release. Written for someone deciding whether to upgrade,
 so it says what changed for a user rather than listing every commit.
 
+## Unreleased
+
+**The pane preview keeps its colours.** `murmur dash` and the `pick` preview
+capture with `capture-pane -e`, locally and over ssh, so a previewed pane looks
+the way it does on its own screen -- red failures, green diffs, inverse
+selections, and the rest of the cell styling. Only SGR survives: cursor
+movement, erases, window titles, clipboard writes, and image payloads are
+stripped, and each line is reset at its boundary so a half-drawn progress bar
+cannot bleed into the dashboard's own chrome. Card summaries and the `/` filter
+stay plain text, so search and column widths are unaffected.
+
 ## 0.5.0
 
 **Not wire-compatible with 0.4.x. Every node must be upgraded together.** The

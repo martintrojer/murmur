@@ -1,3 +1,4 @@
+import { clipToWidth, visibleWidth } from "./ansi.js";
 import type { DashSort } from "./dash-prefs.js";
 import type { Status } from "./status.js";
 import { age, type PaneView } from "./view.js";
@@ -332,15 +333,15 @@ const COMPACT_CAPS = { agent: 24, host: 18, stream: 18 } as const;
 const COMPACT_SUMMARY_MIN = 8;
 const COMPACT_SEPARATOR = "  ";
 
-function textWidth(value: string): number {
-  return [...value].length;
-}
-
 function compactCell(value: string, width: number): string {
-  const visible = textWidth(value);
+  const visible = visibleWidth(value);
   if (visible <= width) return value + " ".repeat(width - visible);
-  if (width <= 1) return [...value].slice(0, width).join("");
-  return `${[...value].slice(0, width - 1).join("")}…`;
+  // `clipToWidth` deliberately ignores a width of zero -- a blank glance is
+  // worse than an overflowing one -- but a zero-width COLUMN means the layout
+  // dropped it, so here the cell really does collapse.
+  if (width <= 0) return "";
+  if (width === 1) return clipToWidth(value, 1);
+  return `${clipToWidth(value, width - 1)}…`;
 }
 
 /** Derive stable compact-table columns from every filtered row. */
@@ -349,7 +350,7 @@ export function compactRowLayout(
   width: number,
 ): CompactRowLayout {
   const measured = (key: keyof CompactRowFields, cap = Number.POSITIVE_INFINITY) =>
-    Math.min(cap, Math.max(0, ...rows.map((row) => textWidth(row[key]))));
+    Math.min(cap, Math.max(0, ...rows.map((row) => visibleWidth(row[key]))));
   const widths = {
     state: Math.max(1, measured("state")),
     agent: Math.max(1, measured("agent", COMPACT_CAPS.agent)),
@@ -390,7 +391,7 @@ export function compactRow(
   ];
   let line = `${marker}${cells.join(COMPACT_SEPARATOR)}`;
   if (layout.summary) {
-    const remaining = layout.width - textWidth(line) - COMPACT_SEPARATOR.length;
+    const remaining = layout.width - visibleWidth(line) - COMPACT_SEPARATOR.length;
     line += `${COMPACT_SEPARATOR}${compactCell(row.summary, Math.max(0, remaining))}`;
   }
   return compactCell(line, layout.width);
@@ -438,8 +439,11 @@ export function routeDashKey(
  * before does not become a second key. A width of zero or less is ignored
  * rather than honoured: a narrow terminal must still show something, and a
  * blank glance would be a worse bug than the one this fixes.
+ *
+ * Measured and cut in VISIBLE columns (see `clipToWidth`): since
+ * `capture-pane -e`, a glance line carries SGR, and a byte-index clip both
+ * shortened coloured lines far below the edge and could cut inside a sequence.
  */
 export function clipGlanceLine(line: string, width: number): string {
-  if (width <= 0 || line.length <= width) return line;
-  return line.slice(0, width);
+  return clipToWidth(line, width);
 }

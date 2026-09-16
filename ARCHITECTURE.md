@@ -836,7 +836,7 @@ paths to a pane's host are not alike:
 | surface | needs |
 |---|---|
 | collect | `ssh <target> murmur export` |
-| glance (pick preview / dash pane glance) | `ssh <target> tmux capture-pane` |
+| glance (pick preview / dash pane glance) | `ssh <target> tmux capture-pane -e` |
 | jump | `ssh <target>`, interactively |
 
 **A card renders only from collected state; a capture serves one selected pane.**

@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { peerForHost, shellQuote } from "./agents.js";
+import { endLinesWithReset, scan, sgrOnly } from "./ansi.js";
 import { SSH_OPTIONS } from "./channel.js";
 import { tmux, tmuxArgs } from "./mux.js";
 import type { Store } from "./store.js";
@@ -36,6 +37,10 @@ const TAB_WIDTH = 8;
  * point of a tab: collapsing them would shear exactly the table-shaped output
  * that uses them. Counted per line, since a tab stop is measured from the start
  * of the row.
+ *
+ * The column counter advances on printable text only. Since `capture-pane -e`,
+ * a `git status` line arrives with a colour prefix in front of it, and counting
+ * those bytes moved every stop on the line to the left.
  */
 export function expandTabs(text: string, width = TAB_WIDTH): string {
   if (!text.includes("\t")) return text;
@@ -43,13 +48,43 @@ export function expandTabs(text: string, width = TAB_WIDTH): string {
     .split("\n")
     .map((line) => {
       let out = "";
-      for (const character of line) {
-        if (character === "\t") out += " ".repeat(width - (out.length % width));
-        else out += character;
+      let column = 0;
+      for (const token of scan(line)) {
+        if (token.kind === "sgr") {
+          out += token.value;
+          continue;
+        }
+        for (const character of token.value) {
+          if (character === "\t") {
+            const advance = width - (column % width);
+            out += " ".repeat(advance);
+            column += advance;
+          } else {
+            out += character;
+            column += 1;
+          }
+        }
       }
       return out;
     })
     .join("\n");
+}
+
+/**
+ * What a capture must pass through before anything paints it.
+ *
+ * Two rules, in this order. SGR only, because the preview is a fixed box inside
+ * the dash rather than a terminal: a cursor move or erase paints outside it and
+ * corrupts the chrome, and an OSC 52 in pane output would write the operator's
+ * clipboard once per redraw. Then a reset per line, because tmux routinely
+ * captures output mid-attribute and an unterminated background bled into the
+ * border and every row the dash drew after it.
+ *
+ * Tabs are expanded between the two: the stops are visible columns, so they must
+ * be counted after the non-SGR bytes are gone.
+ */
+function previewSafe(captured: string): string {
+  return endLinesWithReset(expandTabs(sgrOnly(captured)));
 }
 
 /**
@@ -75,7 +110,7 @@ export function glance(
 ): string | null {
   if (agent.local) {
     const local = tmux.capture(agent.pane, lines, agent.server);
-    return local === null ? null : expandTabs(local);
+    return local === null ? null : previewSafe(local);
   }
 
   const resolved = peerForHost(store, agent.host_id);
@@ -102,12 +137,13 @@ export function glance(
   try {
     // ssh's remote side is a login shell. Build the tmux argv first, including
     // the snapshot's server selector, then quote every word into its one remote
-    // command so hostile server values and pane ids remain data.
+    // command so hostile server values and pane ids remain data. `-e` keeps the
+    // same styling local and remote; previewSafe accepts SGR and strips the rest.
     const argv = [
       "tmux",
-      ...tmuxArgs(agent.server, ["capture-pane", "-p", "-t", agent.pane, "-S", `-${lines}`]),
+      ...tmuxArgs(agent.server, ["capture-pane", "-p", "-e", "-t", agent.pane, "-S", `-${lines}`]),
     ];
-    return expandTabs(run(target, [argv.map(shellQuote).join(" ")]));
+    return previewSafe(run(target, [argv.map(shellQuote).join(" ")]));
   } catch {
     // Cold socket, dead tmux, gone pane. The preview says so rather than the
     // picker failing.

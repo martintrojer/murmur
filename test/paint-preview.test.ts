@@ -230,14 +230,14 @@ test("a reachable peer is still dialled for a glance", () => {
 });
 
 test.each([
-  [{ kind: "default" } as const, "'tmux' 'capture-pane' '-p' '-t' '%1' '-S' '-40'"],
+  [{ kind: "default" } as const, "'tmux' 'capture-pane' '-p' '-e' '-t' '%1' '-S' '-40'"],
   [
     { kind: "label", value: "co'op; touch /tmp/server-pwned" } as const,
-    "'tmux' '-L' 'co'\\''op; touch /tmp/server-pwned' 'capture-pane' '-p' '-t' '%1' '-S' '-40'",
+    "'tmux' '-L' 'co'\\''op; touch /tmp/server-pwned' 'capture-pane' '-p' '-e' '-t' '%1' '-S' '-40'",
   ],
   [
     { kind: "path", value: "/tmp/co'op; touch /tmp/server-pwned.sock" } as const,
-    "'tmux' '-S' '/tmp/co'\\''op; touch /tmp/server-pwned.sock' 'capture-pane' '-p' '-t' '%1' '-S' '-40'",
+    "'tmux' '-S' '/tmp/co'\\''op; touch /tmp/server-pwned.sock' 'capture-pane' '-p' '-e' '-t' '%1' '-S' '-40'",
   ],
 ])(
   "the remote glance selects the pane's %s tmux server with one inert command",
@@ -266,7 +266,7 @@ test("a hostile pane id is inert in the remote command", () => {
   });
 
   expect(preview(hostile, "REMOTE").argv).toEqual([
-    ["'tmux' 'capture-pane' '-p' '-t' '%1'\\'';touch /tmp/murmur-pwned;'\\''' '-S' '-40'"],
+    ["'tmux' 'capture-pane' '-p' '-e' '-t' '%1'\\'';touch /tmp/murmur-pwned;'\\''' '-S' '-40'"],
   ]);
 });
 
@@ -393,4 +393,90 @@ test("a tab in captured pane text is expanded, not passed through", () => {
 
   expect(text).not.toContain("\t");
   expect(text).toContain("ab      cd      efghi   j");
+});
+
+test("a remote glance is captured with escape sequences too", () => {
+  // The local and remote halves must show the same thing. `-e` was added to the
+  // local `capture-pane` first, so a remote row previewed grey next to a
+  // coloured local one -- which reads as "that agent is idle".
+  store.addPeer("bubba", "bubba.example");
+  store.replacePeerSnapshot("bubba", {
+    ok: true,
+    at: Date.now(),
+    snapshot: remoteSnapshot([remotePane("%11")]),
+  });
+
+  const { argv } = preview("%11", "REMOTE");
+
+  expect(argv[0]?.[0]).toContain("'-e'");
+});
+
+test("the previewed pane keeps its colours and emphasis", () => {
+  // The whole feature: a pane's own styling is the fastest signal a reader has
+  // about what happened in it, and a preview that flattens it throws that away.
+  store.addPeer("bubba", "bubba.example");
+  store.replacePeerSnapshot("bubba", {
+    ok: true,
+    at: Date.now(),
+    snapshot: remoteSnapshot([remotePane("%12")]),
+  });
+
+  const { text } = preview("%12", "REMOTE", `\u001b[1;31mFAIL\u001b[0m ok`);
+
+  expect(text).toContain("\u001b[1;31mFAIL");
+});
+
+test("non-SGR control sequences in pane output are stripped", () => {
+  // A preview is a fixed box inside the dash, not a terminal. Cursor movement
+  // and erases paint OUTSIDE the box and corrupt the chrome around it; an OSC 52
+  // would write the reader's clipboard once per redraw.
+  store.addPeer("bubba", "bubba.example");
+  store.replacePeerSnapshot("bubba", {
+    ok: true,
+    at: Date.now(),
+    snapshot: remoteSnapshot([remotePane("%13")]),
+  });
+
+  const { text } = preview(
+    "%13",
+    "REMOTE",
+    `\u001b[2J\u001b[1;1Hclean\u001b]52;c;cGF5bG9hZA==\u0007 end`,
+  );
+
+  expect(text).toContain("clean end");
+  expect(text).not.toContain("[2J");
+  expect(text).not.toContain("52;c;");
+});
+
+test("a pane line left mid-attribute is reset at the line boundary", () => {
+  // tmux captures half-drawn output all the time -- a progress bar, a `less`
+  // status line -- so an unterminated background is normal rather than
+  // pathological. Without a reset per line the pane's colour bled into the
+  // dash's border and the facts below it.
+  store.addPeer("bubba", "bubba.example");
+  store.replacePeerSnapshot("bubba", {
+    ok: true,
+    at: Date.now(),
+    snapshot: remoteSnapshot([remotePane("%14")]),
+  });
+
+  const { text } = preview("%14", "REMOTE", "\u001b[41mhot");
+
+  expect(text).toContain("\u001b[41mhot\u001b[0m");
+});
+
+test("a tab after a colour code still lands on its column stop", () => {
+  // Tab expansion counts COLUMNS, so it has to ignore the escape bytes: with
+  // `-e` on, the same `git status` output that used to expand correctly gained a
+  // colour prefix, and counting those bytes shifted every stop left.
+  store.addPeer("bubba", "bubba.example");
+  store.replacePeerSnapshot("bubba", {
+    ok: true,
+    at: Date.now(),
+    snapshot: remoteSnapshot([remotePane("%15")]),
+  });
+
+  const { text } = preview("%15", "REMOTE", "\u001b[32mab\tcd");
+
+  expect(text).toContain("\u001b[32mab      cd");
 });

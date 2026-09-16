@@ -1,4 +1,5 @@
 import { expect, test } from "vitest";
+import { visibleWidth } from "../src/ansi.js";
 import {
   cardWindow,
   clipGlanceLine,
@@ -467,4 +468,62 @@ test("the card summary is clipped too, since it is also live pane text", () => {
   expect(clipGlanceLine(`${"b".repeat(40)}ONE`, 36)).toBe(
     clipGlanceLine(`${"b".repeat(40)}TWO`, 36),
   );
+});
+
+test("glance clipping measures visible columns and keeps sequences whole", () => {
+  // With `capture-pane -e` the glance body carries SGR, and clipping by
+  // character index did two things wrong at once: it counted escape bytes
+  // toward the width, so a coloured line was clipped far too short, and it cut
+  // mid-sequence, so the terminal swallowed the rest of the line waiting for a
+  // final byte.
+  const styled = `\u001b[31m${"a".repeat(90)}\u001b[0m`;
+
+  const clipped = clipGlanceLine(styled, 80);
+
+  // Eighty visible columns, whatever the byte length.
+  expect(visibleWidth(clipped)).toBe(80);
+  // And it still collapses variety past the edge, which is why this clip
+  // exists: ink's measurement cache never evicts.
+  expect(clipGlanceLine(`\u001b[31m${"a".repeat(90)}FIRST`, 80)).toBe(
+    clipGlanceLine(`\u001b[31m${"a".repeat(90)}SECOND`, 80),
+  );
+});
+
+test("a compact row measures a styled summary by its visible width", () => {
+  // The compact table lays out fixed columns from measured text. Scoring escape
+  // bytes as width made a styled row's cells overflow their column and shear
+  // every column to the right of it.
+  const layout = compactRowLayout(
+    [
+      {
+        state: "run",
+        agent: "worker",
+        host: "",
+        stream: "",
+        flags: "",
+        age: "",
+        summary: "\u001b[31mtests failed\u001b[0m",
+      },
+    ],
+    60,
+  );
+
+  expect(layout.widths.agent).toBe(6);
+  expect(
+    visibleWidth(
+      compactRow(
+        {
+          state: "run",
+          agent: "worker",
+          host: "",
+          stream: "",
+          flags: "",
+          age: "",
+          summary: "\u001b[31mtests failed\u001b[0m",
+        },
+        layout,
+        " ",
+      ),
+    ),
+  ).toBeLessThanOrEqual(60);
 });

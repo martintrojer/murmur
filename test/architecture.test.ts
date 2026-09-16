@@ -90,3 +90,21 @@ test("the effort vocabulary is spelled once", () => {
   // than a second list to keep in step.
   expect(offenders).toEqual([join("src", "types.ts")]);
 });
+
+test("only the ansi module decides what escape sequences survive", () => {
+  // The dash now consumes arbitrary terminal bytes (`capture-pane -e`), and the
+  // allow-list that keeps a preview from painting outside its box is worth
+  // exactly as much as its being the ONLY such decision in the tree. A second
+  // hand-rolled escape regex somewhere else is how the two drift and one of
+  // them stops refusing OSC 52.
+  const offenders = sourceFiles()
+    .filter((path) => path !== join("src", "ansi.ts"))
+    .filter((path) => {
+      const source = readFileSync(path, "utf8");
+      // A regex or string literal that matches escape sequences. Prose is
+      // excluded by requiring the actual ESC byte or its escape, not the word.
+      return /\/[^\n/]*(?:\\u001b|\\x1b|\\e)[^\n/]*\/[gimsuy]*/.test(source);
+    });
+
+  expect(offenders).toEqual([]);
+});

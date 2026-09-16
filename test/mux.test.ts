@@ -168,3 +168,16 @@ test("an unparseable automatic-rename flag keeps the name", () => {
   expect(chosenWindowName("reviewer", "")).toBe("reviewer");
   expect(chosenWindowName("reviewer", "yes")).toBe("reviewer");
 });
+
+test("a capture asks tmux for escape sequences", () => {
+  // `-e` is what makes the dash preview show a pane's colours at all. Without
+  // it tmux hands back the text with every attribute discarded, and no amount
+  // of work downstream can recover which line was the failing one.
+  tmuxCalls.length = 0;
+  tmuxReplies.length = 0;
+  tmuxReplies.push("out");
+
+  expect(tmux.capture(asPaneId("%7"), 40)).toBe("out");
+
+  expect(tmuxCalls).toEqual([["capture-pane", "-p", "-e", "-t", "%7", "-S", "-40"]]);
+});

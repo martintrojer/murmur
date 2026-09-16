@@ -1,3 +1,4 @@
+import { plainText } from "./ansi.js";
 import type { NodeIdentity } from "./identity.js";
 import type { PaneId, SessionId, WindowId } from "./ids.js";
 import type { Store } from "./store.js";
@@ -175,7 +176,12 @@ export function oneLiner(agent: PaneView, glanceLine?: string | null): string {
   const reported = reportedSummary(agent);
   if (reported) return reported;
 
-  const lines = glanceLine?.split("\n") ?? [];
+  // Stripped of styling, because this value is read as a STRING and not
+  // painted: the filter matches the reader's query against it, the compact
+  // table sizes columns from its width, and `piFooter` matches anchored
+  // patterns that a mid-word colour change would break. The preview body keeps
+  // the pane's colours; a summary in dash chrome must not carry them.
+  const lines = plainText(glanceLine ?? "").split("\n");
   for (let index = lines.length - 1; index >= 0; index -= 1) {
     const line = lines[index]?.trim();
     if (line) return piFooter(line) ?? line;

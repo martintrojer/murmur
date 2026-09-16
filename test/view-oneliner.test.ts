@@ -252,3 +252,11 @@ test("the real footer shapes on this machine all condense", () => {
   ];
   for (const [line, expected] of cases) expect(oneLiner(agent, line), line).toBe(expected);
 });
+
+test("the one-liner is plain text even when the glance line is styled", () => {
+  // The card summary is searched and measured: the filter matches against it,
+  // and the compact table sizes its columns from its width. Escape bytes made
+  // a filter for a coloured word miss and every measurement wrong, and the
+  // summary sits in dash chrome that must not inherit a pane's background.
+  expect(oneLiner(view(), "\u001b[31mtests \u001b[1mfailed\u001b[0m")).toBe("tests failed");
+});

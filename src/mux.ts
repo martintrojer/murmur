@@ -409,8 +409,12 @@ export const tmux: Mux = {
     return out ? asWindowId(out) : null;
   },
 
+  // `-e` because the pane's colours are the point of the preview: without it
+  // tmux discards every attribute and nothing downstream can recover which line
+  // was the failing one. What arrives is arbitrary terminal bytes, which is why
+  // `src/ansi.ts` exists -- see `glance` for the sanitation that follows.
   capture(pane, lines, server = { kind: "default" }) {
-    const args = ["capture-pane", "-p", "-t", pane];
+    const args = ["capture-pane", "-p", "-e", "-t", pane];
     if (lines !== undefined) args.push("-S", `-${lines}`);
     return runTmux(args, server);
   },
