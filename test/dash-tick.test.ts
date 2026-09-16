@@ -13,6 +13,7 @@ import {
   dashVisibleCards,
   fetchedText,
   formatFetchedAge,
+  glanceBodyWidth,
   glanceNeedsRefresh,
   glanceViewport,
   moveIndex,
@@ -545,12 +546,14 @@ test("compact columns align around styled and wide cells, not byte counts", () =
     plainText(compactRow(plain, layout, "  ")).indexOf("there"),
   );
 
-  // Wide characters are counted per code point, which is murmur's standing
-  // policy everywhere and NOT what the terminal paints: a CJK cell is two
-  // columns wide. Pinned rather than fixed, so the disagreement with ink's
-  // `string-width` measurement is a decision on record and changing it is a
-  // deliberate edit here rather than a silent drift.
-  expect(compactRowLayout([{ ...plain, agent: "日本語" }], 40).widths.agent).toBe(3);
+  // Wide characters are counted in the CELLS the terminal paints, which is two
+  // per CJK code point. This assertion used to pin the opposite -- a code-point
+  // count, recorded as a known disagreement with ink's own `string-width`
+  // measurement -- and that disagreement was the dash-corruption bug: a row
+  // measured at half its painted width overflowed its box, wrapped, and pushed
+  // the frame past the viewport, where ink's incremental erase removed fewer
+  // rows than it had drawn.
+  expect(compactRowLayout([{ ...plain, agent: "日本語" }], 40).widths.agent).toBe(6);
 });
 
 test("a compact row measures a styled summary by its visible width", () => {
@@ -590,4 +593,64 @@ test("a compact row measures a styled summary by its visible width", () => {
       ),
     ),
   ).toBeLessThanOrEqual(60);
+});
+
+/**
+ * The glance body must never be wider than the box ink lays out for it.
+ *
+ * The rail and the glance are sized in PERCENTAGES, so yoga rounds the rail and
+ * hands the glance the remainder. Deriving the glance side as `columns * share`
+ * instead disagreed by a column at many widths, and one column too many is not
+ * cosmetic: the clipped body exceeds the box, wraps, pushes the frame past the
+ * viewport, and ink's incremental erase then removes fewer rows than it drew --
+ * the previous frame's rows stay on screen, interleaved with the new one.
+ *
+ * Asserted against the same arithmetic ink is given (round the rail percentage,
+ * subtract) across every width and share the dash can actually be in.
+ */
+test("the glance body never exceeds the box ink gives it", () => {
+  for (const columns of [60, 80, 120, 150, 151, 160, 199, 200, 249, 250, 251, 300, 361]) {
+    for (const share of [0.2, 0.35, 0.5, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85]) {
+      const railPercent = Math.round((1 - share) * 100);
+      const boxWidth = columns - Math.round((columns * railPercent) / 100);
+      const inner = boxWidth - 4;
+      expect(glanceBodyWidth(columns, share, "right")).toBeLessThanOrEqual(Math.max(1, inner));
+    }
+  }
+});
+
+test("a bottom glance spans the full width and pays only its chrome", () => {
+  expect(glanceBodyWidth(100, 0.6, "bottom")).toBe(96);
+  // Never zero or negative, however narrow the terminal: a blank glance is a
+  // worse bug than a cramped one.
+  expect(glanceBodyWidth(3, 0.75, "right")).toBeGreaterThanOrEqual(1);
+  expect(glanceBodyWidth(1, 0.6, "bottom")).toBeGreaterThanOrEqual(1);
+});
+
+/**
+ * A compact row must never be wider than the rail it is padded to.
+ *
+ * `compactRow` pads to full width so the selection reads as a bar, so the row
+ * is the widest thing in the rail by construction -- and one cell too many
+ * wraps it onto a second line, which costs a rail row the window budget never
+ * paid for and pushes the frame past the viewport.
+ *
+ * Wide and styled text together, because each broke it differently: escapes
+ * were once measured as width, and CJK once measured at half of it.
+ */
+test("a compact row fits its rail exactly, wide and styled text included", () => {
+  const row = {
+    state: "R",
+    agent: "日本語のエージェント",
+    host: `\u001b[36m\uf233 linuxpc\u001b[0m`,
+    stream: "swayward",
+    flags: "\uf0c0",
+    age: "4m",
+    summary: "✅ 完了 🎉 テスト 12 passed",
+  };
+  for (const width of [12, 20, 30, 40, 60, 80, 120]) {
+    const layout = compactRowLayout([row], width);
+    const line = compactRow(row, layout, "▸ ");
+    expect(visibleWidth(line)).toBeLessThanOrEqual(width);
+  }
 });

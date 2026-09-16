@@ -20,6 +20,8 @@
  * table to keep current.
  */
 
+import stringWidth from "string-width";
+
 const ESC = "\u001b";
 const BEL = "\u0007";
 /** Terminates the string-family sequences (DCS/OSC/SOS/PM/APC). */
@@ -196,12 +198,23 @@ export function plainText(value: string): string {
 /**
  * Visible columns, which is the only width any layout here cares about.
  *
- * Counted per code point, matching what the rest of murmur has always measured;
- * the point of this function is that escape bytes score zero, not a change of
- * grapheme policy.
+ * Measured in TERMINAL CELLS, not code points, and by the same library ink
+ * measures with (`string-width`). A code-point count is the same number for
+ * Latin text and exactly half the truth for the East Asian and emoji ranges,
+ * where one code point occupies two cells -- so a glance line of CJK pane
+ * output was clipped to twice the box's width, wrapped, and pushed the frame
+ * past the viewport. ink then erased the wrong number of rows and left the
+ * previous frame's rows stranded on screen.
+ *
+ * Sharing ink's measurement is the point: any second opinion about how wide a
+ * character is desynchronises this clip from the layout it is clipping for, and
+ * the disagreement only ever shows up as corruption on the reader's screen.
  */
 export function visibleWidth(value: string): number {
-  return [...plainText(value)].length;
+  // `countAnsiEscapeCodes: false` is the default, and the input here is already
+  // stripped to text -- but stripping first is what makes the count right for a
+  // styled line, since string-width would otherwise measure the SGR bytes.
+  return stringWidth(plainText(value));
 }
 
 /**
@@ -232,9 +245,14 @@ export function clipToWidth(value: string, width: number): string {
       continue;
     }
     for (const character of token.value) {
-      if (used >= width) break;
+      const cells = stringWidth(character);
+      // A wide character that would straddle the edge is dropped rather than
+      // half-printed: a terminal cannot render half a cell, so emitting it
+      // would put one more column on the row than the layout reserved -- the
+      // original overflow, reintroduced one character at a time.
+      if (used + cells > width) break;
       out += character;
-      used += 1;
+      used += cells;
     }
     if (used >= width) break;
   }

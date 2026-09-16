@@ -1,4 +1,5 @@
 import { agentLabel, agentLocation, terminalText } from "./agents.js";
+import { visibleWidth } from "./ansi.js";
 import { warmSocketCommand } from "./channel.js";
 import { DASH_GLYPH } from "./dash-paint.js";
 import { type GlanceRunner, glance } from "./glance.js";
@@ -50,9 +51,8 @@ export const COLOUR: Record<string, string> = {
 // regex trips biome's noControlCharactersInRegex, and the rule is right that
 // an invisible byte in a pattern is a hazard.
 const ANSI_PATTERN = `${String.fromCharCode(27)}\\[[0-9;]*m`;
-const ANSI_ESCAPE = new RegExp(ANSI_PATTERN, "g");
-// Non-global twin for anchored single matches: `exec` on a /g/ regex carries
-// lastIndex between calls, so reusing ANSI_ESCAPE inside a loop silently skips
+// Anchored, and non-global on purpose: `exec` on a /g/ regex carries lastIndex
+// between calls, so one shared global regex inside a loop silently skips
 // sequences.
 const ANSI_AT_START = new RegExp(`^${ANSI_PATTERN}`);
 const ANSI_AT_END = new RegExp(`(?:${ANSI_PATTERN})+$`);
@@ -217,9 +217,14 @@ function timestamp(ts: number): string {
  * The walk copies escape sequences through without counting them, so a cut
  * never lands inside one, which would leak the colour into the rest of the line
  * and drop the reset that ends it.
+ *
+ * Both ends count TERMINAL CELLS via `visibleWidth`, not code points: an agent
+ * name or workstream carrying CJK or emoji is twice as wide on screen as its
+ * code-point count says, so a code-point pad sheared every column to its right
+ * by exactly the number of wide characters to its left.
  */
 function pad(value: string, width: number): string {
-  const visible = [...value.replace(ANSI_ESCAPE, "")].length;
+  const visible = visibleWidth(value);
   if (visible <= width) return value + " ".repeat(width - visible);
 
   // Room for the ellipsis, which is one column wide.
@@ -234,9 +239,15 @@ function pad(value: string, width: number): string {
       index += sequence[0].length;
       continue;
     }
-    out += value[index];
-    index += 1;
-    shown += 1;
+    // Iterated per CODE POINT, so an astral character (every emoji) is never
+    // split into its surrogate halves, and charged its real cell width -- a
+    // wide one that would straddle the budget stops the walk instead.
+    const character = String.fromCodePoint(value.codePointAt(index) ?? 0);
+    const cells = visibleWidth(character);
+    if (shown + cells > budget) break;
+    out += character;
+    index += character.length;
+    shown += cells;
   }
   // Copy any trailing escapes (the reset) so the cell closes its own styling.
   const tail = value.slice(index).match(ANSI_AT_END);

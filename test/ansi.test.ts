@@ -146,3 +146,60 @@ test("plain text drops styling as well, for summaries and search", () => {
   // once the SGR pass stops protecting them.
   expect(plainText(`${ESC}[2Jdone\u0007`)).toBe("done");
 });
+
+/**
+ * Width is measured in TERMINAL CELLS, which is a different number from code
+ * points for every East Asian and emoji range.
+ *
+ * This is the dash-corruption bug, at its source. A code-point count made a
+ * line of CJK pane output measure half its real width, so the glance clipped it
+ * to twice the box, ink wrapped it, the frame grew past the viewport, and ink's
+ * incremental erase then removed fewer rows than it had drawn -- leaving the
+ * previous frame's rows stranded on screen, interleaved with the new one.
+ *
+ * `string-width` is the library ink itself measures with, deliberately: any
+ * second opinion here desynchronises the clip from the layout it clips for.
+ */
+test("width counts terminal cells, not code points", () => {
+  // Two cells per code point.
+  expect(visibleWidth("日本語")).toBe(6);
+  expect(visibleWidth("🎉")).toBe(2);
+  // One cell, and unchanged.
+  expect(visibleWidth("abc")).toBe(3);
+  // Zero-width joiners and variation selectors add no columns.
+  expect(visibleWidth("café")).toBe(4);
+  // Styling is still free.
+  expect(visibleWidth(`${ESC}[31m日${ESC}[0m`)).toBe(2);
+});
+
+test("clipping to a width never exceeds it, wide characters included", () => {
+  // Four cells is two CJK characters, not four.
+  expect(clipToWidth("日本語のテキスト", 4)).toBe("日本");
+  expect(visibleWidth(clipToWidth("日本語のテキスト", 4))).toBe(4);
+
+  // An ODD budget cannot be filled exactly by two-cell characters. The one that
+  // would straddle the edge is dropped, never half-printed: a terminal cannot
+  // render half a cell, so emitting it would put one more column on the row
+  // than the layout reserved -- the overflow this function exists to prevent.
+  expect(clipToWidth("日本語", 5)).toBe("日本");
+  expect(visibleWidth(clipToWidth("日本語", 5))).toBe(4);
+
+  // The property that matters, across a mixed line and every plausible width.
+  const mixed = `mixed 日本語 ${ESC}[32m🎉 done${ESC}[0m tail 語`;
+  for (let width = 1; width <= visibleWidth(mixed) + 2; width += 1) {
+    expect(visibleWidth(clipToWidth(mixed, width))).toBeLessThanOrEqual(width);
+  }
+});
+
+test("an emoji is never split into its surrogate halves", () => {
+  // Astral characters are two UTF-16 code units. A units-based walk cut between
+  // them and emitted a lone surrogate, which renders as a replacement glyph.
+  const clipped = clipToWidth("🎉🎉🎉", 3);
+  expect(clipped).toBe("🎉");
+  expect(
+    [...clipped].every((character) => {
+      const code = character.codePointAt(0) ?? 0;
+      return !(code >= 0xd800 && code <= 0xdfff);
+    }),
+  ).toBe(true);
+});

@@ -49,6 +49,7 @@ import {
   dashNavigation,
   dashVisibleCards,
   fetchedText,
+  glanceBodyWidth,
   glanceNeedsRefresh,
   glanceViewport,
   moveIndex,
@@ -520,11 +521,14 @@ export function App({ dashStore, initial }: DashProps) {
   const cardHeight =
     placement === "bottom" ? Math.max(4, Math.floor(bodyRows * (1 - share))) : bodyRows;
   const visibleCards = dashVisibleCards(cardHeight, prefs.compact, panes.length);
-  // The rail's own width, used only to pad a compact row to full width so the
-  // selection background spans it. Approximate is fine; the row is clipped.
+  // The rail's own width, which pads a compact row to full width so the
+  // selection background spans it. Rounded the way yoga rounds the percentage
+  // it is actually given, for the reason `glanceBodyWidth` is: a row one column
+  // wider than its box wraps, and a wrapped row costs two of the rail's rows
+  // while the window budget only paid for one.
   const railWidth = Math.max(
     1,
-    placement === "right" ? Math.round(columns * (1 - share)) : columns,
+    placement === "right" ? Math.round((columns * Math.round((1 - share) * 100)) / 100) : columns,
   );
   const window = cardWindow(selectedIndex, panes.length, visibleCards);
   const shown = panes.slice(window.first, window.first + window.shown);
@@ -805,14 +809,7 @@ export function App({ dashStore, initial }: DashProps) {
     return placement === "bottom" ? Math.max(5, bodyRows - cardHeight) : bodyRows;
   })();
   const glanceLines = glance.split("\n");
-  // The glance body's own width: the box less its border (1 each side) and
-  // paddingX (1 each side). Only used to bound what ink measures, so an
-  // approximation is fine -- but it must not be wider than the box, or the
-  // clipping stops collapsing anything.
-  const glanceTextWidth = Math.max(
-    1,
-    Math.round((placement === "right" ? columns * share : columns) - 4),
-  );
+  const glanceTextWidth = glanceBodyWidth(columns, share, placement);
   const previewFocused = focus === "preview";
   const inputChromeRows = inputMode ? 2 + (inputError ? 1 : 0) : previewFocused ? 1 : 0;
   const glanceFrame = glanceViewport(glanceLines.length, glanceBoxHeight - inputChromeRows);

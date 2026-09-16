@@ -149,6 +149,33 @@ export function scrollLabel(window: {
 }
 
 /**
+ * The glance body's width in cells, derived the way ink actually lays the box
+ * out rather than from the share directly.
+ *
+ * The rail and the glance are sized in PERCENTAGES, so yoga rounds the rail
+ * first and the glance gets whatever columns are left. Computing the glance
+ * side as `columns * share` instead disagrees with that by a column at most
+ * widths -- and one column too many is not cosmetic: the clipped body then
+ * exceeds the box, wraps, pushes the frame past the viewport, and ink erases
+ * the wrong number of rows and leaves the previous frame's rows on screen.
+ *
+ * So the arithmetic mirrors the layout: round the RAIL, subtract, then take off
+ * the border (1 each side) and paddingX (1 each side). A `bottom` glance spans
+ * the full width and only pays the chrome.
+ */
+export function glanceBodyWidth(
+  columns: number,
+  share: number,
+  placement: "right" | "bottom",
+): number {
+  const box =
+    placement === "right"
+      ? columns - Math.round((columns * Math.round((1 - share) * 100)) / 100)
+      : columns;
+  return Math.max(1, box - 4);
+}
+
+/**
  * How many glance body lines fit in a bordered box, reserving one row for the
  * scroll cue when the text is taller than the box.
  */
