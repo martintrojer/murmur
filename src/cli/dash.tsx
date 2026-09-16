@@ -348,7 +348,7 @@ function CompactRow({
   );
 }
 
-function App({ dashStore, initial }: DashProps) {
+export function App({ dashStore, initial }: DashProps) {
   const { exit, suspendTerminal } = useApp();
   const [, setStoreRevision] = useState(0);
   const store = dashStore.store;
@@ -517,13 +517,6 @@ function App({ dashStore, initial }: DashProps) {
     1,
     placement === "right" ? Math.round(columns * (1 - share)) : columns,
   );
-  const compactFieldsByPane = new Map(
-    panes.map((pane) => [
-      paneKey(pane),
-      compactFields(pane, pane === selected ? glanceLine : undefined, now),
-    ]),
-  );
-  const compactLayout = compactRowLayout([...compactFieldsByPane.values()], railWidth);
   const window = cardWindow(selectedIndex, panes.length, visibleCards);
   const shown = panes.slice(window.first, window.first + window.shown);
   const scroll = scrollLabel({ ...window, total: panes.length });
@@ -827,6 +820,13 @@ function App({ dashStore, initial }: DashProps) {
     .reverse()
     .find((line) => line.trim())
     ?.trim();
+  const compactFieldsByPane = new Map(
+    panes.map((pane) => [
+      paneKey(pane),
+      compactFields(pane, pane === selected ? glanceLine : undefined, now),
+    ]),
+  );
+  const compactLayout = compactRowLayout([...compactFieldsByPane.values()], railWidth);
   const filterDraft = [...query];
   const filterBefore = filterDraft.slice(0, filter.query.cursor).join("");
   const filterCursor = filterDraft[filter.query.cursor] ?? " ";
