@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { peerForHost, shellQuote } from "./agents.js";
 import { SSH_OPTIONS } from "./channel.js";
-import { tmux } from "./mux.js";
+import { tmux, tmuxArgs } from "./mux.js";
 import type { Store } from "./store.js";
 import type { PaneView } from "./view.js";
 
@@ -74,7 +74,7 @@ export function glance(
   run: GlanceRunner = sshRunner,
 ): string | null {
   if (agent.local) {
-    const local = tmux.capture(agent.pane, lines);
+    const local = tmux.capture(agent.pane, lines, agent.server);
     return local === null ? null : expandTabs(local);
   }
 
@@ -100,20 +100,14 @@ export function glance(
   // exactly why the row is on screen at all.
   if (peer.last_error !== null) return null;
   try {
-    // `shellQuote`, not `'${...}'`, because nothing constrains this value to
-    // `%N`: it arrives in a peer's snapshot, `parseSnapshot` checks only that it
-    // is a non-empty string, and `asPaneId` deliberately round-trips an id
-    // murmur does not recognise. Hand-rolled quotes do not escape an embedded
-    // single quote, so a pane containing one would close the quote and hand the
-    // remainder to the remote login shell as code -- ssh joins its argv into one
-    // string, so this is execution rather than a mangled argument.
-    //
-    // The trust boundary is a peer the operator configured, which is why this
-    // was never urgent; the posture is safety by construction, and the tested
-    // helper every other ssh path already uses was one import away.
-    return expandTabs(
-      run(target, ["tmux", "capture-pane", "-p", "-t", shellQuote(agent.pane), "-S", `-${lines}`]),
-    );
+    // ssh's remote side is a login shell. Build the tmux argv first, including
+    // the snapshot's server selector, then quote every word into its one remote
+    // command so hostile server values and pane ids remain data.
+    const argv = [
+      "tmux",
+      ...tmuxArgs(agent.server, ["capture-pane", "-p", "-t", agent.pane, "-S", `-${lines}`]),
+    ];
+    return expandTabs(run(target, [argv.map(shellQuote).join(" ")]));
   } catch {
     // Cold socket, dead tmux, gone pane. The preview says so rather than the
     // picker failing.

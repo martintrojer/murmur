@@ -1,14 +1,16 @@
-import { mkdtempSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { warmSocketCommand } from "../src/channel.js";
+import { glance } from "../src/glance.js";
 import { createIdentity, loadIdentity } from "../src/identity.js";
 import { asPaneId, asSessionId, asWindowId } from "../src/ids.js";
 import { previewText } from "../src/paint.js";
 import { status } from "../src/status.js";
 import { openStore, type Store } from "../src/store.js";
-import type { Location, Snapshot, SnapshotPane } from "../src/types.js";
+import type { Location, Snapshot, SnapshotPane, TmuxServer } from "../src/types.js";
 
 let store: Store;
 
@@ -47,9 +49,9 @@ function remoteSnapshot(panes: SnapshotPane[]): Snapshot {
   };
 }
 
-function remotePane(pane: string): SnapshotPane {
+function remotePane(pane: string, server: TmuxServer = { kind: "default" }): SnapshotPane {
   return {
-    server: { kind: "default" },
+    server,
     pane: asPaneId(pane),
     session: asSessionId("$9"),
     window: asWindowId("@9"),
@@ -227,18 +229,34 @@ test("a reachable peer is still dialled for a glance", () => {
   expect(text).toContain("pane contents");
 });
 
-test("a hostile pane id is quoted, not interpolated, into the remote command", () => {
-  // The glance's one ssh interpolation used `'${agent.pane}'`, which does not
-  // escape an embedded single quote -- so a pane id containing one closed the
-  // quote and handed the rest to the remote login shell as code. ssh joins its
-  // argv into a single string, so that is execution rather than a mangled
-  // argument.
-  //
-  // Nothing upstream prevents it: the id comes from a peer's snapshot,
-  // `parseSnapshot` requires only a non-empty string, and `asPaneId` round-trips
-  // ids murmur does not recognise on purpose. The trust boundary is a configured
-  // peer, which is why this was never urgent -- but the fix is the tested helper
-  // every other ssh path already used.
+test.each([
+  [{ kind: "default" } as const, "'tmux' 'capture-pane' '-p' '-t' '%1' '-S' '-40'"],
+  [
+    { kind: "label", value: "co'op; touch /tmp/server-pwned" } as const,
+    "'tmux' '-L' 'co'\\''op; touch /tmp/server-pwned' 'capture-pane' '-p' '-t' '%1' '-S' '-40'",
+  ],
+  [
+    { kind: "path", value: "/tmp/co'op; touch /tmp/server-pwned.sock" } as const,
+    "'tmux' '-S' '/tmp/co'\\''op; touch /tmp/server-pwned.sock' 'capture-pane' '-p' '-t' '%1' '-S' '-40'",
+  ],
+])(
+  "the remote glance selects the pane's %s tmux server with one inert command",
+  (server, command) => {
+    // A missing selector silently asks the default server, where the same pane id
+    // may name another process. Quoting the assembled argv one argument at a time
+    // keeps both private-server values and pane ids inert in ssh's login shell.
+    store.addPeer("bubba", "bubba.example");
+    store.replacePeerSnapshot("bubba", {
+      ok: true,
+      at: Date.now(),
+      snapshot: remoteSnapshot([remotePane("%1", server)]),
+    });
+
+    expect(preview("%1", "REMOTE").argv).toEqual([[command]]);
+  },
+);
+
+test("a hostile pane id is inert in the remote command", () => {
   const hostile = "%1';touch /tmp/murmur-pwned;'";
   store.addPeer("bubba", "bubba.example");
   store.replacePeerSnapshot("bubba", {
@@ -247,12 +265,83 @@ test("a hostile pane id is quoted, not interpolated, into the remote command", (
     snapshot: remoteSnapshot([remotePane(hostile)]),
   });
 
-  const { argv } = preview(hostile, "REMOTE");
+  expect(preview(hostile, "REMOTE").argv).toEqual([
+    ["'tmux' 'capture-pane' '-p' '-t' '%1'\\'';touch /tmp/murmur-pwned;'\\''' '-S' '-40'"],
+  ]);
+});
 
-  const target = argv[0]?.[argv[0].indexOf("-t") + 1];
-  // One POSIX single-quoted word: every embedded quote is escaped as '\'' so the
-  // shell rebuilds the original string and never sees `;` as a separator.
-  expect(target).toBe("'%1'\\'';touch /tmp/murmur-pwned;'\\'''");
+test("a glance failure returns no preview without deleting cached state", () => {
+  store.addPeer("bubba", "bubba.example");
+  store.replacePeerSnapshot("bubba", {
+    ok: true,
+    at: Date.now(),
+    snapshot: remoteSnapshot([
+      remotePane("%8", { kind: "path", value: "/tmp/missing-murmur.sock" }),
+    ]),
+  });
+  const identity = loadIdentity();
+  if (!identity) throw new Error("no identity");
+  const agent = status(store, identity).panes.find((candidate) => candidate.pane === "%8");
+  if (!agent) throw new Error("no remote pane");
+
+  expect(
+    glance(store, agent, 40, () => {
+      throw new Error("capture failed");
+    }),
+  ).toBeNull();
+  expect(status(store, identity).panes.some((candidate) => candidate.pane === "%8")).toBe(true);
+});
+
+test("a remote glance captures a real private tmux pane", () => {
+  const label = `murmur-glance-${process.pid}`;
+  let socket: string | null = null;
+  try {
+    execFileSync(
+      "tmux",
+      [
+        "-L",
+        label,
+        "-f",
+        "/dev/null",
+        "new-session",
+        "-d",
+        "-s",
+        "glance",
+        "printf 'PRIVATE_GLANCE_VISIBLE\\n'; exec sleep 30",
+      ],
+      { stdio: "ignore" },
+    );
+    socket = execFileSync("tmux", ["-L", label, "display-message", "-p", "#{socket_path}"], {
+      encoding: "utf8",
+    }).trim();
+    const pane = execFileSync("tmux", ["-L", label, "list-panes", "-F", "#{pane_id}"], {
+      encoding: "utf8",
+    }).trim();
+
+    store.addPeer("private", "unused.example");
+    store.replacePeerSnapshot("private", {
+      ok: true,
+      at: Date.now(),
+      snapshot: remoteSnapshot([remotePane(pane, { kind: "label", value: label })]),
+    });
+    const identity = loadIdentity();
+    if (!identity) throw new Error("no identity");
+    const agent = status(store, identity).panes.find((candidate) => candidate.pane === pane);
+    if (!agent) throw new Error("no private pane");
+
+    expect(glance(store, { ...agent, local: true })).toContain("PRIVATE_GLANCE_VISIBLE");
+    const captured = glance(store, agent, 40, (_target, [command = ""]) =>
+      execFileSync("sh", ["-c", command], { encoding: "utf8" }),
+    );
+    expect(captured).toContain("PRIVATE_GLANCE_VISIBLE");
+  } finally {
+    if (socket) {
+      try {
+        execFileSync("tmux", ["-S", socket, "kill-server"], { stdio: "ignore" });
+      } catch {}
+      rmSync(socket, { force: true });
+    }
+  }
 });
 
 test("a gated peer's preview says why, and names the command", () => {

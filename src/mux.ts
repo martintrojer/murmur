@@ -30,7 +30,7 @@ export interface Mux {
   attach(pane: PaneId, server?: TmuxServer): boolean;
   windowForPane(pane: PaneId, server?: TmuxServer): WindowId | null;
   panesInWindow(window: WindowId, server?: TmuxServer): PaneId[];
-  capture(pane: PaneId, lines?: number): string | null;
+  capture(pane: PaneId, lines?: number, server?: TmuxServer): string | null;
   // --- remote-jump session seam -------------------------------------------
   // A remote attach lives in its own local session rather than a window, so it
   // can be full-screen (no local status bar) and prefix-free (no nested ^b).
@@ -409,10 +409,10 @@ export const tmux: Mux = {
     return out ? asWindowId(out) : null;
   },
 
-  capture(pane, lines) {
+  capture(pane, lines, server = { kind: "default" }) {
     const args = ["capture-pane", "-p", "-t", pane];
     if (lines !== undefined) args.push("-S", `-${lines}`);
-    return runTmux(args);
+    return runTmux(args, server);
   },
 };
 
