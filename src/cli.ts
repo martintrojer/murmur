@@ -6,6 +6,7 @@ import { registerDash } from "./cli/dash-register.js";
 import { registerDoctor } from "./cli/doctor.js";
 import { registerExport } from "./cli/export.js";
 import { registerInit } from "./cli/init.js";
+import { registerJumpCommand } from "./cli/jump-command.js";
 import { registerLink } from "./cli/link.js";
 import { registerNotify } from "./cli/notify.js";
 import { registerPeer } from "./cli/peer.js";
@@ -20,6 +21,7 @@ program
   .version(VERSION);
 registerInit(program);
 registerLink(program);
+registerJumpCommand(program);
 registerExport(program);
 registerCollect(program);
 registerClear(program);

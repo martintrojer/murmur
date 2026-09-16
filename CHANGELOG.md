@@ -15,6 +15,8 @@ Peer jump templates now support `{attach}`, a shell-quoted complete tmux attach
 command that includes `-L` or `-S` for private servers. Generated defaults
 migrate automatically. Custom `{pane}` templates remain valid for the default
 server and refuse private-server jumps with a pasteable migration command.
+`murmur jump-command --host H --agent A` renders the exact cached attach command
+without connecting, including hidden crew agents; `--json` returns its address.
 
 coop 0.1.2 supplies crew metadata to its job shell by default, so a real pi
 launched through coop appears as `coop-<job-id>` on server label `coop` and
