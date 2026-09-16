@@ -177,10 +177,12 @@ export function oneLiner(agent: PaneView, glanceLine?: string | null): string {
   if (reported) return reported;
 
   // Stripped of styling, because this value is read as a STRING and not
-  // painted: the filter matches the reader's query against it, the compact
-  // table sizes columns from its width, and `piFooter` matches anchored
-  // patterns that a mid-word colour change would break. The preview body keeps
-  // the pane's colours; a summary in dash chrome must not carry them.
+  // painted: the compact table sizes its columns from this width, and
+  // `piFooter` below matches anchored patterns that a mid-word colour change
+  // would break. (Not for the `/` filter -- `dashSearchText` searches labels,
+  // names, workstream, session, host and state, never the summary.) The
+  // preview body keeps the pane's colours; a summary in dash chrome must not
+  // carry them.
   const lines = plainText(glanceLine ?? "").split("\n");
   for (let index = lines.length - 1; index >= 0; index -= 1) {
     const line = lines[index]?.trim();

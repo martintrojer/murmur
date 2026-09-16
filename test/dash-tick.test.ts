@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { visibleWidth } from "../src/ansi.js";
+import { plainText, visibleWidth } from "../src/ansi.js";
 import {
   cardWindow,
   clipGlanceLine,
@@ -424,11 +424,16 @@ test("leaving input mode restores the focus it was opened from", () => {
   expect(dashInputFocus(fromPreview, "leave")).toEqual({ focus: "preview", origin: null });
 });
 
-test("sending keeps input mode and its remembered origin", () => {
+test("re-entering input mode does not make the origin the preview", () => {
+  // Enter is idempotent about the FOCUS but not about the origin, so a second
+  // `enter` without an intervening `leave` would overwrite `cards` with the
+  // `preview` that entering itself moved focus to -- and Escape would then
+  // leave the reader in the preview they never chose.
   const open = dashInputFocus({ focus: "cards", origin: null }, "enter");
-  const sent = dashInputFocus(open, "send");
-  expect(sent).toEqual({ focus: "preview", origin: "cards" });
-  expect(dashInputFocus(sent, "leave")).toEqual({ focus: "cards", origin: null });
+  expect(dashInputFocus(dashInputFocus(open, "leave"), "enter")).toEqual({
+    focus: "preview",
+    origin: "cards",
+  });
 });
 
 test("leaving without a remembered origin keeps the current focus", () => {
@@ -512,6 +517,40 @@ test("glance clipping measures visible columns and keeps sequences whole", () =>
   expect(clipGlanceLine(`\u001b[31m${"a".repeat(90)}FIRST`, 80)).toBe(
     clipGlanceLine(`\u001b[31m${"a".repeat(90)}SECOND`, 80),
   );
+});
+
+test("compact columns align around styled and wide cells, not byte counts", () => {
+  // The compact table lays out FIXED columns from measured text, so what
+  // `visibleWidth` returns is what every column to the right of a cell is
+  // offset by. Measuring escape bytes as width inflated the agent column by the
+  // length of a colour code and sheared the rest of the row; the existing
+  // styled-summary test below could not see it, because a summary is the LAST
+  // column and nothing is offset by it.
+  const styled = {
+    state: "R",
+    agent: `\u001b[1mworker\u001b[0m`,
+    host: "here",
+    stream: "",
+    flags: "",
+    age: "",
+    summary: "",
+  };
+  const plain = { ...styled, agent: "bot", host: "there" };
+  const layout = compactRowLayout([styled, plain], 40);
+
+  // Six visible columns, whatever the eight escape bytes around them cost.
+  expect(layout.widths.agent).toBe(6);
+  // And the host column therefore starts at the same offset in both rows.
+  expect(plainText(compactRow(styled, layout, "  ")).indexOf("here")).toBe(
+    plainText(compactRow(plain, layout, "  ")).indexOf("there"),
+  );
+
+  // Wide characters are counted per code point, which is murmur's standing
+  // policy everywhere and NOT what the terminal paints: a CJK cell is two
+  // columns wide. Pinned rather than fixed, so the disagreement with ink's
+  // `string-width` measurement is a decision on record and changing it is a
+  // deliberate edit here rather than a silent drift.
+  expect(compactRowLayout([{ ...plain, agent: "日本語" }], 40).widths.agent).toBe(3);
 });
 
 test("a compact row measures a styled summary by its visible width", () => {

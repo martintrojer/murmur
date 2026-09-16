@@ -191,11 +191,10 @@ export function dashNavigation(
  * came from is the only way Escape can put it back.
  */
 export type DashInputFocus = { focus: DashFocus; origin: DashFocus | null };
-export type DashInputFocusEvent = "enter" | "send" | "leave";
+export type DashInputFocusEvent = "enter" | "leave";
 
 export function dashInputFocus(state: DashInputFocus, event: DashInputFocusEvent): DashInputFocus {
   if (event === "enter") return { focus: "preview", origin: state.focus };
-  if (event === "send") return state;
   return { focus: state.origin ?? state.focus, origin: null };
 }
 

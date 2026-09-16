@@ -40,7 +40,6 @@ import {
   compactRow,
   compactRowLayout,
   compactSelectionMarker,
-  type DashFocus,
   type DashFooterMode,
   type DashInputFocus,
   type DashViewState,
@@ -364,7 +363,13 @@ export function App({ dashStore, initial }: DashProps) {
   const [glanceScroll, setGlanceScroll] = useState(0);
   const [focusState, setFocusState] = useState<DashInputFocus>({ focus: "cards", origin: null });
   const focus = focusState.focus;
-  const setFocus = (next: DashFocus) => setFocusState((state) => ({ ...state, focus: next }));
+  // An UPDATER rather than a computed value, so the new focus does not depend
+  // on the `focus` of the render that created this closure: a toggle read from
+  // a stale `focus` turns two quick Tabs into one. The mouse handler below
+  // calls `setFocusState` directly for the same reason from the other end -- it
+  // lives in a `useEffect([])`, which may only close over the stable setter.
+  const toggleFocus = () =>
+    setFocusState((state) => ({ ...state, focus: state.focus === "cards" ? "preview" : "cards" }));
   const [inputTarget, setInputTarget] = useState<PaneView | null>(null);
   const [composer, setComposer] = useState<Composer>(emptyComposer);
   const [inputError, setInputError] = useState("");
@@ -730,7 +735,7 @@ export function App({ dashStore, initial }: DashProps) {
     } else if (input === "q" || (key.ctrl && input === "c")) {
       exit();
     } else if (key.tab) {
-      setFocus(focus === "cards" ? "preview" : "cards");
+      toggleFocus();
     } else if (
       input === "j" ||
       key.downArrow ||

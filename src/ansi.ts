@@ -32,14 +32,50 @@ export type AnsiToken = {
   value: string;
 };
 
-/** Where a string-family sequence ends: at ST, or at the BEL xterm also accepts. */
+/**
+ * Where a string-family sequence ends: at ST, at the BEL xterm also accepts --
+ * or, failing both, at the end of the LINE.
+ *
+ * The line bound is the point. tmux truncates a capture mid-sequence whenever
+ * the pane was written to while it read, the same routine event the dangling
+ * ESC case covers; an unterminated `OSC 0 ; title` then ate the rest of the
+ * capture, so one clipped window title blanked every line below it instead of
+ * its own. A real OSC or DCS payload does not span a newline in pane output, so
+ * stopping there costs nothing and bounds the damage to the truncated line.
+ *
+ * The newline itself is left for the scanner to read as text, because it is the
+ * line structure every consumer downstream is built from.
+ */
 function endOfString(value: string, from: number): number {
   const st = value.indexOf(ST, from);
   const bel = value.indexOf(BEL, from);
+  const newline = value.indexOf("\n", from);
+  const terminators = [st, bel].filter((index) => index !== -1);
+  if (newline !== -1 && terminators.every((index) => newline < index)) return newline;
   if (st === -1 && bel === -1) return value.length;
   if (st === -1) return bel + BEL.length;
   if (bel === -1) return st + ST.length;
   return st < bel ? st + ST.length : bel + BEL.length;
+}
+
+/**
+ * Is this CSI a private or experimental form, whatever its final byte says?
+ *
+ * ECMA-48 reserves a leading `<=>?` for private use and the 0x20-0x2f
+ * intermediates for extensions, and no real SGR uses either -- so keying the
+ * allow-list on the final byte alone let a whole family through under cover of
+ * `m`. `CSI > 4 ; 2 m` is xterm's modifyOtherKeys: pane output carrying it
+ * would change the READER's keyboard reporting mode, the same class of harm
+ * OSC 52 is refused for, and `CSI ? 25 m` or `CSI = 5 m` are as unknown.
+ */
+function privateCsi(parameters: string): boolean {
+  const first = parameters.charCodeAt(0);
+  if (first >= 0x3c && first <= 0x3f) return true;
+  for (let index = 0; index < parameters.length; index += 1) {
+    const code = parameters.charCodeAt(index);
+    if (code >= 0x20 && code <= 0x2f) return true;
+  }
+  return false;
 }
 
 /**
@@ -90,8 +126,9 @@ export function scan(value: string): AnsiToken[] {
       continue;
     }
     if (introducer === "[") {
-      // CSI: parameter and intermediate bytes, then one final byte. `m` is SGR
-      // and the only one kept; `H`, `J`, `K`, `A`-`D` and friends move or erase.
+      // CSI: parameter and intermediate bytes, then one final byte. Plain `m`
+      // is SGR and the only one kept; `H`, `J`, `K`, `A`-`D` and friends move
+      // or erase, and a private/intermediate `m` is not SGR at all.
       let cursor = index + 2;
       while (cursor < value.length) {
         const code = value.charCodeAt(cursor);
@@ -99,7 +136,7 @@ export function scan(value: string): AnsiToken[] {
         cursor += 1;
       }
       const final = value[cursor];
-      if (final === "m") {
+      if (final === "m" && !privateCsi(value.slice(index + 2, cursor))) {
         flush();
         tokens.push({ kind: "sgr", value: value.slice(index, cursor + 1) });
       }
@@ -144,10 +181,10 @@ export function sgrOnly(value: string): string {
 /**
  * The same text with the styling removed as well.
  *
- * For anything that is read as a STRING rather than painted: a card summary the
- * filter matches against, and the compact table's column measurements. Escape
- * bytes there made a search for a word whose colour changed mid-line miss, and
- * every width wrong.
+ * For anything that is read as a STRING rather than painted: the card summary,
+ * whose words `piFooter` matches anchored patterns against, and the compact
+ * table's column measurements. Escape bytes there made an anchored match miss a
+ * line whose colour changed mid-word, and every width wrong.
  */
 export function plainText(value: string): string {
   return scan(value)

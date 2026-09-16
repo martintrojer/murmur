@@ -7,6 +7,7 @@ import { warmSocketCommand } from "../src/channel.js";
 import { glance } from "../src/glance.js";
 import { createIdentity, loadIdentity } from "../src/identity.js";
 import { asPaneId, asSessionId, asWindowId } from "../src/ids.js";
+import { tmux } from "../src/mux.js";
 import { previewText } from "../src/paint.js";
 import { status } from "../src/status.js";
 import { openStore, type Store } from "../src/store.js";
@@ -479,4 +480,47 @@ test("a tab after a colour code still lands on its column stop", () => {
   const { text } = preview("%15", "REMOTE", "\u001b[32mab\tcd");
 
   expect(text).toContain("\u001b[32mab      cd");
+});
+
+test("a LOCAL capture is sanitised on the same terms as a remote one", () => {
+  // Every other sanitation assertion here goes through the remote branch, so
+  // dropping `previewSafe` from the local one left the whole suite green: the
+  // pane a reader previews most often -- one on their own machine -- was the
+  // untested path. Local and remote are two call sites of one rule, and they
+  // drift by exactly this kind of omission.
+  //
+  // `tmux.capture` is stubbed rather than the child process, because that
+  // object IS the seam on the local branch, and a real pane cannot be made to
+  // emit a clipboard write and a mid-attribute line on demand.
+  store.claimAgent({
+    location: location("%20"),
+    owner_pid: process.pid,
+    meta: {
+      agent_name: "local-worker",
+      pi_session: null,
+      workstream: "murmur",
+      role: null,
+      cli: "pi",
+      driver: "human",
+    },
+  });
+  const identity = loadIdentity();
+  if (!identity) throw new Error("no identity");
+  const agent = status(store, identity).panes.find((candidate) => candidate.pane === "%20");
+  if (!agent) throw new Error("no local pane");
+  vi.spyOn(tmux, "capture").mockReturnValue(
+    "\u001b[2J\u001b[1;1H\u001b[31mred\u001b]52;c;cGF5bG9hZA==\u0007\thot\n\u001b[41mbled",
+  );
+
+  const captured = glance(store, agent);
+
+  if (captured === null) throw new Error("no local glance");
+  // Colours kept; cursor move, erase and the clipboard write gone; the tab
+  // expanded from its VISIBLE column; the unterminated background closed at the
+  // line boundary instead of bleeding into the dash chrome.
+  expect(captured).toContain("\u001b[31mred");
+  expect(captured).not.toContain("[2J");
+  expect(captured).not.toContain("52;c;");
+  expect(captured).toContain("red     hot");
+  expect(captured.split("\n")[1]).toBe("\u001b[41mbled\u001b[0m");
 });

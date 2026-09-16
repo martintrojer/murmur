@@ -38,6 +38,42 @@ test("cursor movement, erases, OSC, and hyperlinks are stripped", () => {
   expect(sgrOnly(`ab${ESC}`)).toBe("ab");
 });
 
+test("a private or experimental CSI ending in m is not mistaken for SGR", () => {
+  // The allow-list keyed on the final byte, so an entire family rode in under
+  // cover of `m`. `CSI > 4 ; 2 m` is xterm's modifyOtherKeys: pane output
+  // containing it reconfigures the READER's keyboard reporting, which is the
+  // same class of harm OSC 52 is refused for -- and the dash previews panes it
+  // does not trust, which is the premise of this whole file.
+  expect(sgrOnly(`a${ESC}[>4;2mb`)).toBe("ab");
+  expect(sgrOnly(`a${ESC}[?25mb`)).toBe("ab");
+  expect(sgrOnly(`a${ESC}[=5mb`)).toBe("ab");
+  expect(sgrOnly(`a${ESC}[<3mb`)).toBe("ab");
+  // An intermediate byte (0x20-0x2f) says "extension", and no real SGR has one.
+  expect(sgrOnly(`a${ESC}[ mb`)).toBe("ab");
+  expect(sgrOnly(`a${ESC}[1 mb`)).toBe("ab");
+  // Real SGR is untouched, including the empty parameter list and the colon
+  // forms a truecolor terminal emits.
+  expect(sgrOnly(`${ESC}[mx`)).toBe(`${ESC}[mx`);
+  expect(sgrOnly(`${ESC}[38:2::255:0:0mx`)).toBe(`${ESC}[38:2::255:0:0mx`);
+});
+
+test("an unterminated string sequence costs its own line, not the rest", () => {
+  // tmux truncates a capture mid-sequence whenever the pane was written to
+  // while it read -- the same routine event the dangling-ESC case covers. With
+  // the terminator search unbounded, one clipped `OSC 0 ; title` swallowed
+  // every following line, so a preview went blank because a program happened to
+  // set its window title as the snapshot was taken.
+  expect(sgrOnly(`first${ESC}]0;titl\nsecond\nthird`)).toBe("first\nsecond\nthird");
+  // Same for the DCS/APC half, where sixel and kitty payloads live.
+  expect(sgrOnly(`a${ESC}Pqtrunc\nb`)).toBe("a\nb");
+  expect(sgrOnly(`a${ESC}_Gf=100\nb`)).toBe("a\nb");
+  // A properly terminated sequence still consumes its payload across the
+  // newline it legitimately contains, since ST is found before that newline.
+  expect(sgrOnly(`a${ESC}]0;ti\u0007\nb`)).toBe("a\nb");
+  // With nothing after it, a truncated sequence still costs only itself.
+  expect(sgrOnly(`a${ESC}]0;titl`)).toBe("a");
+});
+
 test("control characters other than newline and tab are stripped", () => {
   // Newlines are the line structure the preview is built from and tabs are
   // expanded later, at their column stops. A bare CR would overprint the row
