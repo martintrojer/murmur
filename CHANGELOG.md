@@ -3,6 +3,33 @@
 Notable changes per release. Written for someone deciding whether to upgrade,
 so it says what changed for a user rather than listing every commit.
 
+## 0.5.2
+
+Wire-compatible with 0.5.0 and 0.5.1: the snapshot format remains version 3.
+Two dashboard fixes: one for a dash left open for days, one for panes
+containing wide characters.
+
+**The dashboard no longer runs out of memory.** A dash left open would abort
+after roughly two days with `JavaScript heap out of memory`. React chooses its
+development or production build from `NODE_ENV`, which a CLI has unset, so the
+dash loaded the development build -- which times every render and leaves each
+measurement in Node's performance timeline for the life of the process. A
+dashboard that redraws on a timer therefore leaked about 87MB an hour and never
+plateaued. It now selects the production build, and retention is flat. This is
+a different fault from the growth bounded in 0.4.2, which was native rendering
+churn rather than JavaScript memory; that fix is intact and still holding.
+
+**Wide characters no longer corrupt the dashboard.** Panes containing CJK text
+or emoji could leave rows from an earlier frame stranded on screen, with the
+preview drawn over them. Widths were counted in characters rather than in the
+cells a terminal actually paints, so any line with wide characters measured
+half its true width, overflowed its box, and wrapped -- which desynchronised
+the redraw from what had been drawn. Every surface now measures in cells, and a
+character that would straddle the right edge is dropped rather than split.
+Compact rows, card summaries and the `pick` table are aligned by the same rule,
+so a name or workstream with wide characters no longer shears the columns
+beside it.
+
 ## 0.5.1
 
 Wire-compatible with 0.5.0: the snapshot format remains version 3.
