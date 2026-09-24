@@ -3,6 +3,20 @@
 Notable changes per release. Written for someone deciding whether to upgrade,
 so it says what changed for a user rather than listing every commit.
 
+## 0.5.3
+
+Wire-compatible with 0.5.0 through 0.5.2: the snapshot format remains version
+3. One fix to the pi extension.
+
+**Starting a new pi session mid-response no longer raises an extension
+error.** Running `/new` while pi was still responding could report `turn_end
+could not resolve the persisted assistant entry ID`. Listening for pi's
+`turn_end` event, even passively, opts an extension into a boundary check that
+pi cannot satisfy for a response it is aborting. murmur no longer listens for
+`turn_end`. Model, context and usage figures still update after every turn, not
+only when a run finishes. An aborted or failed turn no longer overwrites the
+last real usage figures with partial or zero ones.
+
 ## 0.5.2
 
 Wire-compatible with 0.5.0 and 0.5.1: the snapshot format remains version 3.
