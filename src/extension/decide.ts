@@ -61,6 +61,8 @@ export type RuntimeContext = {
 
 /** The subset of pi's AssistantMessage this file reads. All optional. */
 export type RuntimeMessage = {
+  role?: string | undefined;
+  stopReason?: string | undefined;
   usage?:
     | {
         input: number;
@@ -150,6 +152,24 @@ export function runtimeFromContext(ctx: RuntimeContext | undefined): Partial<Age
  * message does -- an aborted or errored turn may not -- and reporting a bundle
  * of zeroes would claim a turn that cost nothing.
  */
+/**
+ * Whether a `message_end` message is a completed turn whose usage is worth
+ * reporting.
+ *
+ * pi fires `message_end` for every role, so anything but an assistant is not a
+ * turn. An aborted or errored assistant is skipped too, as pi's own
+ * `getAssistantUsage` does: its usage is partial at best, and pi's run-failure
+ * path synthesises an all-zero bundle. Reporting that would overwrite the last
+ * real figures with a claim that the turn cost nothing.
+ */
+export function isReportableTurn(message: RuntimeMessage | undefined): boolean {
+  return (
+    message?.role === "assistant" &&
+    message.stopReason !== "aborted" &&
+    message.stopReason !== "error"
+  );
+}
+
 export function usageFromMessage(message: RuntimeMessage | undefined): Partial<AgentRuntime> {
   const out: Partial<AgentRuntime> = {};
   // Same reason as `runtimeFromContext`: a direct caller owes this nothing.

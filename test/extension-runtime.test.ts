@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { runtimeFromContext, usageFromMessage } from "../src/extension/decide.js";
+import { isReportableTurn, runtimeFromContext, usageFromMessage } from "../src/extension/decide.js";
 
 /**
  * Reading pi's live values, as a pure function.
@@ -183,4 +183,16 @@ test("a provider-qualified model id is split, not stored whole", () => {
   expect(
     runtimeFromContext({ model: { id: "meta-openai/x/gpt-5.6-sol", provider: "bridge" } }),
   ).toEqual({ model: "gpt-5.6-sol", provider: "meta-openai/x" });
+});
+
+test("only a completed assistant message is a reportable turn", () => {
+  // pi fires message_end for every role, and its run-failure path synthesises an
+  // aborted or errored assistant carrying an all-zero usage bundle.
+  expect(isReportableTurn({ role: "assistant", stopReason: "stop" })).toBe(true);
+  expect(isReportableTurn({ role: "assistant", stopReason: "toolUse" })).toBe(true);
+  expect(isReportableTurn({ role: "assistant", stopReason: "aborted" })).toBe(false);
+  expect(isReportableTurn({ role: "assistant", stopReason: "error" })).toBe(false);
+  expect(isReportableTurn({ role: "user" })).toBe(false);
+  expect(isReportableTurn({ role: "toolResult" })).toBe(false);
+  expect(isReportableTurn(undefined)).toBe(false);
 });

@@ -141,17 +141,22 @@ test("re-linking reports an inlined copy it replaced, and stays quiet otherwise"
   expect(linkPi(home)).toContain("Replaced an inlined copy");
 });
 
-test("runtime reporting does not activate pi's turn_end boundary", async () => {
-  const runtimeUpdates: unknown[] = [];
+test("runtime is reported per turn without activating pi's turn_end boundary", async () => {
+  // Regression: a turn_end handler switches on pi's actionable turn boundary,
+  // which errors during `/new` when the aborted response is not yet persisted.
+  // Moving the write to agent_end fixed that but made usage and context move
+  // once per RUN, so a long tool-calling run showed stale figures throughout.
+  const runtimeUpdates: { usage?: { total_tokens: number }; context_pct?: number | null }[] = [];
 
   vi.doMock("@martintrojer/murmur/extension-store", () => ({
     loadIdentity: () => ({ host_id: "H", display_name: "h" }),
     openStore: () => ({
       claimAgent: () => ({ outcome: "claimed", agent_id: "a1" }),
-      setRuntime: (update: unknown) => {
+      setRuntime: (update: (typeof runtimeUpdates)[number]) => {
         runtimeUpdates.push(update);
         return true;
       },
+      setActivity: () => true,
       releaseAgent: () => true,
       close: () => {},
     }),
@@ -176,30 +181,50 @@ test("runtime reporting does not activate pi's turn_end boundary", async () => {
     on: (event: string, handler: (event: unknown, ctx: unknown) => unknown) =>
       void handlers.set(event, handler),
   } as never);
+  const fire = (event: string, payload: unknown = {}, ctx: unknown = {}) =>
+    handlers.get(event)?.(payload, ctx);
+  const assistant = (totalTokens: number, stopReason = "toolUse") => ({
+    message: {
+      role: "assistant",
+      stopReason,
+      usage: {
+        input: 1,
+        output: 2,
+        cacheRead: 3,
+        cacheWrite: 4,
+        totalTokens,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+    },
+  });
+  const context = (percent: number) => ({
+    getContextUsage: () => ({ tokens: percent, contextWindow: 100, percent }),
+  });
 
   expect(handlers.has("turn_end")).toBe(false);
-  await handlers.get("agent_end")?.(
-    {
-      messages: [
-        {
-          role: "assistant",
-          usage: {
-            input: 1,
-            output: 2,
-            cacheRead: 3,
-            cacheWrite: 4,
-            totalTokens: 10,
-            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-          },
-        },
-      ],
-    },
-    {},
-  );
-  await handlers.get("session_shutdown")?.({}, {});
 
-  expect(runtimeUpdates).toHaveLength(1);
-  expect(runtimeUpdates[0]).toMatchObject({ agent_id: "a1", usage: { total_tokens: 10 } });
+  // One run: two tool-calling turns, then an aborted one.
+  fire("turn_start");
+  fire("message_end", { message: { role: "user" } });
+  fire("message_end", assistant(10));
+  fire("message_end", { message: { role: "toolResult" } });
+  fire("turn_start", {}, context(11));
+  fire("message_end", assistant(20));
+  fire("turn_start", {}, context(22));
+  // A handler that returned a message would replace pi's.
+  expect(fire("message_end", assistant(0, "aborted"))).toBeUndefined();
+  fire("agent_end", {}, context(33));
+  await fire("session_shutdown");
+
+  // Each write pairs a turn's usage with the context read after it persisted,
+  // and a user or tool message is not a turn. The aborted turn's usage is not
+  // reported -- it would overwrite real figures with partial or zero ones --
+  // but agent_end still writes the context it left behind.
+  expect(runtimeUpdates.map((u) => [u.usage?.total_tokens, u.context_pct])).toEqual([
+    [10, 11],
+    [20, 22],
+    [undefined, 33],
+  ]);
 
   vi.doUnmock("@martintrojer/murmur/extension-store");
   vi.doUnmock("../src/mux.js");

@@ -4,6 +4,7 @@ import type { Store } from "../store.js";
 import type { Activity, AgentMeta, AgentRuntime, Location } from "../types.js";
 import {
   driverFromEnv,
+  isReportableTurn,
   type RuntimeContext,
   type RuntimeMessage,
   runtimeFromContext,
@@ -25,26 +26,26 @@ type ExtensionAPI = {
     event: "agent_settled" | "session_shutdown" | "session_start",
     handler: () => void | Promise<void>,
   ): void;
-  on(
-    event: "agent_end",
-    handler: (
-      event: { messages?: (RuntimeMessage & { role?: string })[] },
-      ctx: RuntimeContext,
-    ) => void | Promise<void>,
-  ): void;
-  // `agent_start` takes ctx because a run beginning is the moment to state what
+  // The runtime-reporting events: each reads `ctx`, and `message_end` reads the
+  // assistant message. Every member of both payloads is optional in
+  // `RuntimeContext` / `RuntimeMessage`, so a pi that lacks any of them degrades
+  // to reporting nothing rather than crashing -- which is why murmur can declare
+  // this surface instead of depending on pi to build.
+  //
+  // `agent_start` is here because a run beginning is the moment to state what
   // this agent is running WITH -- a resumed session may never emit a
-  // model_select or an agent_end, and would otherwise report nothing at all.
-  on(event: "agent_start", handler: (event: unknown, ctx: RuntimeContext) => void): void;
-  // The runtime-reporting events, declared separately because they are the only
-  // ones whose handlers take arguments. Every member of both payloads is
-  // optional in `RuntimeContext` / `RuntimeMessage`, so a pi that lacks any of
-  // them degrades to reporting nothing rather than crashing -- which is why
-  // murmur can declare this surface instead of depending on pi to build.
+  // model_select or complete a turn, and would otherwise report nothing at all.
   on(
-    event: "model_select" | "thinking_level_select",
-    handler: (event: RuntimeMessage, ctx: RuntimeContext) => void,
+    event: "agent_start" | "agent_end" | "turn_start" | "model_select" | "thinking_level_select",
+    handler: (event: unknown, ctx: RuntimeContext) => void,
   ): void;
+  // NOT `turn_end`. Registering any turn_end handler switches on pi's
+  // actionable turn boundary, which must resolve the assistant's persisted
+  // entry id; during `/new` pi aborts the run before that entry exists and
+  // reports a boundary error. `message_end` carries the same assistant message
+  // with no boundary attached. Its handler may return a replacement message, so
+  // this one must return nothing.
+  on(event: "message_end", handler: (event: { message?: RuntimeMessage }) => void): void;
   getSessionName?(): string | undefined;
 };
 
@@ -181,6 +182,15 @@ export default function murmurPi(pi: ExtensionAPI): void {
   let refused = false;
   /** This process's agent row, for the life of the process. */
   let agentId: string | null = null;
+  /**
+   * The last completed turn's assistant message, waiting to be written.
+   *
+   * Held, not written, at `message_end`: pi dispatches that event BEFORE it
+   * persists the message, so the context read there would still describe the
+   * previous turn. It is written at the next `turn_start` or at `agent_end`,
+   * both of which follow persistence of the whole turn, tool results included.
+   */
+  let pendingTurn: RuntimeMessage | null = null;
   let queue: Promise<void> = Promise.resolve();
 
   const enqueue = (work: () => Promise<void>): Promise<void> => {
@@ -324,7 +334,7 @@ export default function murmurPi(pi: ExtensionAPI): void {
       // badge painted before it would announce an agent that has moved on.
       if (await report("running", location)) badge(location, "running");
       // Then what it is running with. Here as well as on the change events,
-      // because a RESUMED session may never emit a model_select or agent_end --
+      // because a RESUMED session may never emit a model_select or end a turn --
       // it would sit on the dash reporting no model for its whole life.
       await reportRuntime(runtimeFromContext(ctx));
     });
@@ -334,7 +344,8 @@ export default function murmurPi(pi: ExtensionAPI): void {
   //
   //   model_select          the only thing that changes the model
   //   thinking_level_select the only thing that changes the requested effort
-  //   agent_end             the settled run has current context and usage
+  //   a completed turn      the only thing that moves the context, the token
+  //                         counts or the cost
   //
   // A periodic poll would have put a SQLite write in every pi process forever
   // for numbers that cannot change between turns. These fire exactly as often
@@ -347,16 +358,40 @@ export default function murmurPi(pi: ExtensionAPI): void {
     void enqueue(() => reportRuntime(runtimeFromContext(ctx)));
   });
 
-  pi.on("agent_end", (event, ctx) => {
+  // A completed turn is reported in two halves, because pi offers no single
+  // event that is both boundary-free and after persistence (see the ExtensionAPI
+  // note on `turn_end`). `message_end` captures the usage; the next point that
+  // follows persistence writes it together with the context, in ONE write, so a
+  // reader never sees this turn's cost beside last turn's context.
+  pi.on("message_end", (event) => {
+    const message = event?.message;
+    if (isReportableTurn(message)) pendingTurn = message ?? null;
+  });
+
+  // Read NOW, at the event, and write later. Handlers return at once while the
+  // queue may lag behind a slow store open; read inside the queued work, the
+  // context could belong to a later turn, and the next message_end could
+  // replace `pendingTurn` before it is written.
+  const takeTurn = (ctx: RuntimeContext | undefined): Partial<AgentRuntime> => {
+    const patch = { ...runtimeFromContext(ctx), ...usageFromMessage(pendingTurn ?? undefined) };
+    pendingTurn = null;
+    return patch;
+  };
+
+  // Every turn after the first starts once the previous one is persisted. The
+  // first has nothing pending, and agent_start has already reported.
+  pi.on("turn_start", (_event, ctx) => {
+    if (!pendingTurn) return;
+    const patch = takeTurn(ctx);
+    void enqueue(() => reportRuntime(patch));
+  });
+
+  pi.on("agent_end", (_event, ctx) => {
+    // The run's last turn has no following turn_start. Context is written even
+    // with no usage pending: an aborted last turn or a compaction still moved it.
+    const patch = takeTurn(ctx);
     void enqueue(async () => {
-      // `agent_end` runs after response persistence, so context includes the
-      // completed run. It also avoids activating pi's actionable `turn_end`
-      // boundary, which can reject an aborted response during `/new`.
-      const message = event?.messages
-        ?.slice()
-        .reverse()
-        .find((candidate) => candidate.role === "assistant");
-      await reportRuntime({ ...runtimeFromContext(ctx), ...usageFromMessage(message) });
+      await reportRuntime(patch);
       const location = here();
       // Clearing is safe whatever the answer -- it retracts this process's own
       // glyph and can only ever say less -- but it is still ordered after the
@@ -414,6 +449,7 @@ export default function murmurPi(pi: ExtensionAPI): void {
         // The handle goes either way.
       }
       agentId = null;
+      pendingTurn = null;
       dropStore();
     });
   });

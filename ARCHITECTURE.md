@@ -461,10 +461,12 @@ Rules, each of which a reader depends on:
    rounded for a terminal (`↑836k`, not `836123`), so writing them would
    manufacture precision murmur never had and no reader could tell a report from
    a guess.
-8. **`usage` is nullable as a unit.** It arrives as one bundle per turn — one
-   clock, one provenance — so a partial write could pair this turn's cost with
-   last turn's tokens. An agent that has completed no turn has no usage, which
-   is a different claim from zero. Nothing renders these figures yet; they are
+8. **`usage` is nullable as a unit.** It arrives as one bundle per completed
+   turn — one clock, one provenance — so a partial write could pair this turn's
+   cost with last turn's tokens. An agent that has completed no turn has no
+   usage, which is a different claim from zero. An aborted or errored turn
+   reports no usage: pi's is partial at best, and all zeroes when pi
+   synthesises the failure. Nothing renders these figures yet; they are
    carried so that a later display costs no wire change.
 
 `buildLocalSnapshot` reconciles before it reads, which is what makes the
@@ -973,6 +975,14 @@ Three assumptions that were wrong, all of which failed silently:
   `agent_end` cannot mean "waiting for a human". `agent_settled` is the event
   that means it: fired once, last. Listening to the wrong event is why the
   highest-attention state in the model had no producer for months.
+- **`turn_end` is not a passive notification.** Registering a handler for it
+  switches on pi's actionable turn boundary, which must resolve the assistant's
+  persisted entry id. During `/new`, pi aborts the run before that entry exists
+  and reports a boundary error. Per-turn runtime therefore comes from
+  `message_end`, which carries the same assistant message without a boundary.
+  pi dispatches `message_end` before it persists the message, so the usage is
+  held and written with the context at the next `turn_start` or at `agent_end`,
+  both of which follow persistence of the whole turn.
 - **The pane outlives the window.** A pane can move between windows, keeping its
   id while the window id changes, so the location is re-read on every report
   rather than cached at startup, and a move hands the badge over to the new
