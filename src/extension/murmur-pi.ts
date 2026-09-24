@@ -22,12 +22,19 @@ import type { StoreModule } from "./store-api.js";
 // follows, and session_start answers that by firing.
 type ExtensionAPI = {
   on(
-    event: "agent_end" | "agent_settled" | "session_shutdown" | "session_start",
+    event: "agent_settled" | "session_shutdown" | "session_start",
     handler: () => void | Promise<void>,
+  ): void;
+  on(
+    event: "agent_end",
+    handler: (
+      event: { messages?: (RuntimeMessage & { role?: string })[] },
+      ctx: RuntimeContext,
+    ) => void | Promise<void>,
   ): void;
   // `agent_start` takes ctx because a run beginning is the moment to state what
   // this agent is running WITH -- a resumed session may never emit a
-  // model_select or a turn_end, and would otherwise report nothing at all.
+  // model_select or an agent_end, and would otherwise report nothing at all.
   on(event: "agent_start", handler: (event: unknown, ctx: RuntimeContext) => void): void;
   // The runtime-reporting events, declared separately because they are the only
   // ones whose handlers take arguments. Every member of both payloads is
@@ -35,8 +42,8 @@ type ExtensionAPI = {
   // them degrades to reporting nothing rather than crashing -- which is why
   // murmur can declare this surface instead of depending on pi to build.
   on(
-    event: "model_select" | "thinking_level_select" | "turn_end",
-    handler: (event: RuntimeMessage & { message?: RuntimeMessage }, ctx: RuntimeContext) => void,
+    event: "model_select" | "thinking_level_select",
+    handler: (event: RuntimeMessage, ctx: RuntimeContext) => void,
   ): void;
   getSessionName?(): string | undefined;
 };
@@ -317,7 +324,7 @@ export default function murmurPi(pi: ExtensionAPI): void {
       // badge painted before it would announce an agent that has moved on.
       if (await report("running", location)) badge(location, "running");
       // Then what it is running with. Here as well as on the change events,
-      // because a RESUMED session may never emit a model_select or a turn_end --
+      // because a RESUMED session may never emit a model_select or agent_end --
       // it would sit on the dash reporting no model for its whole life.
       await reportRuntime(runtimeFromContext(ctx));
     });
@@ -327,8 +334,7 @@ export default function murmurPi(pi: ExtensionAPI): void {
   //
   //   model_select          the only thing that changes the model
   //   thinking_level_select the only thing that changes the requested effort
-  //   turn_end              a turn boundary is the only thing that moves the
-  //                         context, the token counts or the cost
+  //   agent_end             the settled run has current context and usage
   //
   // A periodic poll would have put a SQLite write in every pi process forever
   // for numbers that cannot change between turns. These fire exactly as often
@@ -341,21 +347,16 @@ export default function murmurPi(pi: ExtensionAPI): void {
     void enqueue(() => reportRuntime(runtimeFromContext(ctx)));
   });
 
-  pi.on("turn_end", (event, ctx) => {
-    void enqueue(() =>
-      // Both halves in one write: the context figures come from `ctx` and the
-      // tokens and cost from the turn's own message, and they describe the same
-      // instant. Two writes would let a reader see this turn's cost beside last
-      // turn's context.
-      //
-      // `event.message` is where pi puts the AssistantMessage; falling back to
-      // the event itself keeps this working if that ever flattens.
-      reportRuntime({ ...runtimeFromContext(ctx), ...usageFromMessage(event.message ?? event) }),
-    );
-  });
-
-  pi.on("agent_end", () => {
+  pi.on("agent_end", (event, ctx) => {
     void enqueue(async () => {
+      // `agent_end` runs after response persistence, so context includes the
+      // completed run. It also avoids activating pi's actionable `turn_end`
+      // boundary, which can reject an aborted response during `/new`.
+      const message = event?.messages
+        ?.slice()
+        .reverse()
+        .find((candidate) => candidate.role === "assistant");
+      await reportRuntime({ ...runtimeFromContext(ctx), ...usageFromMessage(message) });
       const location = here();
       // Clearing is safe whatever the answer -- it retracts this process's own
       // glyph and can only ever say less -- but it is still ordered after the

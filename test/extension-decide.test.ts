@@ -141,6 +141,71 @@ test("re-linking reports an inlined copy it replaced, and stays quiet otherwise"
   expect(linkPi(home)).toContain("Replaced an inlined copy");
 });
 
+test("runtime reporting does not activate pi's turn_end boundary", async () => {
+  const runtimeUpdates: unknown[] = [];
+
+  vi.doMock("@martintrojer/murmur/extension-store", () => ({
+    loadIdentity: () => ({ host_id: "H", display_name: "h" }),
+    openStore: () => ({
+      claimAgent: () => ({ outcome: "claimed", agent_id: "a1" }),
+      setRuntime: (update: unknown) => {
+        runtimeUpdates.push(update);
+        return true;
+      },
+      releaseAgent: () => true,
+      close: () => {},
+    }),
+  }));
+  vi.doMock("../src/mux.js", () => ({
+    tmux: {
+      currentWindow: () => ({
+        session: "$0",
+        window: "@1",
+        pane: "%1",
+        session_name: null,
+        window_name: null,
+      }),
+      setWindowBadge: () => {},
+    },
+  }));
+
+  vi.resetModules();
+  const { default: murmurPi } = await import("../src/extension/murmur-pi.js");
+  const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
+  murmurPi({
+    on: (event: string, handler: (event: unknown, ctx: unknown) => unknown) =>
+      void handlers.set(event, handler),
+  } as never);
+
+  expect(handlers.has("turn_end")).toBe(false);
+  await handlers.get("agent_end")?.(
+    {
+      messages: [
+        {
+          role: "assistant",
+          usage: {
+            input: 1,
+            output: 2,
+            cacheRead: 3,
+            cacheWrite: 4,
+            totalTokens: 10,
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+          },
+        },
+      ],
+    },
+    {},
+  );
+  await handlers.get("session_shutdown")?.({}, {});
+
+  expect(runtimeUpdates).toHaveLength(1);
+  expect(runtimeUpdates[0]).toMatchObject({ agent_id: "a1", usage: { total_tokens: 10 } });
+
+  vi.doUnmock("@martintrojer/murmur/extension-store");
+  vi.doUnmock("../src/mux.js");
+  vi.resetModules();
+});
+
 test("a failed write closes the store it is dropping", async () => {
   // Regression: the catch assigned `store = null` without closing, so a
   // recurring transient write failure leaked one SQLite connection and its WAL
