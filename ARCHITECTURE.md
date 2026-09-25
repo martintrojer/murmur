@@ -321,7 +321,7 @@ three surfaces carried machinery for it:
 | attention `blocked` | `murmur notify` | any other outside-in call, including an event murmur does not recognise |
 | attention `crashed` | `reconcileLocal` | pane alive, owner pid gone, activity was `running` |
 | (row removed) | `releaseAgent` | `session_shutdown` |
-| (attention removed) | `acknowledgePane` | `murmur clear`, i.e. tmux focus |
+| (attention removed) | `acknowledgePane` | `murmur clear`, i.e. tmux focus, or `i` in the dash (over ssh for a remote pane) |
 
 Nothing writes `crashed` from inside an agent, for the obvious reason.
 

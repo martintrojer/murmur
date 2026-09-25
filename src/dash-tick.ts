@@ -307,7 +307,7 @@ export function dashHelpSections(view: DashViewState): DashHelpSection[] {
       title: "actions",
       hints: [
         { chord: "enter", label: "jump to the agent" },
-        { chord: "i", label: "prompt the agent" },
+        { chord: "i", label: "prompt the agent (clears done)" },
         { chord: "^r", label: "refresh now" },
         { chord: "q", label: "quit" },
       ],

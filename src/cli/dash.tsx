@@ -13,6 +13,7 @@ import { agentLabel, jumpToAgent, terminalText } from "../agents.js";
 import { ssh } from "../channel.js";
 import { COLLECT_FLOOR_MS } from "../collector.js";
 import {
+  acknowledgeAttention,
   type Composer,
   type DashFilter,
   dashFilter,
@@ -71,6 +72,7 @@ import {
 } from "../paint.js";
 import { type Status, status, statusWithCollect } from "../status.js";
 import { age, oneLiner, type PaneView, RENDER_PRIORITY, renderState } from "../view.js";
+import { clearPane } from "./clear.js";
 import { requireIdentity } from "./identity-guard.js";
 
 /**
@@ -789,6 +791,17 @@ export function App({ dashStore, initial }: DashProps) {
       setInputError("");
       setInputSending(false);
       setGlanceScroll(Number.MAX_SAFE_INTEGER);
+      // Opening the prompt is answering the agent, the same fact tmux focus
+      // reports, so it acknowledges the pane's done/blocked/crashed.
+      const target = selected;
+      void acknowledgeAttention(store, target, (pane) => clearPane(pane)).then((result) => {
+        if (!result.ok) setInputError(result.message);
+        else if (target.attention.length > 0) {
+          const identity = requireIdentity();
+          if (identity && target.local) setView(status(store, identity, Date.now()));
+          else if (!target.local) void refresh(false);
+        }
+      });
     } else if (input === "s") {
       updatePrefs({ sort: nextSort(prefs.sort) });
     } else if (input === "f") {

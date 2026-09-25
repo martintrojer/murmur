@@ -29,7 +29,8 @@ agents. Local jump is a window switch; remote jump opens over ssh (or your
 `murmur dash` wants a [Nerd Font](https://www.nerdfonts.com/) and a Catppuccin
 Mocha terminal. Press `?` for its shortcut panel. `/` filters cards by agent,
 workstream, session, host, or state; `c` toggles compact one-line rows. Press
-`i` to compose a prompt for the selected local or remote agent. In input mode,
+`i` to compose a prompt for the selected local or remote agent; opening it
+clears the agent's done/blocked mark, as focusing its pane would. In input mode,
 enter sends, `ctrl-e` stops the agent, and escape returns to the dashboard.
 `s` **node** sort is local cards first, then remotes A–Z.
 

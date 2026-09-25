@@ -1,5 +1,7 @@
 import { expect, test } from "vitest";
 import {
+  acknowledgeAttention,
+  buildClearDelivery,
   buildEscapeDelivery,
   buildPromptDelivery,
   dashFilter,
@@ -191,4 +193,66 @@ test("Escape clears the query, whether editing or navigating", () => {
 
   const kept = dashFilter(state, { type: "accept" });
   expect(dashFilter(kept, { type: "cancel" })).toEqual(emptyFilter());
+});
+
+test("acknowledging a local pane runs the focus-hook clear, not ssh", async () => {
+  const store = { peers: () => [] } as unknown as Store;
+  const cleared: string[] = [];
+  const target = {
+    ...pane(true),
+    attention: [{ kind: "done" as const, requested_at: 1, message: "" }],
+  };
+  const result = await acknowledgeAttention(
+    store,
+    target,
+    (id) => cleared.push(id),
+    async () => {
+      throw new Error("must not run");
+    },
+  );
+  expect(result).toEqual({ ok: true });
+  expect(cleared).toEqual(["%9"]);
+});
+
+test("acknowledging a pane with no attention does nothing", async () => {
+  const store = { peers: () => [] } as unknown as Store;
+  const cleared: string[] = [];
+  const result = await acknowledgeAttention(
+    store,
+    pane(false),
+    (id) => cleared.push(id),
+    async () => {
+      throw new Error("must not run");
+    },
+  );
+  expect(result).toEqual({ ok: true });
+  expect(cleared).toEqual([]);
+});
+
+test("acknowledging a remote pane runs murmur clear on its node", async () => {
+  const store = {
+    peers: () => [{ host_id: "remote-host", name: "dev", target: "dev" }],
+  } as unknown as Store;
+  const target = {
+    ...pane(false, "%9'bad"),
+    attention: [{ kind: "done" as const, requested_at: 1, message: "" }],
+  };
+  const runs: unknown[] = [];
+  const result = await acknowledgeAttention(
+    store,
+    target,
+    () => {
+      throw new Error("must not clear locally");
+    },
+    async (delivery) => void runs.push(delivery),
+  );
+  expect(result).toEqual({ ok: true });
+  expect(runs).toEqual([buildClearDelivery(target, "dev")]);
+  expect(buildClearDelivery(target, "dev").args.slice(-5)).toEqual([
+    "dev",
+    "murmur",
+    "clear",
+    "--pane",
+    "'%9'\\''bad'",
+  ]);
 });

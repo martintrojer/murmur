@@ -188,6 +188,38 @@ export function sendPrompt(
   return deliver(store, pane, (target) => buildPromptDelivery(pane, text, target), run);
 }
 
+/**
+ * Remote acknowledgement runs `murmur clear` ON the pane's node: attention is
+ * owned by the node that raised it, so the dash must not write a remote row
+ * into its own store, where the next collect would overwrite it anyway.
+ */
+export function buildClearDelivery(pane: PaneView, target: string): InputDelivery {
+  return {
+    command: "ssh",
+    args: [...SSH_OPTIONS, target, "murmur", "clear", "--pane", shellQuote(pane.pane)],
+    input: "",
+  };
+}
+
+/**
+ * Acknowledge the pane's attention, as tmux focus would. Local panes go through
+ * `clearLocal` (the same `clearPane` the focus hook runs); remote ones over ssh.
+ * A pane with nothing to acknowledge costs nothing, so no ssh round trip.
+ */
+export function acknowledgeAttention(
+  store: Store,
+  pane: PaneView,
+  clearLocal: (pane: string) => void,
+  run: InputRunner = runInput,
+): Promise<InputResult> {
+  if (pane.attention.length === 0) return Promise.resolve({ ok: true });
+  if (pane.local) {
+    clearLocal(pane.pane);
+    return Promise.resolve({ ok: true });
+  }
+  return deliver(store, pane, (target) => buildClearDelivery(pane, target ?? ""), run);
+}
+
 export function sendEscape(
   store: Store,
   pane: PaneView,
