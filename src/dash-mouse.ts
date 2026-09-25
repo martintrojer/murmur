@@ -26,6 +26,17 @@ const DISABLE = `${String.fromCharCode(27)}[?1000l${String.fromCharCode(27)}[?10
 const SGR_PATTERN = `${String.fromCharCode(27)}\\[<(\\d+);(\\d+);(\\d+)([Mm])`;
 const SGR = new RegExp(SGR_PATTERN, "g");
 
+const SGR_ONLY = new RegExp(`^(?:${String.fromCharCode(27)}?\\[<\\d+;\\d+;\\d+[Mm])+$`);
+
+/**
+ * True when a `useInput` string is a mouse packet rather than typed text. Ink
+ * sees the same stdin bytes as our mouse listener and strips the leading ESC,
+ * so without this a click types `[<0;10;5M` into the composer.
+ */
+export function isMouseInput(input: string): boolean {
+  return SGR_ONLY.test(input);
+}
+
 export function enableMouse(stream: { write: (chunk: string) => unknown } = process.stdout): void {
   stream.write(ENABLE);
 }

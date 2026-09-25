@@ -27,6 +27,7 @@ import {
   classifyClick,
   disableMouse,
   enableMouse,
+  isMouseInput,
   parseMouseEvents,
   pointInRect,
 } from "../dash-mouse.js";
@@ -644,6 +645,8 @@ export function App({ dashStore, initial }: DashProps) {
   }, []);
 
   useInput((input, key) => {
+    // Mouse packets reach Ink too; the stdin listener above owns them.
+    if (isMouseInput(input)) return;
     // Checked before the composer and the filter editor, because help is modal:
     // while it is up, nothing else may see a key. It can only BE up in normal
     // mode, since `?` typed into either editor is text rather than a chord.

@@ -2,6 +2,7 @@ import { expect, test } from "vitest";
 import {
   clampGlanceScroll,
   classifyClick,
+  isMouseInput,
   parseMouseEvents,
   pointInRect,
 } from "../src/dash-mouse.js";
@@ -47,4 +48,12 @@ test("clampGlanceScroll stays in range", () => {
   expect(clampGlanceScroll(-3, 10, 4)).toBe(0);
   expect(clampGlanceScroll(100, 10, 4)).toBe(6);
   expect(clampGlanceScroll(2, 3, 10)).toBe(0);
+});
+
+test("isMouseInput spots SGR packets as Ink's useInput delivers them", () => {
+  expect(isMouseInput("[<0;10;5M")).toBe(true);
+  expect(isMouseInput("\x1b[<0;10;5m")).toBe(true);
+  expect(isMouseInput("[<64;3;4M[<0;1;1m")).toBe(true);
+  expect(isMouseInput("hello")).toBe(false);
+  expect(isMouseInput("[<")).toBe(false);
 });
